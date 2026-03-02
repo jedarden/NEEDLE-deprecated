@@ -216,12 +216,11 @@ _needle_scan_agents() {
 
     for agent in "${agent_order[@]}"; do
         local result
-        result=$(_needle_detect_agent "$agent" 2>/dev/null)
-        local exit_code=$?
+        result=$(_needle_detect_agent "$agent" 2>/dev/null) || result="missing"
 
         local name="${NEEDLE_AGENT_NAMES[$agent]:-$agent}"
 
-        if [[ "$result" == "missing" ]] || [[ $exit_code -ne 0 ]]; then
+        if [[ "$result" == "missing" ]]; then
             _needle_warn "$name not found"
             _needle_print "      └─ Install: ${NEEDLE_AGENT_INSTALL[$agent]}"
         else
@@ -239,7 +238,7 @@ _needle_scan_agents() {
                     _needle_print "      └─ Auth: ${NEEDLE_COLOR_DIM}$auth${NEEDLE_COLOR_RESET}"
                     ;;
             esac
-            ((found++))
+            ((found++)) || true
         fi
         _needle_print ""
     done
@@ -270,7 +269,7 @@ _needle_scan_agents_json() {
 
     for agent in "${agent_order[@]}"; do
         local result
-        result=$(_needle_detect_agent "$agent" 2>/dev/null)
+        result=$(_needle_detect_agent "$agent" 2>/dev/null) || true
 
         if [[ "$first" == "true" ]]; then
             first=false
