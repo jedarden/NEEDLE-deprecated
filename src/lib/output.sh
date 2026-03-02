@@ -20,7 +20,8 @@ NEEDLE_USE_COLOR="${NEEDLE_USE_COLOR:-true}"
 # Initialize color support
 _needle_output_init() {
     # Check if colors should be disabled
-    if [[ "$NEEDLE_USE_COLOR" != "true" ]] || [[ ! -t 1 ]]; then
+    # NO_COLOR env var (https://no-color.org/) disables color by default
+    if [[ -n "${NO_COLOR:-}" ]] || [[ "$NEEDLE_USE_COLOR" != "true" ]] || [[ ! -t 1 ]]; then
         NEEDLE_COLOR_RESET=''
         NEEDLE_COLOR_RED=''
         NEEDLE_COLOR_GREEN=''

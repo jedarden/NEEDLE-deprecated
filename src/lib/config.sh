@@ -65,13 +65,6 @@ experimental: false
 EOF
 }
 
-# Ensure NEEDLE directories exist
-_needle_ensure_dirs() {
-    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR"
-    mkdir -p "$NEEDLE_HOME/$NEEDLE_CACHE_DIR"
-    mkdir -p "$NEEDLE_HOME/$NEEDLE_LOG_DIR"
-}
-
 # Validate configuration
 _needle_config_validate() {
     local config_file="$NEEDLE_HOME/$NEEDLE_CONFIG_FILE"

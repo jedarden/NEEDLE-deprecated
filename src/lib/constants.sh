@@ -27,6 +27,20 @@ NEEDLE_DEFAULT_VERBOSE=false
 NEEDLE_DEFAULT_QUIET=false
 NEEDLE_DEFAULT_COLOR=true
 
+# Default timeout and interval values (in seconds)
+NEEDLE_DEFAULT_TIMEOUT=300
+NEEDLE_DEFAULT_INTERVAL=5
+NEEDLE_DEFAULT_RETRY_COUNT=3
+NEEDLE_DEFAULT_RETRY_DELAY=2
+
+# NATO phonetic alphabet for readable IDs
+NEEDLE_NATO_ALPHABET=(
+    "alpha" "bravo" "charlie" "delta" "echo" "foxtrot" "golf" "hotel"
+    "india" "juliet" "kilo" "lima" "mike" "november" "oscar" "papa"
+    "quebec" "romeo" "sierra" "tango" "uniform" "victor" "whiskey"
+    "xray" "yankee" "zulu"
+)
+
 # Available subcommands
 NEEDLE_SUBCOMMANDS=(
     "init"

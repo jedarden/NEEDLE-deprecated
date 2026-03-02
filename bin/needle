@@ -29,6 +29,8 @@ NEEDLE_ROOT_DIR=$(cd "$NEEDLE_SCRIPT_DIR/.." && pwd)
 
 source "$NEEDLE_ROOT_DIR/src/lib/constants.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/output.sh"
+source "$NEEDLE_ROOT_DIR/src/lib/paths.sh"
+source "$NEEDLE_ROOT_DIR/src/lib/json.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/config.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/utils.sh"
 
