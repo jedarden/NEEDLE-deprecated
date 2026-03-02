@@ -32,11 +32,20 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "pulse": false,
     "knot": true
   },
+  "mend": {
+    "heartbeat_max_age": 3600,
+    "max_log_files": 100,
+    "min_interval": 60
+  },
   "effort": {
     "budget": {
       "daily_limit_usd": 50.0,
       "warning_threshold": 0.8
     }
+  },
+  "hooks": {
+    "timeout": "30s",
+    "fail_action": "warn"
   }
 }'
 
@@ -64,10 +73,39 @@ strands:
   pulse: false
   knot: true
 
+# Maintenance strand configuration
+mend:
+  # heartbeat_max_age: Seconds before a stale heartbeat is considered dead (default: 1 hour)
+  heartbeat_max_age: 3600
+  # max_log_files: Maximum number of log files to keep (default: 100)
+  max_log_files: 100
+  # min_interval: Minimum seconds between mend runs (default: 60)
+  min_interval: 60
+
 effort:
   budget:
     daily_limit_usd: 50.0
     warning_threshold: 0.8
+
+# Hook system for customizing NEEDLE behavior
+# Hooks are user scripts that run at specific lifecycle events
+# Exit codes: 0=success, 1=warning, 2=abort, 3=skip
+hooks:
+  # timeout: Maximum time a hook can run (e.g., 30s, 1m)
+  timeout: 30s
+
+  # fail_action: What to do when a hook fails (warn | abort | ignore)
+  fail_action: warn
+
+  # Hook paths (uncomment to enable):
+  # pre_claim: ~/.needle/hooks/pre-claim.sh
+  # post_claim: ~/.needle/hooks/post-claim.sh
+  # pre_execute: ~/.needle/hooks/pre-execute.sh
+  # post_execute: ~/.needle/hooks/post-execute.sh
+  # pre_complete: ~/.needle/hooks/pre-complete.sh
+  # post_complete: ~/.needle/hooks/post-complete.sh
+  # on_failure: ~/.needle/hooks/on-failure.sh
+  # on_quarantine: ~/.needle/hooks/on-quarantine.sh
 '
 
 # Check if yq is available
@@ -386,10 +424,39 @@ strands:
   pulse: false
   knot: true
 
+# Maintenance strand configuration
+mend:
+  # heartbeat_max_age: Seconds before a stale heartbeat is considered dead (default: 1 hour)
+  heartbeat_max_age: 3600
+  # max_log_files: Maximum number of log files to keep (default: 100)
+  max_log_files: 100
+  # min_interval: Minimum seconds between mend runs (default: 60)
+  min_interval: 60
+
 effort:
   budget:
     daily_limit_usd: 50.0
     warning_threshold: 0.8
+
+# Hook system for customizing NEEDLE behavior
+# Hooks are user scripts that run at specific lifecycle events
+# Exit codes: 0=success, 1=warning, 2=abort, 3=skip
+hooks:
+  # timeout: Maximum time a hook can run (e.g., 30s, 1m)
+  timeout: 30s
+
+  # fail_action: What to do when a hook fails (warn | abort | ignore)
+  fail_action: warn
+
+  # Hook paths (uncomment to enable):
+  # pre_claim: ~/.needle/hooks/pre-claim.sh
+  # post_claim: ~/.needle/hooks/post-claim.sh
+  # pre_execute: ~/.needle/hooks/pre-execute.sh
+  # post_execute: ~/.needle/hooks/post-execute.sh
+  # pre_complete: ~/.needle/hooks/pre-complete.sh
+  # post_complete: ~/.needle/hooks/post-complete.sh
+  # on_failure: ~/.needle/hooks/on-failure.sh
+  # on_quarantine: ~/.needle/hooks/on-quarantine.sh
 EOF
 
     if [[ $? -eq 0 ]]; then

@@ -347,6 +347,38 @@ _needle_event_heartbeat_recovery() {
 }
 
 # ============================================================================
+# Mend Events (Maintenance Strand)
+# ============================================================================
+
+# Emit mend.orphan_released event
+# Usage: _needle_event_mend_orphan_released <bead_id> [key=value ...]
+_needle_event_mend_orphan_released() {
+    local bead_id="$1"
+    shift
+    _needle_telemetry_emit "mend.orphan_released" "bead_id=$bead_id" "$@"
+}
+
+# Emit mend.heartbeat_cleaned event
+# Usage: _needle_event_mend_heartbeat_cleaned <worker> [key=value ...]
+_needle_event_mend_heartbeat_cleaned() {
+    local worker="$1"
+    shift
+    _needle_telemetry_emit "mend.heartbeat_cleaned" "worker=$worker" "$@"
+}
+
+# Emit mend.logs_pruned event
+# Usage: _needle_event_mend_logs_pruned [count=...] [key=value ...]
+_needle_event_mend_logs_pruned() {
+    _needle_telemetry_emit "mend.logs_pruned" "$@"
+}
+
+# Emit mend.completed event
+# Usage: _needle_event_mend_completed [key=value ...]
+_needle_event_mend_completed() {
+    _needle_telemetry_emit "mend.completed" "$@"
+}
+
+# ============================================================================
 # Error Events
 # ============================================================================
 
@@ -401,6 +433,10 @@ hook.failed
 heartbeat.emitted
 heartbeat.stuck_detected
 heartbeat.recovery
+mend.orphan_released
+mend.heartbeat_cleaned
+mend.logs_pruned
+mend.completed
 error.claim_failed
 error.agent_crash
 error.timeout

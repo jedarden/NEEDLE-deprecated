@@ -5,10 +5,9 @@
 # Implementation: nd-1sk
 #
 # This strand handles maintenance tasks such as:
-# - Cleaning up stale state files
-# - Syncing bead state
-# - Garbage collection
-# - Health checks
+# - Cleaning up orphaned claims (beads assigned to dead workers)
+# - Pruning old heartbeat files from dead workers
+# - Log rotation and cleanup
 #
 # Usage:
 #   _needle_strand_mend <workspace> <agent>
@@ -17,20 +16,396 @@
 #   0 - Work was found and processed
 #   1 - No work found (fallthrough to next strand)
 
+# ============================================================================
+# Main Strand Entry Point
+# ============================================================================
+
 _needle_strand_mend() {
     local workspace="$1"
     local agent="$2"
 
-    _needle_debug "mend strand: checking for maintenance tasks"
+    _needle_debug "mend strand: checking for maintenance tasks in $workspace"
 
-    # TODO: Implementation pending (nd-1sk)
-    # This is a stub that returns "no work found"
-    # The actual implementation will:
-    # 1. Check for stale locks or claims
-    # 2. Look for cleanup tasks (orphaned files, etc.)
-    # 3. Verify system health
-    # 4. Perform any needed maintenance
-    # 5. Return 0 if maintenance was done, 1 if nothing needed
+    local work_done=false
 
-    return 1  # No work found (stub)
+    # 1. Clean orphaned claims (beads assigned to dead workers)
+    if _needle_mend_orphaned_claims "$workspace"; then
+        work_done=true
+    fi
+
+    # 2. Prune old heartbeat files from dead workers
+    if _needle_mend_old_heartbeats; then
+        work_done=true
+    fi
+
+    # 3. Log rotation/cleanup (if configured)
+    if _needle_mend_logs; then
+        work_done=true
+    fi
+
+    if $work_done; then
+        _needle_debug "mend strand: maintenance completed"
+        return 0
+    fi
+
+    _needle_debug "mend strand: no maintenance needed"
+    return 1  # No work found
+}
+
+# ============================================================================
+# Orphaned Claims Cleanup
+# ============================================================================
+
+# Detect and release orphaned claims (beads assigned to dead workers)
+# An orphaned claim is a bead with an assignee whose worker heartbeat is missing
+#
+# Usage: _needle_mend_orphaned_claims <workspace>
+# Returns: 0 if any claims were released, 1 if none
+_needle_mend_orphaned_claims() {
+    local workspace="$1"
+    local fixed=0
+
+    # Get heartbeat directory path
+    local heartbeat_dir="$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    # Ensure heartbeat directory exists
+    if [[ ! -d "$heartbeat_dir" ]]; then
+        _needle_debug "mend: no heartbeat directory found"
+        return 1
+    fi
+
+    # Get all in-progress beads from the workspace
+    local in_progress
+    in_progress=$(br list --workspace="$workspace" --status in_progress --json 2>/dev/null)
+
+    # Handle empty or null results
+    if [[ -z "$in_progress" ]] || [[ "$in_progress" == "[]" ]] || [[ "$in_progress" == "null" ]]; then
+        _needle_debug "mend: no in-progress beads found in $workspace"
+        return 1
+    fi
+
+    # Check if br command succeeded and returned valid JSON
+    if ! echo "$in_progress" | jq -e '.[]' &>/dev/null; then
+        _needle_debug "mend: no valid in-progress beads data"
+        return 1
+    fi
+
+    # Iterate through in-progress beads
+    while IFS= read -r bead; do
+        local bead_id assignee
+
+        # Extract bead ID and assignee
+        bead_id=$(echo "$bead" | jq -r '.id // empty')
+        assignee=$(echo "$bead" | jq -r '.assignee // empty')
+
+        # Skip beads without an assignee
+        if [[ -z "$assignee" ]]; then
+            continue
+        fi
+
+        # Skip if we couldn't extract bead ID
+        if [[ -z "$bead_id" ]]; then
+            continue
+        fi
+
+        # Check if the assignee worker is still alive
+        local heartbeat_file="$heartbeat_dir/${assignee}.json"
+
+        if [[ ! -f "$heartbeat_file" ]]; then
+            # No heartbeat file - worker is dead, this is an orphaned claim
+            _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - no heartbeat)"
+
+            # Release the claim
+            if br update "$bead_id" --release --reason "orphaned_claim" &>/dev/null; then
+                _needle_info "Released orphaned claim: $bead_id"
+
+                # Emit event for monitoring
+                _needle_emit_event "mend.orphan_released" \
+                    "Released orphaned bead claim" \
+                    "bead_id=$bead_id" \
+                    "assignee=$assignee" \
+                    "workspace=$workspace"
+
+                ((fixed++))
+            else
+                _needle_warn "Failed to release orphaned claim: $bead_id"
+            fi
+        else
+            # Heartbeat file exists - check if the process is actually alive
+            local pid
+            pid=$(jq -r '.pid // 0' "$heartbeat_file" 2>/dev/null)
+
+            if [[ -n "$pid" ]] && [[ "$pid" != "0" ]] && [[ "$pid" != "null" ]]; then
+                # Check if process is running
+                if ! kill -0 "$pid" 2>/dev/null; then
+                    # Process is dead but heartbeat file remains - orphaned claim
+                    _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - process $pid dead)"
+
+                    # Release the claim
+                    if br update "$bead_id" --release --reason "orphaned_claim" &>/dev/null; then
+                        _needle_info "Released orphaned claim: $bead_id"
+
+                        # Emit event for monitoring
+                        _needle_emit_event "mend.orphan_released" \
+                            "Released orphaned bead claim" \
+                            "bead_id=$bead_id" \
+                            "assignee=$assignee" \
+                            "workspace=$workspace" \
+                            "dead_pid=$pid"
+
+                        ((fixed++))
+                    else
+                        _needle_warn "Failed to release orphaned claim: $bead_id"
+                    fi
+                fi
+            fi
+        fi
+    done < <(echo "$in_progress" | jq -c '.[]' 2>/dev/null)
+
+    if ((fixed > 0)); then
+        _needle_info "Released $fixed orphaned claim(s)"
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# Heartbeat Cleanup
+# ============================================================================
+
+# Clean up old heartbeat files from dead workers
+# Removes heartbeat files where:
+# 1. The process is no longer running, AND
+# 2. The heartbeat is older than the configured max age
+#
+# Usage: _needle_mend_old_heartbeats
+# Returns: 0 if any heartbeats were cleaned, 1 if none
+_needle_mend_old_heartbeats() {
+    local max_age
+    max_age=$(get_config "mend.heartbeat_max_age" "3600")  # Default: 1 hour
+
+    local heartbeat_dir="$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    # Ensure heartbeat directory exists
+    if [[ ! -d "$heartbeat_dir" ]]; then
+        _needle_debug "mend: no heartbeat directory to clean"
+        return 1
+    fi
+
+    # Count heartbeat files
+    local heartbeat_count
+    heartbeat_count=$(find "$heartbeat_dir" -name "*.json" -type f 2>/dev/null | wc -l)
+
+    if [[ "$heartbeat_count" -eq 0 ]]; then
+        _needle_debug "mend: no heartbeat files to check"
+        return 1
+    fi
+
+    local now
+    now=$(date +%s)
+    local cleaned=0
+
+    # Iterate through heartbeat files
+    for heartbeat_file in "$heartbeat_dir"/*.json; do
+        [[ -f "$heartbeat_file" ]] || continue
+
+        local pid last_heartbeat last_epoch age
+
+        # Extract process ID and last heartbeat time
+        pid=$(jq -r '.pid // 0' "$heartbeat_file" 2>/dev/null)
+        last_heartbeat=$(jq -r '.last_heartbeat // .started // ""' "$heartbeat_file" 2>/dev/null)
+
+        # Convert ISO8601 timestamp to epoch
+        if [[ -n "$last_heartbeat" ]]; then
+            # Try GNU date first, then BSD date
+            last_epoch=$(date -d "$last_heartbeat" +%s 2>/dev/null || \
+                         date -j -f "%Y-%m-%dT%H:%M:%S" "${last_heartbeat%%.*}" +%s 2>/dev/null || \
+                         echo 0)
+        else
+            last_epoch=0
+        fi
+
+        # Calculate age of heartbeat
+        if [[ "$last_epoch" -gt 0 ]]; then
+            age=$((now - last_epoch))
+        else
+            # If we can't parse the timestamp, assume it's old
+            age=$((max_age + 1))
+        fi
+
+        # Determine if we should clean up this heartbeat
+        local should_cleanup=false
+
+        # Check if process is dead
+        local process_alive=false
+        if [[ -n "$pid" ]] && [[ "$pid" != "0" ]] && [[ "$pid" != "null" ]]; then
+            if kill -0 "$pid" 2>/dev/null; then
+                process_alive=true
+            fi
+        fi
+
+        # Cleanup if process is dead AND heartbeat is old enough
+        if [[ "$process_alive" == "false" ]] && ((age > max_age)); then
+            should_cleanup=true
+        fi
+
+        if $should_cleanup; then
+            local worker_name
+            worker_name=$(basename "$heartbeat_file" .json)
+
+            if rm -f "$heartbeat_file"; then
+                _needle_debug "Cleaned up stale heartbeat: $worker_name (age: ${age}s, pid: ${pid:-unknown})"
+
+                # Emit event for monitoring
+                _needle_emit_event "mend.heartbeat_cleaned" \
+                    "Cleaned up stale worker heartbeat" \
+                    "worker=$worker_name" \
+                    "pid=${pid:-unknown}" \
+                    "age_seconds=$age"
+
+                ((cleaned++))
+            else
+                _needle_warn "Failed to clean up heartbeat: $heartbeat_file"
+            fi
+        fi
+    done
+
+    if ((cleaned > 0)); then
+        _needle_info "Cleaned up $cleaned stale heartbeat file(s)"
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# Log Cleanup
+# ============================================================================
+
+# Prune old log files based on configuration
+# Removes oldest logs when count exceeds max_files
+#
+# Usage: _needle_mend_logs
+# Returns: 0 if any logs were pruned, 1 if none
+_needle_mend_logs() {
+    local max_files
+    max_files=$(get_config "mend.max_log_files" "100")  # Default: keep 100 log files
+
+    local log_dir="$NEEDLE_HOME/$NEEDLE_LOG_DIR"
+
+    # Ensure log directory exists
+    if [[ ! -d "$log_dir" ]]; then
+        _needle_debug "mend: no log directory to prune"
+        return 1
+    fi
+
+    # Count log files
+    local log_count
+    log_count=$(find "$log_dir" -name "*.jsonl" -type f 2>/dev/null | wc -l)
+
+    if [[ "$log_count" -le "$max_files" ]]; then
+        _needle_debug "mend: log count ($log_count) within limit ($max_files)"
+        return 1
+    fi
+
+    # Calculate how many files to delete
+    local to_delete=$((log_count - max_files))
+
+    if [[ "$to_delete" -le 0 ]]; then
+        return 1
+    fi
+
+    _needle_debug "mend: pruning $to_delete old log file(s) (current: $log_count, max: $max_files)"
+
+    # Find and delete the oldest log files
+    local deleted=0
+    while IFS= read -r file; do
+        if [[ -n "$file" ]] && rm -f "$file"; then
+            ((deleted++))
+        fi
+    done < <(find "$log_dir" -name "*.jsonl" -type f -printf '%T@ %p\n' 2>/dev/null | \
+             sort -n | head -n "$to_delete" | cut -d' ' -f2-)
+
+    if ((deleted > 0)); then
+        _needle_info "Pruned $deleted old log file(s)"
+
+        # Emit event for monitoring
+        _needle_emit_event "mend.logs_pruned" \
+            "Pruned old log files" \
+            "count=$deleted" \
+            "previous_count=$log_count" \
+            "max_files=$max_files"
+
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+# Check if mend strand should run based on last run time
+# Prevents excessive maintenance checks
+#
+# Usage: _needle_mend_should_run
+# Returns: 0 if should run, 1 if skipped (too soon)
+_needle_mend_should_run() {
+    local min_interval
+    min_interval=$(get_config "mend.min_interval" "60")  # Default: 60 seconds
+
+    local state_file="$NEEDLE_HOME/$NEEDLE_STATE_DIR/mend_last_run"
+    local now
+    now=$(date +%s)
+
+    # Check if state file exists
+    if [[ -f "$state_file" ]]; then
+        local last_run
+        last_run=$(cat "$state_file" 2>/dev/null)
+
+        if [[ -n "$last_run" ]] && [[ "$last_run" =~ ^[0-9]+$ ]]; then
+            local elapsed=$((now - last_run))
+
+            if [[ "$elapsed" -lt "$min_interval" ]]; then
+                _needle_debug "mend: skipping (last run ${elapsed}s ago, min interval: ${min_interval}s)"
+                return 1
+            fi
+        fi
+    fi
+
+    # Update last run time
+    echo "$now" > "$state_file"
+    return 0
+}
+
+# Get statistics about current maintenance state
+#
+# Usage: _needle_mend_stats
+# Returns: JSON object with stats
+_needle_mend_stats() {
+    local heartbeat_dir="$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+    local log_dir="$NEEDLE_HOME/$NEEDLE_LOG_DIR"
+
+    local heartbeat_count=0
+    local log_count=0
+    local log_size=0
+
+    # Count heartbeat files
+    if [[ -d "$heartbeat_dir" ]]; then
+        heartbeat_count=$(find "$heartbeat_dir" -name "*.json" -type f 2>/dev/null | wc -l)
+    fi
+
+    # Count log files and total size
+    if [[ -d "$log_dir" ]]; then
+        log_count=$(find "$log_dir" -name "*.jsonl" -type f 2>/dev/null | wc -l)
+        log_size=$(du -sb "$log_dir" 2>/dev/null | cut -f1 || echo 0)
+    fi
+
+    # Output as JSON
+    _needle_json_object \
+        "heartbeat_count=$heartbeat_count" \
+        "log_count=$log_count" \
+        "log_size_bytes=$log_size"
 }
