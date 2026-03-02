@@ -55,6 +55,7 @@ source "$NEEDLE_ROOT_DIR/src/cli/logs.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/version.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/upgrade.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/agents.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/heartbeat.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/help.sh"
 
 # -----------------------------------------------------------------------------
@@ -99,7 +100,7 @@ _needle_parse_global_options() {
     # Check if a subcommand is present (first non-option arg that's a known subcommand)
     for arg in "$@"; do
         case "$arg" in
-            init|run|list|ls|status|config|logs|version|upgrade|help|completion|agents)
+            init|run|list|ls|status|config|logs|version|upgrade|help|completion|agents|heartbeat)
                 has_subcommand=true
                 break
                 ;;
@@ -226,6 +227,9 @@ _needle_route_command() {
         agents)
             _needle_agents "$@"
             ;;
+        heartbeat)
+            _needle_heartbeat "$@"
+            ;;
         help|--help|-h)
             _needle_help "$@"
             ;;
@@ -256,7 +260,7 @@ _needle_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="init run list status config logs version upgrade agents help"
+    local commands="init run list status config logs version upgrade agents heartbeat help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -282,7 +286,7 @@ _needle() {
         'version:Display version information'
         'upgrade:Upgrade NEEDLE to latest version'
         'agents:Detect and manage coding CLI agents'
-        'agents:List available agent configurations'
+        'heartbeat:Manage worker heartbeat and recovery'
         'help:Show help information'
     )
 

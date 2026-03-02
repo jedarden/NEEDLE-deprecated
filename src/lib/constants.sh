@@ -53,5 +53,6 @@ NEEDLE_SUBCOMMANDS=(
     "version"
     "upgrade"
     "agents"
+    "heartbeat"
     "help"
 )

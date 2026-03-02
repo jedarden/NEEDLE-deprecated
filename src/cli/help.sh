@@ -39,6 +39,9 @@ _needle_help() {
         agents)
             _needle_agents_help
             ;;
+        heartbeat)
+            _needle_heartbeat_help
+            ;;
         help)
             _needle_print "Display help for NEEDLE commands"
             _needle_print ""
@@ -73,6 +76,7 @@ COMMANDS:
     logs        View or tail worker logs
 
     agents      Detect and manage coding CLI agents
+    heartbeat   Manage worker heartbeat and recovery
     upgrade     Check for and install updates
     version     Show version information
 
