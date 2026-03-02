@@ -14,7 +14,8 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "global_max_concurrent": 20,
     "providers": {
       "anthropic": {
-        "max_concurrent": 5
+        "max_concurrent": 5,
+        "requests_per_minute": 60
       }
     }
   },
@@ -48,6 +49,7 @@ limits:
   providers:
     anthropic:
       max_concurrent: 5
+      requests_per_minute: 60
 
 runner:
   polling_interval: 2s
@@ -369,6 +371,7 @@ limits:
   providers:
     anthropic:
       max_concurrent: 5
+      requests_per_minute: 60
 
 runner:
   polling_interval: 2s
