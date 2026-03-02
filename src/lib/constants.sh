@@ -55,5 +55,7 @@ NEEDLE_SUBCOMMANDS=(
     "rollback"
     "agents"
     "heartbeat"
+    "attach"
+    "stop"
     "help"
 )

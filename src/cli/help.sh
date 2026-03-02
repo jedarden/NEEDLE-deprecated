@@ -45,6 +45,12 @@ _needle_help() {
         heartbeat)
             _needle_heartbeat_help
             ;;
+        attach)
+            _needle_attach_help
+            ;;
+        stop)
+            _needle_stop_help
+            ;;
         help)
             _needle_print "Display help for NEEDLE commands"
             _needle_print ""
@@ -77,6 +83,8 @@ COMMANDS:
     list        List running workers
     status      Show worker health and statistics
     logs        View or tail worker logs
+    attach      Attach to worker tmux sessions
+    stop        Stop running workers
 
     agents      Detect and manage coding CLI agents
     heartbeat   Manage worker heartbeat and recovery
