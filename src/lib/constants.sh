@@ -57,5 +57,6 @@ NEEDLE_SUBCOMMANDS=(
     "heartbeat"
     "attach"
     "stop"
+    "test-agent"
     "help"
 )

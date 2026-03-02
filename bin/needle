@@ -47,6 +47,7 @@ source "$NEEDLE_ROOT_DIR/src/hooks/runner.sh"
 
 # Source agent loader
 source "$NEEDLE_ROOT_DIR/src/agent/loader.sh"
+source "$NEEDLE_ROOT_DIR/src/agent/dispatch.sh"
 
 # Source onboarding modules
 source "$NEEDLE_ROOT_DIR/src/onboarding/welcome.sh"
@@ -66,6 +67,7 @@ source "$NEEDLE_ROOT_DIR/src/cli/agents.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/heartbeat.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/attach.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/stop.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/test-agent.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/help.sh"
 
 # -----------------------------------------------------------------------------
@@ -83,7 +85,7 @@ NEEDLE_USE_COLOR="${NEEDLE_USE_COLOR:-true}"
 _needle_maybe_init() {
     # Commands that don't require initialization
     case "${1:-}" in
-        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop)
+        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop|test-agent)
             return 0
             ;;
     esac
@@ -110,7 +112,7 @@ _needle_parse_global_options() {
     # Check if a subcommand is present (first non-option arg that's a known subcommand)
     for arg in "$@"; do
         case "$arg" in
-            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop)
+            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop|test-agent)
                 has_subcommand=true
                 break
                 ;;
@@ -249,6 +251,9 @@ _needle_route_command() {
         stop)
             _needle_stop "$@"
             ;;
+        test-agent)
+            _needle_test_agent "$@"
+            ;;
         help|--help|-h)
             _needle_help "$@"
             ;;
@@ -279,7 +284,7 @@ _needle_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="init run list status config logs version upgrade rollback agents heartbeat attach stop help"
+    local commands="init run list status config logs version upgrade rollback agents heartbeat attach stop test-agent help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
@@ -309,6 +314,7 @@ _needle() {
         'heartbeat:Manage worker heartbeat and recovery'
         'attach:Attach to worker tmux sessions'
         'stop:Stop running workers'
+        'test-agent:Test agent adapter configuration'
         'help:Show help information'
     )
 
