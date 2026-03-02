@@ -122,14 +122,87 @@ load_config() {
     echo "$NEEDLE_CONFIG_CACHE"
 }
 
+# Convert YAML to JSON using Python (fallback when yq not available)
+# Usage: _needle_yaml_to_json <file>
+_needle_yaml_to_json() {
+    local config_file="$1"
+
+    if [[ ! -f "$config_file" ]]; then
+        echo "{}"
+        return 1
+    fi
+
+    python3 -c "
+import yaml
+import json
+import sys
+
+try:
+    with open('$config_file', 'r') as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        data = {}
+
+    print(json.dumps(data))
+except Exception as e:
+    print(f'Error: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>/dev/null
+}
+
 # Simple YAML merge fallback (without yq)
-# Parses basic key:value pairs and updates defaults
+# Uses Python to properly merge YAML with defaults
 _needle_simple_yaml_merge() {
     local config_file="$1"
+
+    # Check if Python PyYAML is available
+    if python3 -c "import yaml" 2>/dev/null; then
+        # Use Python for proper YAML parsing and merging
+        # Pass defaults via stdin to avoid shell escaping issues
+        python3 -c "
+import yaml
+import json
+import sys
+
+# Read defaults from environment
+defaults_json = '''$_NEEDLE_CONFIG_DEFAULTS'''
+
+try:
+    defaults = json.loads(defaults_json)
+except:
+    defaults = {}
+
+def deep_merge(base, override):
+    '''Recursively merge override into base'''
+    result = dict(base)
+    for key, value in override.items():
+        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+            result[key] = deep_merge(result[key], value)
+        else:
+            result[key] = value
+    return result
+
+try:
+    with open('$config_file', 'r') as f:
+        user_config = yaml.safe_load(f)
+
+    if user_config is None:
+        user_config = {}
+
+    merged = deep_merge(defaults, user_config)
+    print(json.dumps(merged))
+except Exception as e:
+    # On error, just return defaults
+    print(json.dumps(defaults))
+" 2>/dev/null
+        return $?
+    fi
+
+    # Fallback to simple string-based merge (limited)
     local result="$_NEEDLE_CONFIG_DEFAULTS"
 
     # Read simple top-level settings and update
-    # This is a simplified implementation for basic configs
     while IFS= read -r line; do
         # Skip comments and empty lines
         [[ "$line" =~ ^[[:space:]]*# ]] && continue
@@ -145,7 +218,6 @@ _needle_simple_yaml_merge() {
             value="${value%\"}"
 
             # Update JSON using simple string replacement
-            # Note: This is limited to top-level keys
             case "$key" in
                 global_max_concurrent|timeout|max_workers)
                     if [[ "$value" =~ ^[0-9]+$ ]]; then
@@ -155,19 +227,36 @@ _needle_simple_yaml_merge() {
                 polling_interval|idle_timeout)
                     result=$(echo "$result" | sed "s/\"$key\":[^,}]*/\"$key\": \"$value\"/")
                     ;;
-                log_level|editor|timezone)
-                    result=$(echo "$result" | sed "s/\"$key\":[^,}]*/\"$key\": \"$value\"/")
-                    ;;
-                experimental|parallel)
-                    if [[ "$value" == "true" || "$value" == "false" ]]; then
-                        result=$(echo "$result" | sed "s/\"$key\":[^,}]*/\"$key\": $value/")
-                    fi
-                    ;;
             esac
         fi
     done < "$config_file"
 
     echo "$result"
+}
+
+# Convert dot-notation path to jq bracket notation
+# Handles keys with hyphens by converting to bracket notation
+# Example: "limits.models.claude-anthropic-opus.max_concurrent"
+#   -> ".limits.models[\"claude-anthropic-opus\"].max_concurrent"
+_needle_path_to_jq() {
+    local path="$1"
+    local jq_path=""
+    local IFS='.'
+
+    read -ra parts <<< "$path"
+    for part in "${parts[@]}"; do
+        if [[ -z "$part" ]]; then
+            continue
+        fi
+        # Check if part contains hyphen (or other special chars)
+        if [[ "$part" == *-* ]] || [[ "$part" == *" "* ]]; then
+            jq_path="${jq_path}[\"$part\"]"
+        else
+            jq_path="${jq_path}.$part"
+        fi
+    done
+
+    echo "$jq_path"
 }
 
 # Get config value with default fallback
@@ -182,9 +271,11 @@ get_config() {
     if _needle_has_yq; then
         value=$(load_config | yq ".$key" 2>/dev/null)
     else
-        # Fallback: simple JSON parsing with jq or grep
+        # Fallback: simple JSON parsing with jq
         if command -v jq &>/dev/null; then
-            value=$(load_config | jq -r ".$key" 2>/dev/null)
+            local jq_path
+            jq_path=$(_needle_path_to_jq "$key")
+            value=$(load_config | jq -r "$jq_path" 2>/dev/null)
         else
             # Very basic fallback - extract from JSON using grep/sed
             value=$(_needle_json_get ".$key")
