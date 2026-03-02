@@ -194,6 +194,18 @@ _needle_run() {
     _needle_verbose "Workers: $workers"
     _needle_verbose "Force: $force"
 
+    # Start watchdog monitor (ensures it's running)
+    # The watchdog monitors worker heartbeats and recovers stuck workers
+    if [[ "$dry_run" != "true" ]]; then
+        # Source watchdog monitor module
+        if [[ -f "${NEEDLE_LIB_DIR:-}/watchdog/monitor.sh" ]]; then
+            source "${NEEDLE_LIB_DIR:-}/watchdog/monitor.sh"
+            _needle_ensure_watchdog
+        else
+            _needle_warn "Watchdog module not found, skipping watchdog startup"
+        fi
+    fi
+
     # TODO: Implement actual workflow execution
     _needle_warn "Workflow execution not yet implemented"
     _needle_info "This is a stub for the 'run' subcommand"

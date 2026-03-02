@@ -494,6 +494,28 @@ _needle_event_effort_recorded() {
 }
 
 # ============================================================================
+# Budget Events (Budget Enforcement)
+# ============================================================================
+
+# Emit budget.warning event
+# Usage: _needle_event_budget_warning [daily_spend_usd=...] [daily_limit_usd=...] [threshold=...] [key=value ...]
+_needle_event_budget_warning() {
+    _needle_telemetry_emit "budget.warning" "$@"
+}
+
+# Emit budget.exceeded event
+# Usage: _needle_event_budget_exceeded [daily_spend_usd=...] [daily_limit_usd=...] [key=value ...]
+_needle_event_budget_exceeded() {
+    _needle_telemetry_emit "budget.exceeded" "$@"
+}
+
+# Emit budget.per_bead_exceeded event
+# Usage: _needle_event_budget_per_bead_exceeded [bead_cost_usd=...] [bead_limit_usd=...] [bead_id=...] [key=value ...]
+_needle_event_budget_per_bead_exceeded() {
+    _needle_telemetry_emit "budget.per_bead_exceeded" "$@"
+}
+
+# ============================================================================
 # Event Category Listing
 # ============================================================================
 
@@ -539,6 +561,9 @@ error.claim_failed
 error.agent_crash
 error.timeout
 effort.recorded
+budget.warning
+budget.exceeded
+budget.per_bead_exceeded
 EOF
 }
 

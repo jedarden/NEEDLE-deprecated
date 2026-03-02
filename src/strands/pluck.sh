@@ -7,6 +7,16 @@
 # This strand searches for work in the configured primary workspaces.
 # It is the highest priority strand and should be checked first.
 #
+# Flow:
+#   1. Get configured workspaces (or use provided workspace)
+#   2. For each workspace, attempt to claim a bead atomically
+#   3. Run mitosis check on claimed bead
+#   4. If mitosis triggered, split and release (fallthrough)
+#   5. If atomic, build prompt and dispatch to agent
+#   6. Capture output and exit code
+#   7. Mark bead complete or failed
+#   8. Emit telemetry events throughout
+#
 # Usage:
 #   _needle_strand_pluck <workspace> <agent>
 #
@@ -14,19 +24,439 @@
 #   0 - Work was found and processed
 #   1 - No work found (fallthrough to next strand)
 
+# Source dependencies (if not already loaded)
+if [[ -z "${_NEEDLE_OUTPUT_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/output.sh"
+fi
+
+if [[ -z "${_NEEDLE_CONFIG_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/config.sh"
+fi
+
+if [[ -z "${_NEEDLE_CONSTANTS_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/constants.sh"
+fi
+
+# Source bead modules
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../bead/claim.sh"
+fi
+
+if [[ -z "${_NEEDLE_MITOSIS_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../bead/mitosis.sh"
+fi
+
+if [[ -z "${_NEEDLE_PROMPT_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../bead/prompt.sh"
+fi
+
+# Source agent modules
+if [[ -z "${_NEEDLE_DISPATCH_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../agent/dispatch.sh"
+fi
+
+# Source telemetry
+if [[ -z "${_NEEDLE_TELEMETRY_EVENTS_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/events.sh"
+fi
+
+# ============================================================================
+# Configuration Helpers
+# ============================================================================
+
+# Get list of configured workspaces
+# Falls back to the provided workspace if no config
+#
+# Usage: _needle_pluck_get_workspaces [fallback_workspace]
+# Returns: Newline-separated list of workspace paths
+_needle_pluck_get_workspaces() {
+    local fallback="${1:-}"
+    local workspaces=""
+
+    # Try to get workspaces from config
+    # Config may have workspaces as an array or the provided workspace
+    local config_workspaces
+    config_workspaces=$(get_config "workspaces" "" 2>/dev/null)
+
+    if [[ -n "$config_workspaces" ]] && [[ "$config_workspaces" != "null" ]]; then
+        # Check if it's a JSON array
+        if [[ "$config_workspaces" == "["* ]]; then
+            # Parse JSON array
+            workspaces=$(echo "$config_workspaces" | jq -r '.[]' 2>/dev/null)
+        else
+            # Single workspace or comma-separated
+            workspaces=$(echo "$config_workspaces" | tr ',' '\n')
+        fi
+    fi
+
+    # If no configured workspaces, use fallback
+    if [[ -z "$workspaces" ]] && [[ -n "$fallback" ]]; then
+        echo "$fallback"
+        return 0
+    fi
+
+    # Validate workspaces exist and return
+    local valid_workspaces=()
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+        # Expand path and check existence
+        local expanded="${ws/#\~/$HOME}"
+        if [[ -d "$expanded" ]]; then
+            valid_workspaces+=("$expanded")
+        else
+            _needle_debug "Workspace path does not exist: $ws"
+        fi
+    done <<< "$workspaces"
+
+    printf '%s\n' "${valid_workspaces[@]}"
+}
+
+# ============================================================================
+# Bead Processing Functions
+# ============================================================================
+
+# Process a claimed bead: mitosis check, dispatch, completion
+#
+# Usage: _needle_pluck_process_bead <bead_id> <workspace> <agent>
+# Returns: 0 on success, 1 on failure
+_needle_pluck_process_bead() {
+    local bead_id="$1"
+    local workspace="$2"
+    local agent="$3"
+
+    _needle_debug "Processing bead: $bead_id in workspace: $workspace"
+
+    # Get bead details for title (needed for dispatch)
+    local bead_json bead_title
+    bead_json=$(br show "$bead_id" --json 2>/dev/null)
+
+    if [[ -z "$bead_json" ]] || [[ "$bead_json" == "null" ]]; then
+        _needle_error "Could not retrieve bead details: $bead_id"
+        return 1
+    fi
+
+    # Handle array or single object response
+    local bead_object
+    if echo "$bead_json" | jq -e 'type == "array"' &>/dev/null; then
+        bead_object=$(echo "$bead_json" | jq -c '.[0]')
+    else
+        bead_object="$bead_json"
+    fi
+
+    bead_title=$(echo "$bead_object" | jq -r '.title // "Untitled Task"')
+
+    # Emit bead claimed event
+    _needle_event_bead_claimed "$bead_id" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "title=$bead_title"
+
+    # Step 1: Check mitosis
+    _needle_debug "Checking mitosis for bead: $bead_id"
+    _needle_event_bead_mitosis_check "$bead_id"
+
+    if _needle_check_mitosis "$bead_id" "$workspace" "$agent"; then
+        # Mitosis performed - bead was split into children
+        # The mitosis module handles:
+        # - Creating child beads
+        # - Setting parent blocked by children
+        # - Releasing parent claim
+        # - Emitting mitosis events
+
+        _needle_info "Mitosis performed on $bead_id, children created"
+        _needle_event_bead_released "$bead_id" "reason=mitosis"
+
+        # Mitosis is considered "work done" - return success
+        # The children will be picked up in subsequent cycles
+        return 0
+    fi
+
+    # Step 2: No mitosis - proceed with execution
+    _needle_debug "No mitosis needed, proceeding with execution: $bead_id"
+
+    # Step 3: Build prompt
+    _needle_debug "Building prompt for bead: $bead_id"
+    local prompt
+    prompt=$(_needle_build_prompt "$bead_id" "$workspace")
+
+    if [[ -z "$prompt" ]]; then
+        _needle_error "Failed to build prompt for bead: $bead_id"
+        _needle_mark_bead_failed "$bead_id" "prompt_build_failed"
+        return 1
+    fi
+
+    _needle_event_bead_prompt_built "$bead_id" \
+        "workspace=$workspace" \
+        "prompt_length=${#prompt}"
+
+    # Step 4: Dispatch to agent
+    _needle_debug "Dispatching to agent: $agent"
+    _needle_event_bead_agent_started "$bead_id" \
+        "agent=$agent" \
+        "workspace=$workspace"
+
+    local dispatch_result
+    dispatch_result=$(_needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title")
+
+    local dispatch_exit=$?
+    local exit_code duration output_file
+
+    if [[ $dispatch_exit -ne 0 ]] || [[ -z "$dispatch_result" ]]; then
+        _needle_error "Agent dispatch failed: $agent"
+        _needle_event_error_agent_crash \
+            "agent=$agent" \
+            "bead_id=$bead_id" \
+            "error=dispatch_failed"
+        _needle_mark_bead_failed "$bead_id" "agent_dispatch_failed"
+        return 1
+    fi
+
+    # Parse dispatch result
+    IFS='|' read -r exit_code duration output_file <<< "$dispatch_result"
+
+    _needle_debug "Agent completed: exit_code=$exit_code, duration=${duration}ms"
+
+    # Step 5: Check exit code and mark bead appropriately
+    if [[ "$exit_code" -eq 0 ]]; then
+        # Success - mark bead as closed
+        _needle_mark_bead_completed "$bead_id" "$output_file" "$duration"
+        return 0
+    else
+        # Failure - mark bead as blocked/failed
+        _needle_mark_bead_failed "$bead_id" "exit_code_$exit_code" "$output_file"
+        return 1
+    fi
+}
+
+# Mark a bead as successfully completed
+#
+# Usage: _needle_mark_bead_completed <bead_id> [output_file] [duration_ms]
+_needle_mark_bead_completed() {
+    local bead_id="$1"
+    local output_file="${2:-}"
+    local duration="${3:-0}"
+
+    _needle_debug "Marking bead as completed: $bead_id"
+
+    # Update bead status to closed
+    if br update "$bead_id" --status closed 2>/dev/null; then
+        _needle_success "Bead completed: $bead_id (duration: ${duration}ms)"
+
+        _needle_event_bead_completed "$bead_id" \
+            "duration_ms=$duration" \
+            "output_file=$output_file"
+
+        # Record effort if we have duration
+        if [[ -n "$duration" ]] && [[ "$duration" -gt 0 ]]; then
+            _needle_event_effort_recorded "$bead_id" \
+                "duration_ms=$duration"
+        fi
+
+        return 0
+    else
+        _needle_warn "Failed to mark bead as closed: $bead_id"
+        return 1
+    fi
+}
+
+# Mark a bead as failed/blocked
+#
+# Usage: _needle_mark_bead_failed <bead_id> [reason] [output_file]
+_needle_mark_bead_failed() {
+    local bead_id="$1"
+    local reason="${2:-unknown}"
+    local output_file="${3:-}"
+
+    _needle_debug "Marking bead as failed: $bead_id (reason: $reason)"
+
+    # Update bead status to blocked with failed label
+    if br update "$bead_id" --status blocked --label failed --label "error:$reason" 2>/dev/null; then
+        _needle_warn "Bead failed: $bead_id (reason: $reason)"
+
+        _needle_event_bead_failed "$bead_id" \
+            "reason=$reason" \
+            "output_file=$output_file"
+
+        return 0
+    else
+        _needle_error "Failed to update bead status: $bead_id"
+        return 1
+    fi
+}
+
+# ============================================================================
+# Main Strand Entry Point
+# ============================================================================
+
+# Main pluck strand function
+# Searches for work in configured workspaces and processes it
+#
+# Usage: _needle_strand_pluck <workspace> <agent>
+# Arguments:
+#   workspace - The primary workspace path
+#   agent     - The agent identifier (e.g., "claude-anthropic-sonnet")
+#
+# Return values:
+#   0 - Work was found and processed
+#   1 - No work found (fallthrough to next strand)
 _needle_strand_pluck() {
     local workspace="$1"
     local agent="$2"
 
-    _needle_debug "pluck strand: checking for primary work in $workspace"
+    _needle_debug "pluck strand: checking for primary work"
 
-    # TODO: Implementation pending (nd-2gc)
-    # This is a stub that returns "no work found"
-    # The actual implementation will:
-    # 1. Read configured workspaces from config
-    # 2. Query for available beads in those workspaces
-    # 3. Select and claim a bead if available
-    # 4. Return 0 if work found, 1 if not
+    # Validate inputs
+    if [[ -z "$workspace" ]]; then
+        _needle_error "pluck strand: workspace is required"
+        return 1
+    fi
 
-    return 1  # No work found (stub)
+    if [[ -z "$agent" ]]; then
+        _needle_error "pluck strand: agent is required"
+        return 1
+    fi
+
+    # Get configured workspaces (with fallback to provided workspace)
+    local workspaces
+    workspaces=$(_needle_pluck_get_workspaces "$workspace")
+
+    if [[ -z "$workspaces" ]]; then
+        _needle_debug "pluck strand: no valid workspaces found"
+        return 1
+    fi
+
+    # Track whether we did any work across all workspaces
+    local work_done=false
+
+    # Iterate through workspaces looking for work
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+
+        _needle_verbose "pluck strand: checking workspace: $ws"
+
+        # Attempt to claim a bead from this workspace
+        local bead_id
+        bead_id=$(_needle_claim_bead --workspace "$ws" --actor "$NEEDLE_SESSION")
+
+        if [[ -z "$bead_id" ]]; then
+            _needle_verbose "pluck strand: no claimable beads in $ws"
+            continue
+        fi
+
+        _needle_info "Claimed bead: $bead_id from $ws"
+
+        # Process the claimed bead
+        if _needle_pluck_process_bead "$bead_id" "$ws" "$agent"; then
+            work_done=true
+            # Return immediately on success - one bead at a time
+            return 0
+        else
+            # Processing failed, but we did find work
+            # Continue to next workspace or return with failure
+            _needle_warn "Bead processing failed: $bead_id"
+            work_done=true
+            # Don't return here - the failure was recorded
+            # Let fallthrough happen naturally
+        fi
+
+    done <<< "$workspaces"
+
+    if $work_done; then
+        # We found and attempted work (even if it failed)
+        return 0
+    fi
+
+    # No work found in any workspace
+    _needle_debug "pluck strand: no work found in configured workspaces"
+    return 1
 }
+
+# ============================================================================
+# Utility Functions
+# ============================================================================
+
+# Check if pluck strand is enabled
+# Usage: _needle_pluck_is_enabled
+# Returns: 0 if enabled, 1 if disabled
+_needle_pluck_is_enabled() {
+    local enabled
+    enabled=$(get_config "strands.pluck" "true" 2>/dev/null)
+
+    case "$enabled" in
+        true|True|TRUE|yes|Yes|YES|1)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Get statistics about the pluck strand
+# Usage: _needle_pluck_stats
+# Returns: JSON object with stats
+_needle_pluck_stats() {
+    local workspaces
+    workspaces=$(_needle_pluck_get_workspaces)
+
+    local ws_count=0
+    if [[ -n "$workspaces" ]]; then
+        ws_count=$(echo "$workspaces" | wc -l)
+    fi
+
+    _needle_json_object \
+        "configured_workspaces=$ws_count" \
+        "strand=pluck" \
+        "priority=1"
+}
+
+# ============================================================================
+# Direct Execution Support (for testing)
+# ============================================================================
+
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    case "${1:-}" in
+        run)
+            if [[ $# -lt 3 ]]; then
+                echo "Usage: $0 run <workspace> <agent>"
+                exit 1
+            fi
+            _needle_strand_pluck "$2" "$3"
+            exit $?
+            ;;
+        workspaces)
+            _needle_pluck_get_workspaces "${2:-}"
+            ;;
+        stats)
+            _needle_pluck_stats | jq .
+            ;;
+        process)
+            if [[ $# -lt 4 ]]; then
+                echo "Usage: $0 process <bead_id> <workspace> <agent>"
+                exit 1
+            fi
+            _needle_pluck_process_bead "$2" "$3" "$4"
+            exit $?
+            ;;
+        -h|--help)
+            echo "Usage: $0 <command> [args]"
+            echo ""
+            echo "Commands:"
+            echo "  run <workspace> <agent>        Run the pluck strand"
+            echo "  workspaces [fallback]          List configured workspaces"
+            echo "  stats                          Show strand statistics"
+            echo "  process <bead> <ws> <agent>    Process a specific bead"
+            echo ""
+            echo "The pluck strand:"
+            echo "  1. Claims beads atomically from configured workspaces"
+            echo "  2. Checks for mitosis (splits complex beads)"
+            echo "  3. Dispatches to agent for execution"
+            echo "  4. Marks beads complete or failed"
+            ;;
+        *)
+            echo "Unknown command: ${1:-}"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+fi
