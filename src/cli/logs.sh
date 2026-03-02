@@ -68,29 +68,59 @@ _needle_logs() {
                 follow=true
                 shift
                 ;;
-            -n|--lines)
-                lines="$2"
-                shift 2
+            -n|--lines|--lines=*)
+                if [[ "$1" == *=* ]]; then
+                    lines="${1#*=}"
+                    shift
+                else
+                    lines="$2"
+                    shift 2
+                fi
                 ;;
-            --since)
-                since="$2"
-                shift 2
+            --since|--since=*)
+                if [[ "$1" == *=* ]]; then
+                    since="${1#*=}"
+                    shift
+                else
+                    since="$2"
+                    shift 2
+                fi
                 ;;
-            --until)
-                until="$2"
-                shift 2
+            --until|--until=*)
+                if [[ "$1" == *=* ]]; then
+                    until="${1#*=}"
+                    shift
+                else
+                    until="$2"
+                    shift 2
+                fi
                 ;;
-            --event)
-                event_filter="$2"
-                shift 2
+            --event|--event=*)
+                if [[ "$1" == *=* ]]; then
+                    event_filter="${1#*=}"
+                    shift
+                else
+                    event_filter="$2"
+                    shift 2
+                fi
                 ;;
-            --bead)
-                bead_filter="$2"
-                shift 2
+            --bead|--bead=*)
+                if [[ "$1" == *=* ]]; then
+                    bead_filter="${1#*=}"
+                    shift
+                else
+                    bead_filter="$2"
+                    shift 2
+                fi
                 ;;
-            --strand)
-                strand_filter="$2"
-                shift 2
+            --strand|--strand=*)
+                if [[ "$1" == *=* ]]; then
+                    strand_filter="${1#*=}"
+                    shift
+                else
+                    strand_filter="$2"
+                    shift 2
+                fi
                 ;;
             --raw)
                 raw=true
