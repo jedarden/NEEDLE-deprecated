@@ -67,6 +67,7 @@ source "$NEEDLE_ROOT_DIR/src/cli/agents.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/heartbeat.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/attach.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/stop.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/restart.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/test-agent.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/help.sh"
 
@@ -112,7 +113,7 @@ _needle_parse_global_options() {
     # Check if a subcommand is present (first non-option arg that's a known subcommand)
     for arg in "$@"; do
         case "$arg" in
-            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop|test-agent)
+            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop|restart|test-agent)
                 has_subcommand=true
                 break
                 ;;
@@ -251,6 +252,9 @@ _needle_route_command() {
         stop)
             _needle_stop "$@"
             ;;
+        restart)
+            _needle_restart "$@"
+            ;;
         test-agent)
             _needle_test_agent "$@"
             ;;
@@ -284,7 +288,7 @@ _needle_completion() {
     local cur prev words cword
     _init_completion || return
 
-    local commands="init run list status config logs version upgrade rollback agents heartbeat attach stop test-agent help"
+    local commands="init run list status config logs version upgrade rollback agents heartbeat attach stop restart test-agent help"
 
     if [[ $cword -eq 1 ]]; then
         COMPREPLY=($(compgen -W "$commands" -- "$cur"))
