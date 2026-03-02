@@ -1,0 +1,40 @@
+# NEEDLE Agent Configuration: OpenCode with Ollama DeepSeek
+# This configuration defines how NEEDLE invokes OpenCode with local Ollama
+
+# Agent metadata
+name: opencode-ollama-deepseek
+description: OpenCode with Ollama DeepSeek model (local inference)
+version: "1.0"
+
+# CLI identification
+runner: opencode        # CLI executable name
+provider: ollama        # Provider for rate limiting (local, no limit)
+model: deepseek        # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}
+invoke: |
+  cd ${WORKSPACE} && \
+  OPENCODE_PROVIDER=ollama \
+  OPENCODE_MODEL=deepseek-coder:latest \
+  opencode --non-interactive \
+           --output json \
+  <<'NEEDLE_PROMPT'
+  ${PROMPT}
+  NEEDLE_PROMPT
+
+# Input method
+input:
+  method: heredoc      # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: json         # json | text | structured
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits (local model, high concurrency possible)
+limits:
+  requests_per_minute: 120
+  max_concurrent: 10

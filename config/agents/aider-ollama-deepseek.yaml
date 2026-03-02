@@ -1,0 +1,39 @@
+# NEEDLE Agent Configuration: Aider with Ollama DeepSeek
+# This configuration defines how NEEDLE invokes Aider with local model
+
+# Agent metadata
+name: aider-ollama-deepseek
+description: Aider with Ollama DeepSeek model (local inference)
+version: "1.0"
+
+# CLI identification
+runner: aider           # CLI executable name
+provider: ollama        # Provider for rate limiting (local)
+model: deepseek        # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}
+invoke: |
+  cd ${WORKSPACE} && \
+  AIDER_MODEL=ollama:deepseek-coder:latest \
+  aider --yes-always \
+        --no-pretty \
+        --message \
+  "${PROMPT}"
+
+# Input method
+input:
+  method: args          # heredoc | stdin | file | args
+  arg_flag: --message   # Flag for passing prompt as argument
+
+# Output parsing
+output:
+  format: text          # json | text | structured
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits (local model, high concurrency possible)
+limits:
+  requests_per_minute: 120
+  max_concurrent: 10

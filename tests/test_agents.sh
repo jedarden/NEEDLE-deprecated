@@ -164,7 +164,8 @@ fi
 test_case "_needle_get_installed_agents returns empty or space-separated list"
 installed=$(_needle_get_installed_agents)
 # This should not fail - it returns what's actually installed
-if [[ -z "$installed" ]] || [[ "$installed" =~ ^[a-z]+(\s[a-z]+)*$ ]]; then
+# Accept empty string or space-separated lowercase agent names
+if [[ -z "$installed" ]] || [[ "$installed" =~ ^[a-z]+([[:space:]][a-z]+)*$ ]]; then
     test_pass
 else
     test_fail "Expected empty or space-separated agent names, got '$installed'"
@@ -174,7 +175,8 @@ fi
 test_case "_needle_get_authenticated_agents returns proper format"
 authenticated=$(_needle_get_authenticated_agents)
 # This should not fail - it returns what's actually authenticated
-if [[ -z "$authenticated" ]] || [[ "$authenticated" =~ ^[a-z]+(\s[a-z]+)*$ ]]; then
+# Accept empty string or space-separated lowercase agent names
+if [[ -z "$authenticated" ]] || [[ "$authenticated" =~ ^[a-z]+([[:space:]][a-z]+)*$ ]]; then
     test_pass
 else
     test_fail "Expected empty or space-separated agent names, got '$authenticated'"

@@ -1,0 +1,39 @@
+# NEEDLE Agent Configuration: OpenCode with Alibaba Qwen
+# This configuration defines how NEEDLE invokes OpenCode with Qwen model
+
+# Agent metadata
+name: opencode-alibaba-qwen
+description: OpenCode with Alibaba Qwen model
+version: "1.0"
+
+# CLI identification
+runner: opencode        # CLI executable name
+provider: alibaba       # Provider for rate limiting
+model: qwen            # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}
+invoke: |
+  cd ${WORKSPACE} && \
+  OPENCODE_MODEL=qwen-max \
+  opencode --non-interactive \
+           --output json \
+  <<'NEEDLE_PROMPT'
+  ${PROMPT}
+  NEEDLE_PROMPT
+
+# Input method
+input:
+  method: heredoc      # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: json         # json | text | structured
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits
+limits:
+  requests_per_minute: 60
+  max_concurrent: 5
