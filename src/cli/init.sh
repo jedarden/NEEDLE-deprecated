@@ -64,7 +64,8 @@ _needle_init() {
         esac
     done
 
-    _needle_header "Initializing NEEDLE"
+    # Show welcome banner
+    _needle_welcome_init
 
     # Check if already initialized
     if _needle_is_initialized && [[ "$force" != "true" ]]; then
@@ -72,6 +73,8 @@ _needle_init() {
         _needle_info "Use --force to reinitialize"
         exit $NEEDLE_EXIT_SUCCESS
     fi
+
+    _needle_header "Initializing NEEDLE"
 
     # Create NEEDLE home directory
     if [[ ! -d "$NEEDLE_HOME" ]]; then
@@ -123,8 +126,6 @@ EOF
 
     _needle_success "Created README"
 
-    _needle_print ""
-    _needle_success "NEEDLE initialized successfully!"
-    _needle_info "Configuration: $NEEDLE_HOME/$NEEDLE_CONFIG_FILE"
-    _needle_info "Run 'needle help' to see available commands"
+    # Show completion message with quick start guide
+    _needle_welcome_complete
 }

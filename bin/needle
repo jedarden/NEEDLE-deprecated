@@ -35,6 +35,7 @@ source "$NEEDLE_ROOT_DIR/src/lib/config.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/utils.sh"
 
 # Source onboarding modules
+source "$NEEDLE_ROOT_DIR/src/onboarding/welcome.sh"
 source "$NEEDLE_ROOT_DIR/src/onboarding/agents.sh"
 
 # Source CLI subcommands
