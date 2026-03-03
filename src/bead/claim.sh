@@ -310,10 +310,14 @@ _needle_claim_bead() {
 #
 # Example:
 #   _needle_release_bead nd-123 --reason "blocked by dependency" --actor worker-alpha
+#
+# NOTE: Uses SQL fallback because br CLI has CHECK constraint bug that prevents
+# setting status='open' while claimed_by is set. The SQL directly clears all
+# claim fields atomically.
 _needle_release_bead() {
     local bead_id=""
     local reason="released"
-    local actor=""
+    local actor="${NEEDLE_SESSION:-unknown}"
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -347,24 +351,90 @@ _needle_release_bead() {
 
     _needle_debug "Releasing bead $bead_id: $reason"
 
-    # Release via br update --release
-    local br_cmd="br update \"$bead_id\" --release --reason \"$reason\""
-    if [[ -n "$actor" ]]; then
-        br_cmd="br update \"$bead_id\" --release --reason \"$reason\" --actor \"$actor\""
+    # Determine workspace database path
+    local db_path="${NEEDLE_WORKSPACE:-$(pwd)}/.beads/beads.db"
+
+    # Try SQL-based release first (works around br CLI CHECK constraint bug)
+    # Method 1: sqlite3 CLI
+    if command -v sqlite3 &>/dev/null && [[ -f "$db_path" ]]; then
+        local sql_result
+        sql_result=$(sqlite3 "$db_path" \
+            "UPDATE issues SET
+                status = 'open',
+                assignee = NULL,
+                claimed_by = NULL,
+                claim_timestamp = NULL
+             WHERE id = '$bead_id' AND status = 'in_progress';
+             SELECT changes();" 2>&1)
+
+        if [[ "$sql_result" =~ ^[1-9][0-9]*$ ]] || [[ "$sql_result" == "1" ]]; then
+            # Emit telemetry
+            _needle_event_bead_released "$bead_id" \
+                "reason=$reason" \
+                "actor=$actor" \
+                "method=sql_sqlite3"
+
+            _needle_info "Released bead: $bead_id ($reason) via sqlite3"
+            return 0
+        else
+            _needle_debug "sqlite3 release returned: $sql_result (may already be released)"
+        fi
     fi
 
-    if eval "$br_cmd" 2>/dev/null; then
+    # Method 2: Python sqlite3 (fallback when sqlite3 CLI not installed)
+    if command -v python3 &>/dev/null && [[ -f "$db_path" ]]; then
+        local py_result
+        py_result=$(python3 -c "
+import sqlite3
+conn = sqlite3.connect('$db_path')
+c = conn.cursor()
+c.execute('''UPDATE issues SET
+    status='open',
+    assignee=NULL,
+    claimed_by=NULL,
+    claim_timestamp=NULL
+    WHERE id='$bead_id' AND status='in_progress' ''')
+conn.commit()
+print(c.rowcount)
+" 2>&1)
+
+        if [[ "$py_result" == "1" ]]; then
+            # Emit telemetry
+            _needle_event_bead_released "$bead_id" \
+                "reason=$reason" \
+                "actor=$actor" \
+                "method=sql_python"
+
+            _needle_info "Released bead: $bead_id ($reason) via python3"
+            return 0
+        else
+            _needle_debug "python3 release returned: $py_result (may already be released)"
+        fi
+    fi
+
+    # Fallback: Try br CLI (may fail due to CHECK constraint bug)
+    if br update "$bead_id" --status open 2>/dev/null; then
         # Emit telemetry
         _needle_event_bead_released "$bead_id" \
             "reason=$reason" \
-            "actor=$actor"
+            "actor=$actor" \
+            "method=br_cli"
 
-        _needle_info "Released bead: $bead_id ($reason)"
+        _needle_info "Released bead: $bead_id ($reason) via br CLI"
         return 0
-    else
-        _needle_warn "Failed to release bead $bead_id"
-        return 1
     fi
+
+    # If both methods failed, check if bead is already released
+    local current_status
+    current_status=$(br show "$bead_id" --json 2>/dev/null | jq -r '.status // "unknown"')
+
+    if [[ "$current_status" != "in_progress" ]]; then
+        _needle_debug "Bead $bead_id already released (status=$current_status)"
+        return 0
+    fi
+
+    _needle_warn "Failed to release bead $bead_id (status=$current_status)"
+    return 1
 }
 
 # ============================================================================
