@@ -3,6 +3,51 @@
 # Structured JSONL event emission for monitoring, analysis, and debugging
 
 # ============================================================================
+# Dependency Check
+# ============================================================================
+# Ensure _needle_command_exists is available (fallback if utils.sh not loaded)
+if ! declare -f _needle_command_exists &>/dev/null; then
+    _needle_command_exists() {
+        command -v "$1" &>/dev/null
+    }
+fi
+
+# Ensure _needle_json_escape is available (fallback if json.sh not loaded)
+if ! declare -f _needle_json_escape &>/dev/null; then
+    _needle_json_escape() {
+        local str="$1"
+        str="${str//\\/\\\\}"    # Escape backslashes first
+        str="${str//\"/\\\"}"    # Escape double quotes
+        str="${str//$'\n'/\\n}"  # Escape newlines
+        str="${str//$'\r'/\\r}"  # Escape carriage returns
+        str="${str//$'\t'/\\t}"  # Escape tabs
+        printf '%s' "$str"
+    }
+fi
+
+# Ensure _needle_json_object is available (fallback if json.sh not loaded)
+if ! declare -f _needle_json_object &>/dev/null; then
+    _needle_json_object() {
+        local result="{"
+        local first=true
+        while [[ $# -gt 0 ]]; do
+            if [[ "$1" == *=* ]]; then
+                local key="${1%%=*}"
+                local value="${1#*=}"
+                if [[ "$first" != "true" ]]; then
+                    result+=","
+                fi
+                first=false
+                result+="\"$(_needle_json_escape "$key")\":\"$(_needle_json_escape "$value")\""
+            fi
+            shift
+        done
+        result+="}"
+        printf '%s' "$result"
+    }
+fi
+
+# ============================================================================
 # Event Envelope Structure
 # ============================================================================
 # All events share a common structure:
