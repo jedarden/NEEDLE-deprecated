@@ -33,6 +33,10 @@ if [[ -z "${_NEEDLE_JSON_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/json.sh"
 fi
 
+if [[ -z "${_NEEDLE_WORKSPACE_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/workspace.sh"
+fi
+
 # ============================================================================
 # Mitosis Configuration
 # ============================================================================
@@ -43,6 +47,7 @@ NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix,incident}"
 NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,single-task}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
+NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-100}"
 NEEDLE_MITOSIS_TIMEOUT="${NEEDLE_MITOSIS_TIMEOUT:-60}"
 
 # ============================================================================
@@ -50,14 +55,25 @@ NEEDLE_MITOSIS_TIMEOUT="${NEEDLE_MITOSIS_TIMEOUT:-60}"
 # ============================================================================
 
 # Get mitosis configuration value with fallback
-# Usage: _needle_mitosis_config <key> [default]
-# Example: _needle_mitosis_config "enabled" "true"
+# Supports workspace-level overrides via .needle.yaml
+# Usage: _needle_mitosis_config <key> [default] [workspace]
+# Example: _needle_mitosis_config "enabled" "true" "/home/user/project"
 _needle_mitosis_config() {
     local key="$1"
     local default="${2:-}"
+    local workspace="${3:-}"
     local value
 
-    # Try config file first
+    # If workspace is provided, try workspace config first (respects overrides)
+    if [[ -n "$workspace" ]] && [[ -f "$workspace/.needle.yaml" ]]; then
+        value=$(get_workspace_setting "$workspace" "mitosis.$key" 2>/dev/null)
+        if [[ "$value" != "null" ]] && [[ -n "$value" ]]; then
+            echo "$value"
+            return 0
+        fi
+    fi
+
+    # Fall back to global config file
     value=$(get_config "mitosis.$key" 2>/dev/null)
 
     # Handle null/empty values
@@ -69,11 +85,12 @@ _needle_mitosis_config() {
 }
 
 # Check if mitosis is enabled
-# Usage: _needle_mitosis_is_enabled
+# Usage: _needle_mitosis_is_enabled [workspace]
 # Returns: 0 if enabled, 1 if disabled
 _needle_mitosis_is_enabled() {
+    local workspace="${1:-}"
     local enabled
-    enabled=$(_needle_mitosis_config "enabled" "$NEEDLE_MITOSIS_ENABLED")
+    enabled=$(_needle_mitosis_config "enabled" "$NEEDLE_MITOSIS_ENABLED" "$workspace")
 
     case "$enabled" in
         true|True|TRUE|yes|Yes|YES|1)
@@ -86,17 +103,27 @@ _needle_mitosis_is_enabled() {
 }
 
 # Get skip types list
-# Usage: _needle_mitosis_get_skip_types
+# Usage: _needle_mitosis_get_skip_types [workspace]
 # Returns: Comma-separated list of types to skip
 _needle_mitosis_get_skip_types() {
-    _needle_mitosis_config "skip_types" "$NEEDLE_MITOSIS_SKIP_TYPES"
+    local workspace="${1:-}"
+    _needle_mitosis_config "skip_types" "$NEEDLE_MITOSIS_SKIP_TYPES" "$workspace"
 }
 
 # Get skip labels list
-# Usage: _needle_mitosis_get_skip_labels
+# Usage: _needle_mitosis_get_skip_labels [workspace]
 # Returns: Comma-separated list of labels to skip
 _needle_mitosis_get_skip_labels() {
-    _needle_mitosis_config "skip_labels" "$NEEDLE_MITOSIS_SKIP_LABELS"
+    local workspace="${1:-}"
+    _needle_mitosis_config "skip_labels" "$NEEDLE_MITOSIS_SKIP_LABELS" "$workspace"
+}
+
+# Get min_complexity threshold
+# Usage: _needle_mitosis_get_min_complexity [workspace]
+# Returns: Minimum complexity (description lines) to consider mitosis
+_needle_mitosis_get_min_complexity() {
+    local workspace="${1:-}"
+    _needle_mitosis_config "min_complexity" "$NEEDLE_MITOSIS_MIN_COMPLEXITY" "$workspace"
 }
 
 # ============================================================================
@@ -138,8 +165,8 @@ _needle_check_mitosis() {
         return 1
     fi
 
-    # Check if mitosis is enabled globally
-    if ! _needle_mitosis_is_enabled; then
+    # Check if mitosis is enabled (respect workspace override)
+    if ! _needle_mitosis_is_enabled "$workspace"; then
         _needle_debug "Mitosis is disabled"
         return 1
     fi
@@ -162,23 +189,24 @@ _needle_check_mitosis() {
     fi
 
     # Extract bead properties
-    local bead_type labels
+    local bead_type labels description
     bead_type=$(echo "$bead_object" | jq -r '.type // .issue_type // "task"')
     labels=$(echo "$bead_object" | jq -r '.labels | if type == "array" then join(",") else . // "" end')
+    description=$(echo "$bead_object" | jq -r '.description // ""')
 
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
 
-    # Check if bead type should be skipped
+    # Check if bead type should be skipped (respect workspace override)
     local skip_types
-    skip_types=$(_needle_mitosis_get_skip_types)
+    skip_types=$(_needle_mitosis_get_skip_types "$workspace")
     if [[ -n "$skip_types" ]] && [[ ",$skip_types," == *",$bead_type,"* ]]; then
         _needle_debug "Skipping mitosis for bead type: $bead_type"
         return 1
     fi
 
-    # Check for skip labels
+    # Check for skip labels (respect workspace override)
     local skip_labels
-    skip_labels=$(_needle_mitosis_get_skip_labels)
+    skip_labels=$(_needle_mitosis_get_skip_labels "$workspace")
     if [[ -n "$labels" ]] && [[ -n "$skip_labels" ]]; then
         IFS=',' read -ra label_array <<< "$labels"
         IFS=',' read -ra skip_array <<< "$skip_labels"
@@ -191,6 +219,16 @@ _needle_check_mitosis() {
                 fi
             done
         done
+    fi
+
+    # Check minimum complexity (description lines)
+    local min_complexity description_lines
+    min_complexity=$(_needle_mitosis_get_min_complexity "$workspace")
+    description_lines=$(echo "$description" | wc -l)
+
+    if [[ "$description_lines" -lt "$min_complexity" ]]; then
+        _needle_debug "Skipping mitosis: description too short ($description_lines lines < $min_complexity minimum)"
+        return 1
     fi
 
     # Emit mitosis check event
@@ -225,7 +263,7 @@ _needle_check_mitosis() {
 # ============================================================================
 
 # Build the mitosis analysis prompt
-# Usage: _needle_build_mitosis_prompt <bead_id> <workspace>
+# Usage: _needle_build_mitosis_prompt <bead_id> <workspace> <bead_object>
 # Returns: Formatted prompt string
 _needle_build_mitosis_prompt() {
     local bead_id="$1"
@@ -237,9 +275,9 @@ _needle_build_mitosis_prompt() {
     title=$(echo "$bead_object" | jq -r '.title // "Untitled"')
     description=$(echo "$bead_object" | jq -r '.description // ""')
 
-    # Get max children config
+    # Get max children config (respect workspace override)
     local max_children
-    max_children=$(_needle_mitosis_config "max_children" "$NEEDLE_MITOSIS_MAX_CHILDREN")
+    max_children=$(_needle_mitosis_config "max_children" "$NEEDLE_MITOSIS_MAX_CHILDREN" "$workspace")
 
     cat <<MITOSIS_PROMPT
 # Mitosis Analysis Task
@@ -324,9 +362,9 @@ _needle_analyze_for_mitosis() {
     local prompt
     prompt=$(_needle_build_mitosis_prompt "$bead_id" "$workspace" "$bead_object")
 
-    # Get timeout from config
+    # Get timeout from config (respect workspace override)
     local timeout
-    timeout=$(_needle_mitosis_config "timeout" "$NEEDLE_MITOSIS_TIMEOUT")
+    timeout=$(_needle_mitosis_config "timeout" "$NEEDLE_MITOSIS_TIMEOUT" "$workspace")
 
     _needle_debug "Running mitosis analysis with agent: $agent (timeout: ${timeout}s)"
 
@@ -427,10 +465,11 @@ _needle_extract_json_from_output() {
 }
 
 # Heuristic-based mitosis analysis (fallback when agent unavailable)
-# Usage: _needle_heuristic_mitosis_analysis <bead_object>
+# Usage: _needle_heuristic_mitosis_analysis <bead_object> [workspace]
 # Returns: JSON analysis result
 _needle_heuristic_mitosis_analysis() {
     local bead_object="$1"
+    local workspace="${2:-}"
 
     local title description
     title=$(echo "$bead_object" | jq -r '.title // ""')
@@ -482,7 +521,7 @@ _needle_heuristic_mitosis_analysis() {
         # Build simple children based on split indicators
         # This is a simplified heuristic - real mitosis should use agent analysis
         local max_children
-        max_children=$(_needle_mitosis_config "max_children" "$NEEDLE_MITOSIS_MAX_CHILDREN")
+        max_children=$(_needle_mitosis_config "max_children" "$NEEDLE_MITOSIS_MAX_CHILDREN" "$workspace")
 
         # Limit children to max
         local child_count=$((split_indicators > max_children ? max_children : split_indicators))

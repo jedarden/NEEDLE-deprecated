@@ -12,3 +12,36 @@ strands:
   unravel: true
   pulse: true
   knot: true
+
+# Mitosis configuration for automatic bead decomposition
+# Mitosis splits complex beads into smaller, parallelizable subtasks
+mitosis:
+  # enabled: Enable/disable mitosis globally (default: true)
+  # When disabled, beads are never split regardless of complexity
+  enabled: true
+
+  # max_children: Maximum number of children per mitosis (default: 5)
+  # Limits how many subtasks a single bead can be split into
+  # Must be > 0 (validated on config load)
+  max_children: 5
+
+  # min_children: Minimum children required to perform mitosis (default: 2)
+  # If analysis suggests fewer children, mitosis is skipped
+  min_children: 2
+
+  # min_complexity: Minimum description length (lines) to consider mitosis (default: 100)
+  # Beads with shorter descriptions are considered atomic
+  # Set to 0 to disable complexity-based filtering
+  min_complexity: 100
+
+  # timeout: Timeout in seconds for mitosis analysis (default: 60)
+  # How long to wait for agent analysis before falling back to heuristics
+  timeout: 60
+
+  # skip_types: Bead types that should never be split (comma-separated)
+  # These types are processed as-is without mitosis consideration
+  skip_types: bug,hotfix,incident
+
+  # skip_labels: Labels that prevent mitosis (comma-separated)
+  # Beads with any of these labels will not be split
+  skip_labels: no-mitosis,atomic,single-task

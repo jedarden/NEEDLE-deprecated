@@ -53,6 +53,7 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "skip_labels": "no-mitosis,atomic,single-task",
     "max_children": 5,
     "min_children": 2,
+    "min_complexity": 100,
     "timeout": 60
   },
   "knot": {
@@ -146,6 +147,9 @@ mitosis:
 
   # min_children: Minimum children required to perform mitosis
   min_children: 2
+
+  # min_complexity: Minimum description length (lines) to consider mitosis
+  min_complexity: 100
 
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60
@@ -553,6 +557,9 @@ mitosis:
   # min_children: Minimum children required to perform mitosis
   min_children: 2
 
+  # min_complexity: Minimum description length (lines) to consider mitosis
+  min_complexity: 100
+
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60
 
@@ -608,6 +615,23 @@ validate_config() {
 
     if [[ ! "$daily_limit" =~ ^[0-9]+\.?[0-9]*$ ]] || [[ "$(echo "$daily_limit < 0" | bc 2>/dev/null || echo 0)" -eq 1 ]]; then
         _needle_error "Invalid effort.budget.daily_limit_usd: must be positive number"
+        return 1
+    fi
+
+    # Validate mitosis configuration
+    local mitosis_max_children
+    mitosis_max_children=$(get_config "mitosis.max_children" "5")
+
+    if [[ ! "$mitosis_max_children" =~ ^[0-9]+$ ]] || [[ "$mitosis_max_children" -lt 1 ]]; then
+        _needle_error "Invalid mitosis.max_children: must be positive integer > 0"
+        return 1
+    fi
+
+    local mitosis_min_complexity
+    mitosis_min_complexity=$(get_config "mitosis.min_complexity" "100")
+
+    if [[ ! "$mitosis_min_complexity" =~ ^[0-9]+$ ]] || [[ "$mitosis_min_complexity" -lt 0 ]]; then
+        _needle_error "Invalid mitosis.min_complexity: must be non-negative integer"
         return 1
     fi
 
