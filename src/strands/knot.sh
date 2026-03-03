@@ -71,19 +71,32 @@ _needle_strand_knot() {
 # 1. br ready --json (most accurate, accounts for dependencies)
 # 2. needle-ready tool (fallback with dependency status checking)
 # 3. Direct br list with comprehensive filtering (last resort)
+#
+# Implementation note (nd-1xl): Emits structured diagnostic event with verification
+# results before creating HUMAN alert to prevent false positives like nd-3eh.
 _needle_knot_verify_work_available() {
     local workspace="$1"
 
     _needle_debug "knot: running pre-flight verification for $workspace"
 
+    # Initialize diagnostic counters (for nd-1xl verification event)
+    local diag_br_ready_count=0
+    local diag_needle_ready_count=0
+    local diag_direct_count=0
+    local diag_any_open=0
+    local diag_claimed="?"
+    local diag_blocked="?"
+    local diag_deferred="?"
+    local diag_human_type="?"
+    local diag_has_deps="?"
+
     # Method 1: br ready --json (PRIMARY - most accurate)
     # This accounts for dependencies, claims, blocking, deferral, and human type
-    local ready_count
-    ready_count=$(cd "$workspace" 2>/dev/null && br ready --json 2>/dev/null | \
+    diag_br_ready_count=$(cd "$workspace" 2>/dev/null && br ready --json 2>/dev/null | \
         jq 'length' 2>/dev/null || echo "0")
 
-    if [[ "$ready_count" -gt 0 ]]; then
-        _needle_debug "knot: pre-flight found $ready_count claimable beads via br ready"
+    if [[ "$diag_br_ready_count" -gt 0 ]]; then
+        _needle_debug "knot: pre-flight found $diag_br_ready_count claimable beads via br ready"
         return 0  # Work available - DON'T create alert
     fi
 
@@ -91,60 +104,88 @@ _needle_knot_verify_work_available() {
     # needle-ready handles dependency status checking (nd-3jf fix)
     local needle_ready="$workspace/bin/needle-ready"
     if [[ -x "$needle_ready" ]]; then
-        ready_count=$("$needle_ready" --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+        diag_needle_ready_count=$("$needle_ready" --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
 
-        if [[ "$ready_count" -gt 0 ]]; then
-            _needle_debug "knot: pre-flight found $ready_count claimable beads via needle-ready"
+        if [[ "$diag_needle_ready_count" -gt 0 ]]; then
+            _needle_debug "knot: pre-flight found $diag_needle_ready_count claimable beads via needle-ready"
             return 0  # Work available - DON'T create alert
         fi
     fi
 
     # Method 3: Direct br list check with comprehensive filtering
     # Filters: open status, unclaimed, not blocked, not deferred, not HUMAN type
-    local direct_count
-    direct_count=$(cd "$workspace" 2>/dev/null && br list --status open --json 2>/dev/null | \
+    diag_direct_count=$(cd "$workspace" 2>/dev/null && br list --status open --json 2>/dev/null | \
         jq '[.[] | select(.claimed_by == null or .claimed_by == "") |
                    select(.blocked_by == null or .blocked_by == "") |
                    select(.deferred_until == null or .deferred_until == "") |
                    select(.issue_type == null or .issue_type != "human")] | length' 2>/dev/null || echo "0")
 
-    if [[ "$direct_count" -gt 0 ]]; then
-        _needle_debug "knot: pre-flight found $direct_count claimable beads via direct query"
+    if [[ "$diag_direct_count" -gt 0 ]]; then
+        _needle_debug "knot: pre-flight found $diag_direct_count claimable beads via direct query"
         return 0  # Work available - DON'T create alert
     fi
 
     # Method 4: Check for any open beads at all (diagnostic only)
-    local any_open
-    any_open=$(cd "$workspace" 2>/dev/null && br list --status open --json 2>/dev/null | \
+    diag_any_open=$(cd "$workspace" 2>/dev/null && br list --status open --json 2>/dev/null | \
         jq 'length' 2>/dev/null || echo "0")
 
-    if [[ "$any_open" -gt 0 ]]; then
+    if [[ "$diag_any_open" -gt 0 ]]; then
         # There are open beads but none are claimable
         # Log diagnostic info but don't alert (might be all claimed or blocked)
-        _needle_debug "knot: found $any_open open beads but none claimable - logging diagnostics"
+        _needle_debug "knot: found $diag_any_open open beads but none claimable - logging diagnostics"
 
         # Log why beads aren't claimable for debugging
-        local claimed blocked deferred human_type has_deps
-        claimed=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
+        diag_claimed=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
             jq '[.[] | select(.claimed_by != null and .claimed_by != "")] | length' 2>/dev/null || echo "?")
-        blocked=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
+        diag_blocked=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
             jq '[.[] | select(.blocked_by != null and .blocked_by != "")] | length' 2>/dev/null || echo "?")
-        deferred=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
+        diag_deferred=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
             jq '[.[] | select(.deferred_until != null and .deferred_until != "")] | length' 2>/dev/null || echo "?")
-        human_type=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
+        diag_human_type=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
             jq '[.[] | select(.issue_type == "human")] | length' 2>/dev/null || echo "?")
-        has_deps=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
+        diag_has_deps=$(cd "$workspace" && br list --status open --json 2>/dev/null | \
             jq '[.[] | select(.dependency_count != null and .dependency_count > 0)] | length' 2>/dev/null || echo "?")
 
-        _needle_debug "knot: bead status - claimed: $claimed, blocked: $blocked, deferred: $deferred, human: $human_type, has_deps: $has_deps"
+        _needle_debug "knot: bead status - claimed: $diag_claimed, blocked: $diag_blocked, deferred: $diag_deferred, human: $diag_human_type, has_deps: $diag_has_deps"
 
         # Still return 1 (no work available) since beads aren't claimable
         # But this is a legitimate reason, not a false positive
     fi
 
-    # No work available - proceed with alert
+    # No work available - emit verification diagnostics before proceeding (nd-1xl)
+    _needle_knot_emit_verification_diagnostics "$workspace" \
+        "br_ready=$diag_br_ready_count" \
+        "needle_ready=$diag_needle_ready_count" \
+        "direct_query=$diag_direct_count" \
+        "any_open=$diag_any_open" \
+        "claimed=$diag_claimed" \
+        "blocked=$diag_blocked" \
+        "deferred=$diag_deferred" \
+        "human_type=$diag_human_type" \
+        "has_deps=$diag_has_deps"
+
     _needle_debug "knot: pre-flight confirmed no claimable work available"
     return 1
+}
+
+# ============================================================================
+# Verification Diagnostics Emission (nd-1xl)
+# ============================================================================
+
+# Emit structured event with verification diagnostics before creating HUMAN alert
+# This provides a clear audit trail of what was checked and found, preventing
+# false positive alerts like nd-3eh where work was actually available.
+#
+# Usage: _needle_knot_emit_verification_diagnostics <workspace> [key=value ...]
+_needle_knot_emit_verification_diagnostics() {
+    local workspace="$1"
+    shift
+
+    # Emit the structured verification event
+    _needle_emit_event "knot.verification_diagnostic" \
+        "Starvation verification completed - diagnostic info before alert creation" \
+        "workspace=$workspace" \
+        "$@"
 }
 
 # ============================================================================

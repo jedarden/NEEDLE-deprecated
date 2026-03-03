@@ -327,6 +327,99 @@ else
 fi
 unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
 
+# Test 20: Verification diagnostics function emits event (nd-1xl)
+_test_start "Verification diagnostics function emits event"
+# Capture output from the diagnostics function (NEEDLE_VERBOSE=true outputs to stdout)
+output=$(_needle_knot_emit_verification_diagnostics "/test/workspace" \
+    "br_ready=0" \
+    "needle_ready=0" \
+    "direct_query=0" \
+    "any_open=5" \
+    "claimed=2" \
+    "blocked=1" \
+    "deferred=0" \
+    "human_type=1" \
+    "has_deps=1" 2>&1)
+
+# Check that event was emitted (appears in stdout when NEEDLE_VERBOSE=true)
+if echo "$output" | grep -q "knot.verification_diagnostic"; then
+    _test_pass "Verification diagnostics event was emitted"
+else
+    _test_fail "Verification diagnostics event was not emitted"
+fi
+
+# Test 21: Verification diagnostics includes all checked values (nd-1xl)
+_test_start "Verification diagnostics includes all checked values"
+
+# Call the diagnostics function with specific values
+output=$(_needle_knot_emit_verification_diagnostics "/test/workspace" \
+    "br_ready=3" \
+    "needle_ready=2" \
+    "direct_query=1" \
+    "any_open=10" \
+    "claimed=5" \
+    "blocked=2" \
+    "deferred=1" \
+    "human_type=1" \
+    "has_deps=3" 2>&1)
+
+# Check that all values are in the emitted event
+all_values_present=true
+for value in "br_ready.*3" "needle_ready.*2" "direct_query.*1" "any_open.*10" "claimed.*5" "blocked.*2" "deferred.*1" "human_type.*1" "has_deps.*3"; do
+    if ! echo "$output" | grep -q "$value"; then
+        all_values_present=false
+        break
+    fi
+done
+
+if [[ "$all_values_present" == "true" ]]; then
+    _test_pass "Verification diagnostics includes all checked values"
+else
+    _test_fail "Verification diagnostics missing some values"
+fi
+
+# Test 22: Pre-flight emits verification diagnostics when no work found (nd-1xl)
+_test_start "Pre-flight emits verification diagnostics when no work found"
+export MOCK_BR_READY_COUNT=""
+export MOCK_BR_LIST_DATA='[{"id":"nd-claimed-1","title":"Claimed bead","status":"open","priority":2,"claimed_by":"other-agent","blocked_by":"","deferred_until":"","issue_type":"task"}]'
+
+# Capture output from verification
+output=$(_needle_knot_verify_work_available "$TEST_WORKSPACE_DIR" 2>&1)
+result=$?
+
+# Check that verification found no claimable beads and emitted diagnostics
+if [[ $result -ne 0 ]]; then
+    # Check that diagnostic event was emitted
+    if echo "$output" | grep -q "knot.verification_diagnostic"; then
+        _test_pass "Pre-flight emitted verification diagnostics when no work found"
+    else
+        _test_fail "Pre-flight did not emit verification diagnostics"
+    fi
+else
+    _test_fail "Pre-flight incorrectly found claimable beads"
+fi
+unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
+
+# Test 23: Pre-flight does NOT emit diagnostics when work IS available (nd-1xl)
+_test_start "Pre-flight does NOT emit diagnostics when work IS available"
+export MOCK_BR_READY_COUNT=5
+
+# Capture output from verification (should find claimable beads)
+output=$(_needle_knot_verify_work_available "$TEST_WORKSPACE_DIR" 2>&1)
+result=$?
+
+if [[ $result -eq 0 ]]; then
+    # Check that diagnostic event was NOT emitted (since work was found)
+    if ! echo "$output" | grep -q "knot.verification_diagnostic"; then
+        _test_pass "Pre-flight did not emit diagnostics when work available"
+    else
+        _test_fail "Pre-flight incorrectly emitted diagnostics when work found"
+    fi
+else
+    _test_fail "Pre-flight failed to find claimable beads"
+fi
+unset MOCK_BR_READY_COUNT
+
 # Summary
 echo ""
 echo "=========================================="
