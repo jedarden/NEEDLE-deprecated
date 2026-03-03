@@ -79,6 +79,358 @@ NEEDLE_LOOP_DEFAULT_MAX_EMPTY="5"
 NEEDLE_LOOP_SHUTDOWN_GRACE_PERIOD="5"
 
 # ============================================================================
+# Backoff and Crash Recovery Configuration
+# ============================================================================
+
+# Backoff timing for repeated failures
+NEEDLE_BACKOFF_BASE_SECONDS=30
+NEEDLE_BACKOFF_MAX_SECONDS=120
+NEEDLE_BACKOFF_MULTIPLIER=2
+
+# Failure thresholds
+NEEDLE_BACKOFF_THRESHOLD=3       # Start backoff after this many failures
+NEEDLE_ALERT_THRESHOLD=5         # Alert human after this many failures
+NEEDLE_MAX_FAILURES=7            # Exit worker after this many failures
+
+# State variables (reset per-session)
+NEEDLE_FAILURE_COUNT=0
+NEEDLE_BACKOFF_SECONDS=0
+NEEDLE_LAST_FAILURE_TIME=""
+
+# ============================================================================
+# Backoff and Crash Recovery Functions
+# ============================================================================
+
+# Reset backoff state (call on successful bead completion)
+# Usage: _needle_reset_backoff
+_needle_reset_backoff() {
+    NEEDLE_FAILURE_COUNT=0
+    NEEDLE_BACKOFF_SECONDS=0
+    NEEDLE_LAST_FAILURE_TIME=""
+    _needle_debug "Backoff state reset (failure count cleared)"
+}
+
+# Increment backoff after a failure
+# Implements exponential backoff: 30s -> 60s -> 120s (max)
+# Usage: _needle_increment_backoff
+# Returns: Number of seconds to sleep (also stored in NEEDLE_BACKOFF_SECONDS)
+_needle_increment_backoff() {
+    ((NEEDLE_FAILURE_COUNT++))
+    NEEDLE_LAST_FAILURE_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+    _needle_debug "Failure count incremented to: $NEEDLE_FAILURE_COUNT"
+
+    # Calculate exponential backoff
+    if [[ $NEEDLE_FAILURE_COUNT -ge $NEEDLE_BACKOFF_THRESHOLD ]]; then
+        # Calculate backoff: base * (multiplier ^ (failures - threshold))
+        local exponent=$((NEEDLE_FAILURE_COUNT - NEEDLE_BACKOFF_THRESHOLD))
+        NEEDLE_BACKOFF_SECONDS=$((NEEDLE_BACKOFF_BASE_SECONDS * (NEEDLE_BACKOFF_MULTIPLIER ** exponent)))
+
+        # Cap at maximum
+        if [[ $NEEDLE_BACKOFF_SECONDS -gt $NEEDLE_BACKOFF_MAX_SECONDS ]]; then
+            NEEDLE_BACKOFF_SECONDS=$NEEDLE_BACKOFF_MAX_SECONDS
+        fi
+
+        _needle_warn "Backoff activated: ${NEEDLE_BACKOFF_SECONDS}s (failure #$NEEDLE_FAILURE_COUNT)"
+    else
+        NEEDLE_BACKOFF_SECONDS=0
+    fi
+
+    echo "$NEEDLE_BACKOFF_SECONDS"
+}
+
+# Check if worker should alert human for repeated failures
+# Usage: _needle_should_alert_human
+# Returns: 0 if should alert, 1 if not
+_needle_should_alert_human() {
+    [[ $NEEDLE_FAILURE_COUNT -ge $NEEDLE_ALERT_THRESHOLD ]]
+}
+
+# Check if worker should exit due to excessive failures
+# Usage: _needle_should_exit_worker
+# Returns: 0 if should exit, 1 if not
+_needle_should_exit_worker() {
+    [[ $NEEDLE_FAILURE_COUNT -ge $NEEDLE_MAX_FAILURES ]]
+}
+
+# Apply backoff delay if needed
+# Usage: _needle_apply_backoff
+_needle_apply_backoff() {
+    if [[ $NEEDLE_BACKOFF_SECONDS -gt 0 ]]; then
+        _needle_warn "Applying backoff: sleeping for ${NEEDLE_BACKOFF_SECONDS}s..."
+
+        # Emit backoff event for telemetry
+        _needle_telemetry_emit "worker.backoff" \
+            "failure_count=$NEEDLE_FAILURE_COUNT" \
+            "backoff_seconds=$NEEDLE_BACKOFF_SECONDS" \
+            "session=$NEEDLE_SESSION"
+
+        sleep "$NEEDLE_BACKOFF_SECONDS"
+    fi
+}
+
+# Create human alert for crash loop
+# Usage: _needle_alert_crash_loop <workspace> <agent>
+# Returns: 0 on success, 1 on failure
+_needle_alert_crash_loop() {
+    local workspace="$1"
+    local agent="$2"
+
+    _needle_error "Worker in crash loop: $NEEDLE_FAILURE_COUNT consecutive failures"
+
+    # Emit crash loop event
+    _needle_telemetry_emit "worker.crash_loop" \
+        "failure_count=$NEEDLE_FAILURE_COUNT" \
+        "session=$NEEDLE_SESSION" \
+        "workspace=$workspace" \
+        "agent=$agent"
+
+    # Use knot strand to create human alert
+    local title="NEEDLE Worker Crash Loop: $NEEDLE_SESSION"
+    local description
+    description=$(cat << EOF
+## Worker Crash Loop Detected
+
+The NEEDLE worker has experienced **$NEEDLE_FAILURE_COUNT consecutive failures** and is unable to process beads.
+
+### Context
+- **Session:** $NEEDLE_SESSION
+- **Runner:** ${NEEDLE_RUNNER:-unknown}
+- **Provider:** ${NEEDLE_PROVIDER:-unknown}
+- **Model:** ${NEEDLE_MODEL:-unknown}
+- **Identifier:** ${NEEDLE_IDENTIFIER:-unknown}
+- **Workspace:** $workspace
+- **Agent:** $agent
+- **Last Failure:** ${NEEDLE_LAST_FAILURE_TIME:-unknown}
+
+### Recommended Actions
+
+1. **Check logs** - Review recent worker logs for error patterns
+2. **Verify br CLI** - Ensure br command is working correctly
+3. **Check workspace** - Verify workspace is accessible and valid
+4. **Restart worker** - May need manual intervention to clear state
+
+### Telemetry
+- Failure count: $NEEDLE_FAILURE_COUNT
+- Backoff seconds: $NEEDLE_BACKOFF_SECONDS
+- Alert threshold: $NEEDLE_ALERT_THRESHOLD
+- Max failures: $NEEDLE_MAX_FAILURES
+
+---
+
+*This is an automated alert from NEEDLE Worker Recovery*
+*Required for: $workspace*
+EOF
+)
+
+    # Create human bead for alert
+    local bead_id
+    bead_id=$(br create \
+        --title "$title" \
+        --type human \
+        --priority 0 \
+        --labels "alert,crash-loop,worker-failure" \
+        --description "$description" \
+        --silent 2>/dev/null)
+
+    if [[ $? -eq 0 ]] && [[ -n "$bead_id" ]]; then
+        _needle_success "Created crash loop alert bead: $bead_id"
+        return 0
+    fi
+
+    _needle_warn "Failed to create crash loop alert bead"
+    return 1
+}
+
+# ============================================================================
+# Exit Code Handler
+# ============================================================================
+
+# Handle execution exit code with appropriate actions
+# Usage: _needle_handle_exit_code <bead_id> <exit_code> <workspace> <agent>
+# Arguments:
+#   bead_id   - The bead being processed
+#   exit_code - The exit code from agent execution
+#   workspace - The workspace path
+#   agent     - The agent name
+# Return values:
+#   0 - Bead handled successfully
+#   1 - Bead handling failed
+#   2 - Worker should exit (crash loop)
+_needle_handle_exit_code() {
+    local bead_id="$1"
+    local exit_code="$2"
+    local workspace="$3"
+    local agent="$4"
+
+    _needle_debug "Handling exit code $exit_code for bead $bead_id"
+
+    case $exit_code in
+        0)
+            # Success - close bead and reset backoff
+            _needle_debug "Exit code 0: Success - closing bead"
+
+            if _needle_complete_bead "$bead_id"; then
+                _needle_reset_backoff
+
+                # Emit success event
+                _needle_event_bead_completed "$bead_id"
+                _needle_telemetry_emit "bead.completed" \
+                    "bead_id=$bead_id" \
+                    "exit_code=$exit_code" \
+                    "session=$NEEDLE_SESSION"
+
+                return 0
+            else
+                _needle_error "Failed to complete bead: $bead_id"
+                return 1
+            fi
+            ;;
+
+        1)
+            # Failure - release and retry later
+            _needle_warn "Exit code 1: Failure - releasing bead for retry"
+
+            _needle_release_bead "$bead_id" "agent_failed"
+            _needle_increment_backoff
+
+            # Emit failure event
+            _needle_event_bead_failed "$bead_id" "reason=agent_failed"
+            _needle_telemetry_emit "bead.failed" \
+                "bead_id=$bead_id" \
+                "exit_code=$exit_code" \
+                "failure_count=$NEEDLE_FAILURE_COUNT" \
+                "session=$NEEDLE_SESSION"
+
+            # Apply backoff if needed
+            _needle_apply_backoff
+
+            # Check for crash loop
+            if _needle_should_alert_human; then
+                _needle_alert_crash_loop "$workspace" "$agent"
+            fi
+
+            if _needle_should_exit_worker; then
+                _needle_error "Max failures reached ($NEEDLE_MAX_FAILURES) - exiting worker"
+                return 2
+            fi
+
+            return 0
+            ;;
+
+        124)
+            # Timeout - release and flag
+            _needle_warn "Exit code 124: Timeout - releasing bead with timeout label"
+
+            # Release with timeout label
+            if br update "$bead_id" --release --label "timeout" 2>/dev/null; then
+                _needle_increment_backoff
+
+                # Emit timeout event
+                _needle_telemetry_emit "bead.timeout" \
+                    "bead_id=$bead_id" \
+                    "exit_code=$exit_code" \
+                    "failure_count=$NEEDLE_FAILURE_COUNT" \
+                    "session=$NEEDLE_SESSION"
+
+                _needle_event_bead_released "$bead_id" "reason=timeout"
+
+                # Apply backoff
+                _needle_apply_backoff
+
+                return 0
+            else
+                _needle_error "Failed to release timed out bead: $bead_id"
+                return 1
+            fi
+            ;;
+
+        *)
+            # Unknown error - release
+            _needle_warn "Exit code $exit_code: Unknown error - releasing bead"
+
+            _needle_release_bead "$bead_id" "unknown_error:$exit_code"
+            _needle_increment_backoff
+
+            # Emit error event
+            _needle_event_bead_failed "$bead_id" "reason=unknown_error"
+            _needle_telemetry_emit "bead.error" \
+                "bead_id=$bead_id" \
+                "exit_code=$exit_code" \
+                "failure_count=$NEEDLE_FAILURE_COUNT" \
+                "session=$NEEDLE_SESSION"
+
+            # Apply backoff
+            _needle_apply_backoff
+
+            # Check for crash loop
+            if _needle_should_alert_human; then
+                _needle_alert_crash_loop "$workspace" "$agent"
+            fi
+
+            if _needle_should_exit_worker; then
+                _needle_error "Max failures reached ($NEEDLE_MAX_FAILURES) - exiting worker"
+                return 2
+            fi
+
+            return 0
+            ;;
+    esac
+}
+
+# ============================================================================
+# Cleanup Functions
+# ============================================================================
+
+# Clean up execution context after bead processing
+# Usage: _needle_cleanup_execution <bead_id>
+_needle_cleanup_execution() {
+    local bead_id="$1"
+
+    _needle_debug "Cleaning up execution context for bead: $bead_id"
+
+    # Clear environment variables set during execution
+    unset NEEDLE_EXIT_CODE
+    unset NEEDLE_DURATION_MS
+    unset NEEDLE_OUTPUT_FILE
+    unset NEEDLE_CURRENT_BEAD
+
+    # End heartbeat tracking for this bead
+    _needle_heartbeat_end_bead
+
+    # Clear any temp files
+    if [[ -n "${NEEDLE_TEMP_DIR:-}" ]] && [[ -d "$NEEDLE_TEMP_DIR" ]]; then
+        rm -rf "${NEEDLE_TEMP_DIR:?}"/*  2>/dev/null || true
+    fi
+
+    _needle_debug "Execution context cleaned up"
+}
+
+# Full cleanup on worker shutdown
+# Usage: _needle_worker_cleanup
+_needle_worker_cleanup() {
+    _needle_debug "Performing full worker cleanup..."
+
+    # Clean up heartbeat
+    _needle_heartbeat_cleanup
+
+    # Unregister worker from state
+    _needle_unregister_worker "$NEEDLE_SESSION"
+
+    # Clear any temp directories
+    if [[ -n "${NEEDLE_TEMP_DIR:-}" ]] && [[ -d "$NEEDLE_TEMP_DIR" ]]; then
+        rm -rf "$NEEDLE_TEMP_DIR" 2>/dev/null || true
+    fi
+
+    # Emit final telemetry
+    _needle_telemetry_emit "worker.cleanup" \
+        "session=$NEEDLE_SESSION" \
+        "failure_count=$NEEDLE_FAILURE_COUNT"
+
+    _needle_debug "Worker cleanup complete"
+}
+
+# ============================================================================
 # Signal Handlers
 # ============================================================================
 
@@ -502,13 +854,11 @@ _needle_worker_loop() {
     _needle_telemetry_emit "worker.stopped" \
         "reason=shutdown" \
         "session=$NEEDLE_SESSION" \
-        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        "failure_count=$NEEDLE_FAILURE_COUNT"
 
-    # Clean up heartbeat
-    _needle_heartbeat_cleanup
-
-    # Unregister worker
-    _needle_unregister_worker "$NEEDLE_SESSION"
+    # Perform full cleanup
+    _needle_worker_cleanup
 
     # Log final event
     _needle_event_worker_stopped "reason=shutdown"
@@ -621,25 +971,35 @@ _needle_process_bead() {
     export NEEDLE_EXIT_CODE="$dispatch_exit"
     export NEEDLE_DURATION_MS="$dispatch_duration"
     export NEEDLE_OUTPUT_FILE="$dispatch_output"
+    export NEEDLE_CURRENT_BEAD="$bead_id"
 
     if ! _needle_run_hook "post_execute" "$bead_id"; then
         _needle_warn "Post-execute hook failed for bead $bead_id"
     fi
 
-    # Handle result based on exit code
-    if [[ "$dispatch_exit" -eq 0 ]]; then
-        _needle_complete_bead "$bead_id" "$dispatch_output"
-    else
-        _needle_fail_bead "$bead_id" "$dispatch_exit" "$dispatch_output"
-    fi
+    # Handle result using exit code handler
+    # This implements proper cleanup, backoff, and crash recovery
+    local handle_result
+    _needle_handle_exit_code "$bead_id" "$dispatch_exit" "$workspace" "$agent"
+    handle_result=$?
+
+    # Cleanup execution context
+    _needle_cleanup_execution "$bead_id"
 
     # Cleanup output file
     if [[ -n "$dispatch_output" ]] && [[ -f "$dispatch_output" ]]; then
         rm -f "$dispatch_output"
     fi
 
+    # Check if worker should exit due to crash loop
+    if [[ $handle_result -eq 2 ]]; then
+        _needle_error "Worker exiting due to crash loop"
+        _needle_worker_cleanup
+        return 2
+    fi
+
     _needle_debug "Completed processing bead: $bead_id"
-    return 0
+    return $handle_result
 }
 
 # ============================================================================
