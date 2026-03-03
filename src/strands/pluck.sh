@@ -37,6 +37,12 @@ if [[ -z "${_NEEDLE_CONSTANTS_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/constants.sh"
 fi
 
+# Source diagnostic module for logging
+if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/lib/diagnostic.sh"
+fi
+
 # Source bead modules
 if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../bead/claim.sh"
@@ -303,18 +309,27 @@ _needle_strand_pluck() {
     local workspace="$1"
     local agent="$2"
 
-    # DIAGNOSTIC: Log pluck strand invocation
+    # DIAGNOSTIC: Log pluck strand invocation with full context
+    _needle_diag_strand "pluck" "Pluck strand started" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "session=${NEEDLE_SESSION:-unknown}" \
+        "needle_src=${NEEDLE_SRC:-unknown}" \
+        "br_available=$(command -v br &>/dev/null && echo 'yes' || echo 'no')"
+
     _needle_debug "DIAG: pluck strand invoked - workspace=$workspace, agent=$agent, NEEDLE_SESSION=${NEEDLE_SESSION:-unknown}"
     _needle_debug "pluck strand: checking for primary work"
 
     # Validate inputs
     if [[ -z "$workspace" ]]; then
         _needle_error "pluck strand: workspace is required"
+        _needle_diag_strand "pluck" "Pluck strand failed - missing workspace"
         return 1
     fi
 
     if [[ -z "$agent" ]]; then
         _needle_error "pluck strand: agent is required"
+        _needle_diag_strand "pluck" "Pluck strand failed - missing agent"
         return 1
     fi
 
@@ -324,17 +339,34 @@ _needle_strand_pluck() {
 
     if [[ -z "$workspaces" ]]; then
         _needle_debug "pluck strand: no valid workspaces found"
+        _needle_diag_strand "pluck" "No valid workspaces found" \
+            "requested_workspace=$workspace"
         return 1
     fi
 
+    # Count workspaces
+    local ws_count
+    ws_count=$(echo "$workspaces" | wc -l)
+
+    _needle_diag_strand "pluck" "Found configured workspaces" \
+        "workspace_count=$ws_count" \
+        "workspaces=${workspaces//$'\n'/,}"
+
     # Track whether we did any work across all workspaces
     local work_done=false
+    local ws_processed=0
+    local ws_with_no_beads=0
 
     # Iterate through workspaces looking for work
     while IFS= read -r ws; do
         [[ -z "$ws" ]] && continue
 
+        ((ws_processed++))
+
         _needle_verbose "pluck strand: checking workspace: $ws"
+        _needle_diag_strand "pluck" "Checking workspace for beads" \
+            "workspace=$ws" \
+            "workspace_num=$ws_processed"
 
         # Attempt to claim a bead from this workspace
         local bead_id
@@ -342,9 +374,13 @@ _needle_strand_pluck() {
 
         # DIAGNOSTIC: Log claim result
         _needle_debug "DIAG: claim_bead returned: ${bead_id:-<empty>}"
+        _needle_diag_strand "pluck" "Claim attempt result" \
+            "workspace=$ws" \
+            "bead_id=${bead_id:-<none>}"
 
         if [[ -z "$bead_id" ]]; then
             _needle_verbose "pluck strand: no claimable beads in $ws"
+            ((ws_with_no_beads++))
             continue
         fi
 
@@ -353,12 +389,18 @@ _needle_strand_pluck() {
         # Process the claimed bead
         if _needle_pluck_process_bead "$bead_id" "$ws" "$agent"; then
             work_done=true
+            _needle_diag_strand "pluck" "Bead processed successfully" \
+                "bead_id=$bead_id" \
+                "workspace=$ws"
             # Return immediately on success - one bead at a time
             return 0
         else
             # Processing failed, but we did find work
             # Continue to next workspace or return with failure
             _needle_warn "Bead processing failed: $bead_id"
+            _needle_diag_strand "pluck" "Bead processing failed" \
+                "bead_id=$bead_id" \
+                "workspace=$ws"
             work_done=true
             # Don't return here - the failure was recorded
             # Let fallthrough happen naturally
@@ -368,11 +410,23 @@ _needle_strand_pluck() {
 
     if $work_done; then
         # We found and attempted work (even if it failed)
+        _needle_diag_strand "pluck" "Work attempted (may have failed)" \
+            "workspaces_processed=$ws_processed" \
+            "workspaces_with_no_beads=$ws_with_no_beads"
         return 0
     fi
 
     # No work found in any workspace
     _needle_debug "pluck strand: no work found in configured workspaces"
+    _needle_diag_strand "pluck" "No work found in any workspace" \
+        "workspaces_processed=$ws_processed" \
+        "workspaces_with_no_beads=$ws_with_no_beads"
+
+    _needle_diag_no_work "1" \
+        "strand=pluck" \
+        "workspaces_checked=$ws_processed" \
+        "workspaces_empty=$ws_with_no_beads"
+
     return 1
 }
 

@@ -865,3 +865,183 @@ _needle_create_session() {
     tmux new-session -d -s "$session" "$cmd"
     return $?
 }
+
+# -----------------------------------------------------------------------------
+# Internal Worker Command (_run_worker)
+# -----------------------------------------------------------------------------
+
+# Internal command to run a worker inside a tmux session
+# This is called by _needle_spawn_single_worker after creating the tmux session
+# Arguments:
+#   --workspace <PATH>    - Workspace directory
+#   --agent <NAME>        - Agent name (e.g., claude-anthropic-sonnet)
+#   --identifier <ID>     - Worker identifier (e.g., alpha)
+#   --budget <USD>        - Budget override (optional)
+#   --no-hooks            - Skip hook execution
+#   --session <NAME>      - Session name (optional, auto-generated if not provided)
+# Returns: Exits with worker exit code
+# Usage: needle _run_worker --workspace /path --agent claude-anthropic-sonnet --identifier alpha
+_needle_run_worker() {
+    local workspace=""
+    local agent=""
+    local identifier=""
+    local budget=""
+    local no_hooks=false
+    local session_name=""
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --workspace)
+                workspace="$2"
+                shift 2
+                ;;
+            --workspace=*)
+                workspace="${1#*=}"
+                shift
+                ;;
+            --agent)
+                agent="$2"
+                shift 2
+                ;;
+            --agent=*)
+                agent="${1#*=}"
+                shift
+                ;;
+            --identifier)
+                identifier="$2"
+                shift 2
+                ;;
+            --identifier=*)
+                identifier="${1#*=}"
+                shift
+                ;;
+            --budget)
+                budget="$2"
+                shift 2
+                ;;
+            --budget=*)
+                budget="${1#*=}"
+                shift
+                ;;
+            --no-hooks)
+                no_hooks=true
+                shift
+                ;;
+            --session)
+                session_name="$2"
+                shift 2
+                ;;
+            --session=*)
+                session_name="${1#*=}"
+                shift
+                ;;
+            -*)
+                _needle_error "Unknown option: $1"
+                exit $NEEDLE_EXIT_USAGE
+                ;;
+            *)
+                _needle_error "Unexpected argument: $1"
+                exit $NEEDLE_EXIT_USAGE
+                ;;
+        esac
+    done
+
+    # Validate required arguments
+    if [[ -z "$workspace" ]]; then
+        _needle_error "--workspace is required"
+        exit $NEEDLE_EXIT_USAGE
+    fi
+
+    if [[ -z "$agent" ]]; then
+        _needle_error "--agent is required"
+        exit $NEEDLE_EXIT_USAGE
+    fi
+
+    if [[ -z "$identifier" ]]; then
+        _needle_error "--identifier is required"
+        exit $NEEDLE_EXIT_USAGE
+    fi
+
+    # Parse agent name to get components
+    # Format: runner-provider-model (e.g., claude-anthropic-sonnet)
+    local runner provider model
+    IFS='-' read -r runner provider model <<< "$agent"
+
+    if [[ -z "$runner" ]] || [[ -z "$provider" ]] || [[ -z "$model" ]]; then
+        _needle_error "Invalid agent format: $agent (expected: runner-provider-model)"
+        exit $NEEDLE_EXIT_USAGE
+    fi
+
+    # Generate session name if not provided
+    if [[ -z "$session_name" ]]; then
+        session_name=$(_needle_generate_session_name "" "$runner" "$provider" "$model" "$identifier")
+    fi
+
+    # Set up environment variables for the worker loop
+    export NEEDLE_WORKSPACE="$workspace"
+    export NEEDLE_AGENT="$agent"
+    export NEEDLE_WORKER_ID="$identifier"
+    export NEEDLE_SESSION="$session_name"
+    export NEEDLE_RUNNER="$runner"
+    export NEEDLE_PROVIDER="$provider"
+    export NEEDLE_MODEL="$model"
+    export NEEDLE_IDENTIFIER="$identifier"
+
+    # Set optional environment variables
+    if [[ -n "$budget" ]]; then
+        export NEEDLE_BUDGET="$budget"
+    fi
+
+    if [[ "$no_hooks" == "true" ]]; then
+        export NEEDLE_NO_HOOKS="true"
+    fi
+
+    # Set up state directory
+    export NEEDLE_STATE_DIR="${NEEDLE_HOME:-$HOME/.needle}/state"
+    export NEEDLE_LOG_DIR="${NEEDLE_HOME:-$HOME/.needle}/logs"
+
+    # Ensure directories exist
+    mkdir -p "$NEEDLE_STATE_DIR" "$NEEDLE_LOG_DIR"
+
+    # Set up log file for this worker
+    export NEEDLE_LOG_FILE="${NEEDLE_LOG_DIR}/${session_name}.log"
+
+    # Load the agent configuration
+    if ! _needle_load_agent "$agent"; then
+        _needle_error "Failed to load agent configuration: $agent"
+        exit $NEEDLE_EXIT_CONFIG
+    fi
+
+    # Source the worker loop module
+    local loop_module="${NEEDLE_LIB_DIR:-}/runner/loop.sh"
+    if [[ ! -f "$loop_module" ]]; then
+        # Try relative path from script directory
+        loop_module="${NEEDLE_ROOT_DIR:-}/src/runner/loop.sh"
+    fi
+
+    if [[ ! -f "$loop_module" ]]; then
+        _needle_error "Worker loop module not found: $loop_module"
+        exit $NEEDLE_EXIT_CONFIG
+    fi
+
+    source "$loop_module"
+
+    # Log worker start event
+    _needle_debug "Starting worker: session=$session_name agent=$agent workspace=$workspace"
+
+    # Emit worker started event
+    _needle_emit_event "worker.started" \
+        "Worker started in tmux session" \
+        "session=$session_name" \
+        "agent=$agent" \
+        "runner=$runner" \
+        "provider=$provider" \
+        "model=$model" \
+        "identifier=$identifier" \
+        "workspace=$workspace"
+
+    # Enter the worker loop
+    # This function runs indefinitely until the worker is stopped
+    _needle_worker_loop "$workspace" "$agent"
+}

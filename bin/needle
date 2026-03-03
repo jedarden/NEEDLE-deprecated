@@ -86,7 +86,7 @@ NEEDLE_USE_COLOR="${NEEDLE_USE_COLOR:-true}"
 _needle_maybe_init() {
     # Commands that don't require initialization
     case "${1:-}" in
-        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop|test-agent)
+        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop|test-agent|_run_worker)
             return 0
             ;;
     esac
@@ -257,6 +257,10 @@ _needle_route_command() {
             ;;
         test-agent)
             _needle_test_agent "$@"
+            ;;
+        _run_worker)
+            # Internal command - not exposed to users
+            _needle_run_worker "$@"
             ;;
         help|--help|-h)
             _needle_help "$@"

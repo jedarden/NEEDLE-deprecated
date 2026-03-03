@@ -26,6 +26,11 @@ if [[ -z "${_NEEDLE_TELEMETRY_EVENTS_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/events.sh"
 fi
 
+# Source diagnostic module for logging
+if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/diagnostic.sh"
+fi
+
 # Source select module for _needle_get_claimable_beads fallback
 if [[ -z "${_NEEDLE_SELECT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/select.sh"
@@ -240,9 +245,17 @@ _needle_claim_bead() {
         esac
     done
 
+    # DIAGNOSTIC: Log claim attempt start
+    _needle_diag_claim "Claim attempt started" \
+        "workspace=$workspace" \
+        "actor=$actor" \
+        "max_retries=$max_retries" \
+        "session=${NEEDLE_SESSION:-unknown}"
+
     # Validate required parameters
     if [[ -z "$actor" ]]; then
         _needle_error "claim_bead requires --actor parameter"
+        _needle_diag_claim "Claim failed - missing actor parameter"
         return 1
     fi
 
@@ -253,9 +266,19 @@ _needle_claim_bead() {
         local bead_id
         bead_id=$(_needle_select_bead --workspace "$workspace")
 
+        # DIAGNOSTIC: Log selection result
+        _needle_diag_claim "Bead selection result" \
+            "attempt=$attempt" \
+            "bead_id=${bead_id:-<none>}" \
+            "workspace=$workspace"
+
         if [[ -z "$bead_id" ]]; then
             # No beads available - this is normal, not an error
             _needle_debug "No beads available to claim"
+            _needle_diag_claim "No beads available" \
+                "attempt=$attempt" \
+                "max_retries=$max_retries" \
+                "workspace=$workspace"
             return 1
         fi
 
@@ -272,9 +295,22 @@ _needle_claim_bead() {
         fi
         local claim_exit=$?
 
+        # DIAGNOSTIC: Log br call result
+        _needle_diag_claim "br claim call completed" \
+            "bead_id=$bead_id" \
+            "attempt=$attempt" \
+            "exit_code=$claim_exit" \
+            "result_preview=${claim_result:0:100}"
+
         if [[ $claim_exit -eq 0 ]]; then
             # Success! Emit telemetry and return
             _needle_event_bead_claimed "$bead_id" \
+                "actor=$actor" \
+                "attempt=$attempt" \
+                "workspace=$workspace"
+
+            _needle_diag_claim "Bead claimed successfully" \
+                "bead_id=$bead_id" \
                 "actor=$actor" \
                 "attempt=$attempt" \
                 "workspace=$workspace"
@@ -292,6 +328,11 @@ _needle_claim_bead() {
             "max_retries=$max_retries" \
             "actor=$actor"
 
+        _needle_diag_claim "Claim race condition, retrying" \
+            "bead_id=$bead_id" \
+            "attempt=$attempt" \
+            "exit_code=$claim_exit"
+
         _needle_verbose "Claim race condition for bead $bead_id, retrying..."
 
         attempt=$((attempt + 1))
@@ -299,6 +340,16 @@ _needle_claim_bead() {
 
     # All retries exhausted
     _needle_warn "Failed to claim bead after $max_retries attempts"
+
+    _needle_diag_claim "All claim retries exhausted" \
+        "max_retries=$max_retries" \
+        "actor=$actor" \
+        "workspace=$workspace"
+
+    _needle_diag_starvation "claim_retries_exhausted" \
+        "max_retries=$max_retries" \
+        "workspace=$workspace"
+
     _needle_telemetry_emit "bead.claim_exhausted" \
         "max_retries=$max_retries" \
         "actor=$actor" \

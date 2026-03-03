@@ -38,6 +38,12 @@ if [[ -z "${_NEEDLE_CONSTANTS_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/constants.sh"
 fi
 
+# Source diagnostic module for logging
+if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/lib/diagnostic.sh"
+fi
+
 # Priority weight configuration
 # P0 (critical) = 8x, P1 (high) = 4x, P2 (normal) = 2x, P3 (low) = 1x
 NEEDLE_PRIORITY_WEIGHTS=(
@@ -78,8 +84,6 @@ _needle_get_priority_weight() {
 # br ready fails with "Invalid column type Text at index: 14, name: created_by"
 # It falls back to br list with client-side filtering when br ready fails.
 _needle_get_claimable_beads() {
-    # DIAGNOSTIC: Log entry to help debug worker starvation
-    _needle_debug "DIAG: _needle_get_claimable_beads called (workspace=${workspace:-current})"
     local workspace=""
     local candidates
 
@@ -96,6 +100,14 @@ _needle_get_claimable_beads() {
         esac
     done
 
+    # DIAGNOSTIC: Log entry with context
+    _needle_diag_select "Getting claimable beads" \
+        "workspace=$workspace" \
+        "session=${NEEDLE_SESSION:-unknown}" \
+        "br_available=$(command -v br &>/dev/null && echo 'yes' || echo 'no')"
+
+    _needle_debug "DIAG: _needle_get_claimable_beads called (workspace=${workspace:-current})"
+
     # Try br ready first (preferred - server-side filtering)
     # Note: br ready outputs to stderr, so we need to capture stderr
     # Also, it may output log lines before JSON, so we extract just the JSON
@@ -105,12 +117,27 @@ _needle_get_claimable_beads() {
     else
         raw_output=$(br ready --unassigned --json 2>&1)
     fi
+    local br_exit=$?
+
+    # DIAGNOSTIC: Log br ready call
+    _needle_diag_select "br ready call completed" \
+        "workspace=$workspace" \
+        "exit_code=$br_exit" \
+        "output_length=${#raw_output}"
 
     # Extract JSON portion (from first { or [ to the end)
     candidates=$(echo "$raw_output" | sed -n '/^[{[]/,$p')
 
     # Check if br ready returned valid JSON array
     if [[ -n "$candidates" ]] && echo "$candidates" | jq -e 'type == "array"' &>/dev/null; then
+        local count
+        count=$(echo "$candidates" | jq 'length' 2>/dev/null || echo "0")
+
+        _needle_diag_select "br ready returned valid JSON array" \
+            "workspace=$workspace" \
+            "count=$count" \
+            "source=br_ready"
+
         echo "$candidates"
         return 0
     fi
@@ -118,8 +145,14 @@ _needle_get_claimable_beads() {
     # Check for error response (beads_rust v0.1.13 schema bug)
     if [[ -n "$candidates" ]] && echo "$candidates" | jq -e '.error.code == "DATABASE_ERROR"' &>/dev/null; then
         _needle_debug "DIAG: br ready returned DATABASE_ERROR, using fallback"
+        _needle_diag_select "br ready DATABASE_ERROR, using fallback" \
+            "workspace=$workspace" \
+            "error_type=DATABASE_ERROR"
     elif [[ -z "$candidates" ]]; then
         _needle_debug "DIAG: br ready returned no JSON, using fallback"
+        _needle_diag_select "br ready returned no JSON, using fallback" \
+            "workspace=$workspace" \
+            "error_type=no_json"
     fi
 
     # br ready failed - use fallback with br list + client-side filtering
@@ -134,6 +167,12 @@ _needle_get_claimable_beads() {
     else
         candidates=$(br list --status open --json 2>/dev/null)
     fi
+    local list_exit=$?
+
+    _needle_diag_select "br list fallback completed" \
+        "workspace=$workspace" \
+        "exit_code=$list_exit" \
+        "output_length=${#candidates}"
 
     # Filter client-side: unassigned, unblocked, not deferred, no OPEN dependencies
     # These are the same criteria br ready uses internally
@@ -149,6 +188,13 @@ _needle_get_claimable_beads() {
             (.issue_type == null or .issue_type != "human")
         )]
     ' 2>/dev/null)
+
+    local filtered_count
+    filtered_count=$(echo "$filtered" | jq 'length' 2>/dev/null || echo "0")
+
+    _needle_diag_select "Initial filtering completed" \
+        "workspace=$workspace" \
+        "filtered_count=$filtered_count"
 
     # Now filter out beads with OPEN dependencies
     # For each bead with dependency_count > 0, check if all deps are closed
@@ -182,6 +228,11 @@ _needle_get_claimable_beads() {
     local count
     count=$(echo "$final_filtered" | jq 'length' 2>/dev/null || echo "0")
     _needle_debug "DIAG: Fallback found $count claimable beads (after checking closed deps)"
+
+    _needle_diag_select "Final claimable beads count" \
+        "workspace=$workspace" \
+        "count=$count" \
+        "source=br_list_fallback"
 
     echo "$final_filtered"
 }

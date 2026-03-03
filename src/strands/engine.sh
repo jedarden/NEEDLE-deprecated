@@ -39,6 +39,11 @@ if [[ -z "${NEEDLE_SRC:-}" ]]; then
     NEEDLE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 fi
 
+# Source diagnostic module first for logging
+if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
+    source "$NEEDLE_SRC/lib/diagnostic.sh"
+fi
+
 # Source individual strand implementations
 # Each strand file defines _needle_strand_<name>() function
 source "$NEEDLE_SRC/strands/pluck.sh"
@@ -105,9 +110,22 @@ _needle_strand_engine() {
     local strands=(pluck explore mend weave unravel pulse knot)
     local strand_num=1
 
-    # DIAGNOSTIC: Log strand engine invocation
+    # DIAGNOSTIC: Log strand engine invocation with full context
+    _needle_diag_engine "Strand engine started" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "session=${NEEDLE_SESSION:-unknown}" \
+        "verbose=${NEEDLE_VERBOSE:-false}" \
+        "path=$PATH" \
+        "br_available=$(command -v br &>/dev/null && echo 'yes' || echo 'no')"
+
     _needle_debug "DIAG: Strand engine started - workspace=$workspace, agent=$agent, NEEDLE_VERBOSE=${NEEDLE_VERBOSE:-false}"
     _needle_debug "Starting strand engine for workspace: $workspace, agent: $agent"
+
+    # Track strand results for final diagnostic
+    local strand_results=()
+    local disabled_count=0
+    local enabled_count=0
 
     for strand in "${strands[@]}"; do
         _needle_verbose "Checking strand $strand_num: $strand"
@@ -119,10 +137,19 @@ _needle_strand_engine() {
                 "strand=$strand_num" \
                 "name=$strand" \
                 "reason=disabled"
+
+            _needle_diag_engine "Strand disabled, skipping" \
+                "strand=$strand" \
+                "strand_num=$strand_num"
+
             _needle_debug "Strand $strand ($strand_num) is disabled, skipping"
+            strand_results+=("$strand:disabled")
+            ((disabled_count++))
             ((strand_num++))
             continue
         fi
+
+        ((enabled_count++))
 
         # Emit strand started event
         _needle_emit_event "strand.started" \
@@ -131,6 +158,11 @@ _needle_strand_engine() {
             "name=$strand" \
             "workspace=$workspace" \
             "agent=$agent"
+
+        _needle_diag_engine "Dispatching to strand" \
+            "strand=$strand" \
+            "strand_num=$strand_num" \
+            "workspace=$workspace"
 
         _needle_verbose "Dispatching to strand: $strand"
 
@@ -142,6 +174,12 @@ _needle_strand_engine() {
         "_needle_strand_$strand" "$workspace" "$agent"
         result=$?
 
+        _needle_diag_engine "Strand returned result" \
+            "strand=$strand" \
+            "strand_num=$strand_num" \
+            "result=$result" \
+            "result_meaning=$([[ $result -eq 0 ]] && echo 'work_found' || echo 'no_work')"
+
         if [[ $result -eq 0 ]]; then
             # Work found and processed
             _needle_emit_event "strand.completed" \
@@ -149,6 +187,13 @@ _needle_strand_engine() {
                 "strand=$strand_num" \
                 "name=$strand" \
                 "result=work_found"
+
+            _needle_diag_engine "Work found and completed" \
+                "strand=$strand" \
+                "strand_num=$strand_num" \
+                "strands_checked=$strand_num" \
+                "enabled_strands=$enabled_count" \
+                "disabled_strands=$disabled_count"
 
             _needle_success "Strand $strand ($strand_num): work completed"
             return 0  # Work done, exit engine
@@ -164,10 +209,24 @@ _needle_strand_engine() {
 
         _needle_verbose "Strand $strand ($strand_num): no work found, continuing"
 
+        strand_results+=("$strand:no_work")
         ((strand_num++))
     done
 
     # All strands exhausted, no work found
+    _needle_diag_no_work "$((strand_num - 1))" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "enabled_strands=$enabled_count" \
+        "disabled_strands=$disabled_count" \
+        "results=${strand_results[*]}"
+
+    _needle_diag_starvation "all_strands_exhausted" \
+        "workspace=$workspace" \
+        "enabled_strands=$enabled_count" \
+        "disabled_strands=$disabled_count" \
+        "check_database=true"
+
     _needle_debug "All strands exhausted, no work found"
     return 1
 }

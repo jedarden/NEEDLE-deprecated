@@ -16,6 +16,12 @@
 #   0 - Work was found and processed
 #   1 - No work found (fallthrough to next strand)
 
+# Source diagnostic module if not already loaded
+if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/lib/diagnostic.sh"
+fi
+
 # ============================================================================
 # Main Strand Entry Point
 # ============================================================================
@@ -24,34 +30,65 @@ _needle_strand_mend() {
     local workspace="$1"
     local agent="$2"
 
+    _needle_diag_strand "mend" "Mend strand started" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "session=${NEEDLE_SESSION:-unknown}"
+
     _needle_debug "mend strand: checking for maintenance tasks in $workspace"
 
     local work_done=false
+    local orphaned_count=0
+    local stale_count=0
+    local heartbeat_count=0
+    local log_count=0
 
     # 1. Clean orphaned claims (beads assigned to dead workers)
+    _needle_diag_strand "mend" "Checking for orphaned claims" "workspace=$workspace"
     if _needle_mend_orphaned_claims "$workspace"; then
         work_done=true
+        orphaned_count=1
     fi
 
     # 2. Release stale claims (claims held longer than threshold)
+    _needle_diag_strand "mend" "Checking for stale claims" "workspace=$workspace"
     if _needle_mend_stale_claims "$workspace"; then
         work_done=true
+        stale_count=1
     fi
 
     # 3. Prune old heartbeat files from dead workers
+    _needle_diag_strand "mend" "Checking for old heartbeats"
     if _needle_mend_old_heartbeats; then
         work_done=true
+        heartbeat_count=1
     fi
 
     # 4. Log rotation/cleanup (if configured)
+    _needle_diag_strand "mend" "Checking for log cleanup"
     if _needle_mend_logs; then
         work_done=true
+        log_count=1
     fi
 
     if $work_done; then
+        _needle_diag_strand "mend" "Mend strand completed work" \
+            "workspace=$workspace" \
+            "orphaned_cleaned=$orphaned_count" \
+            "stale_cleaned=$stale_count" \
+            "heartbeats_cleaned=$heartbeat_count" \
+            "logs_cleaned=$log_count"
+
         _needle_debug "mend strand: maintenance completed"
         return 0
     fi
+
+    _needle_diag_strand "mend" "Mend strand found no work" \
+        "workspace=$workspace" \
+        "orphaned_checked=true" \
+        "stale_checked=true" \
+        "heartbeats_checked=true" \
+        "logs_checked=true"
 
     _needle_debug "mend strand: no maintenance needed"
     return 1  # No work found
