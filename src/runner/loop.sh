@@ -116,6 +116,19 @@ NEEDLE_BACKOFF_SECONDS=0
 NEEDLE_LAST_FAILURE_TIME=""
 
 # ============================================================================
+# Configuration Hot-Reload State
+# ============================================================================
+
+# Track modification times for config files
+NEEDLE_CONFIG_LOADED_AT=0
+NEEDLE_WS_CONFIG_LOADED_AT=0
+
+# Config check interval (checked every N loop iterations)
+# This avoids checking file mtime on every iteration
+NEEDLE_CONFIG_CHECK_INTERVAL=15
+NEEDLE_CONFIG_CHECK_COUNTER=0
+
+# ============================================================================
 # Backoff and Crash Recovery Functions
 # ============================================================================
 
@@ -185,6 +198,170 @@ _needle_apply_backoff() {
 
         sleep "$NEEDLE_BACKOFF_SECONDS"
     fi
+}
+
+# ============================================================================
+# Configuration Hot-Reload Functions
+# ============================================================================
+
+# Get file modification time as epoch seconds
+# Returns 0 if file doesn't exist
+# Usage: _needle_get_config_mtime <file_path>
+_needle_get_config_mtime() {
+    local file_path="$1"
+
+    if [[ -f "$file_path" ]]; then
+        stat -c %Y "$file_path" 2>/dev/null || echo 0
+    else
+        echo 0
+    fi
+}
+
+# Initialize config tracking timestamps
+# Called once at worker startup
+# Usage: _needle_init_config_tracking
+_needle_init_config_tracking() {
+    local global_config="${NEEDLE_HOME:-$HOME/.needle}/config.yaml"
+
+    NEEDLE_GLOBAL_CONFIG_LOADED_AT=$(_needle_get_config_mtime "$global_config")
+
+    # Initialize workspace config mtime if workspace is set
+    if [[ -n "${NEEDLE_WORKSPACE:-}" ]]; then
+        local ws_config="$NEEDLE_WORKSPACE/.needle.yaml"
+        NEEDLE_WS_CONFIG_LOADED_AT=$(_needle_get_config_mtime "$ws_config")
+    else
+        NEEDLE_WS_CONFIG_LOADED_AT=0
+    fi
+
+    _needle_debug "Config tracking initialized: global=$NEEDLE_GLOBAL_CONFIG_LOADED_AT, workspace=$NEEDLE_WS_CONFIG_LOADED_AT"
+}
+
+# Check if configuration files have changed and reload if needed
+# Uses file mtime comparison - no inotify dependency
+# Called periodically from the main loop
+# Usage: _needle_check_config_reload
+# Returns: 0 if reload occurred, 1 if no change
+_needle_check_config_reload() {
+    local global_config="${NEEDLE_HOME:-$HOME/.needle}/config.yaml"
+    local ws_config=""
+    local reload_needed=false
+    local reload_sources=()
+
+    # Check if we should skip this check (only check every N iterations)
+    ((NEEDLE_CONFIG_CHECK_COUNTER++))
+    if [[ $NEEDLE_CONFIG_CHECK_COUNTER -lt $NEEDLE_CONFIG_CHECK_INTERVAL ]]; then
+        return 1
+    fi
+    NEEDLE_CONFIG_CHECK_COUNTER=0
+
+    # Check global config
+    local current_global_mtime
+    current_global_mtime=$(_needle_get_config_mtime "$global_config")
+
+    if [[ $current_global_mtime -gt $NEEDLE_GLOBAL_CONFIG_LOADED_AT ]]; then
+        reload_needed=true
+        reload_sources+=("global")
+        _needle_debug "Global config changed (mtime: $NEEDLE_GLOBAL_CONFIG_LOADED_AT -> $current_global_mtime)"
+    fi
+
+    # Check workspace config if workspace is set
+    if [[ -n "${NEEDLE_WORKSPACE:-}" ]]; then
+        ws_config="$NEEDLE_WORKSPACE/.needle.yaml"
+        local current_ws_mtime
+        current_ws_mtime=$(_needle_get_config_mtime "$ws_config")
+
+        if [[ $current_ws_mtime -gt $NEEDLE_WS_CONFIG_LOADED_AT ]]; then
+            reload_needed=true
+            reload_sources+=("workspace")
+            _needle_debug "Workspace config changed (mtime: $NEEDLE_WS_CONFIG_LOADED_AT -> $current_ws_mtime)"
+        fi
+    fi
+
+    # Perform reload if needed
+    if [[ "$reload_needed" == "true" ]]; then
+        _needle_info "Config change detected, reloading: ${reload_sources[*]}"
+
+        # Validate new config before applying
+        if ! _needle_validate_hot_reload_config "$global_config" "$ws_config"; then
+            _needle_error "Config validation failed, keeping current config"
+            return 1
+        fi
+
+        # Clear caches and reload
+        if declare -f clear_config_cache &>/dev/null; then
+            clear_config_cache
+        fi
+
+        if declare -f clear_workspace_cache &>/dev/null && [[ -n "${NEEDLE_WORKSPACE:-}" ]]; then
+            clear_workspace_cache "$NEEDLE_WORKSPACE"
+        fi
+
+        # Update tracking timestamps
+        NEEDLE_GLOBAL_CONFIG_LOADED_AT=$current_global_mtime
+        if [[ -n "$ws_config" ]] && [[ -f "$ws_config" ]]; then
+            NEEDLE_WS_CONFIG_LOADED_AT=$current_ws_mtime
+        fi
+
+        # Emit telemetry event
+        _needle_telemetry_emit "config.reloaded" \
+            "sources=${reload_sources[*]}" \
+            "global_mtime=$current_global_mtime" \
+            "workspace_mtime=${current_ws_mtime:-0}" \
+            "session=$NEEDLE_SESSION" \
+            "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+        _needle_success "Configuration reloaded successfully"
+
+        return 0
+    fi
+
+    return 1
+}
+
+# Validate configuration before hot-reload
+# Returns: 0 if valid, 1 if invalid
+# Usage: _needle_validate_hot_reload_config <global_config> [workspace_config]
+_needle_validate_hot_reload_config() {
+    local global_config="$1"
+    local ws_config="${2:-}"
+
+    # Validate global config if it exists
+    if [[ -f "$global_config" ]]; then
+        # Check YAML syntax with yq if available
+        if command -v yq &>/dev/null; then
+            if ! yq eval '.' "$global_config" &>/dev/null; then
+                _needle_error "Invalid YAML syntax in global config: $global_config"
+                return 1
+            fi
+            # Check that it parsed to something other than null
+            local parsed
+            parsed=$(yq eval '.' "$global_config" 2>/dev/null)
+            if [[ -z "$parsed" ]] || [[ "$parsed" == "null" ]]; then
+                _needle_error "Global config file is empty or null: $global_config"
+                return 1
+            fi
+        else
+            # Check file is not empty (has non-whitespace content)
+            if ! grep -q '[^[:space:]]' "$global_config" 2>/dev/null; then
+                _needle_error "Global config file is empty or whitespace only: $global_config"
+                return 1
+            fi
+        fi
+    fi
+
+    # Validate workspace config if it exists
+    if [[ -n "$ws_config" ]] && [[ -f "$ws_config" ]]; then
+        # Check YAML syntax with yq if available
+        if command -v yq &>/dev/null; then
+            if ! yq eval '.' "$ws_config" &>/dev/null; then
+                _needle_error "Invalid YAML syntax in workspace config: $ws_config"
+                return 1
+            fi
+        fi
+    fi
+
+    _needle_debug "Config validation passed"
+    return 0
 }
 
 # Create human alert for crash loop
@@ -681,6 +858,9 @@ _needle_worker_loop() {
 
         # Emit heartbeat keepalive
         _needle_heartbeat_keepalive
+
+        # Check for config hot-reload (every N iterations)
+        _needle_check_config_reload
 
         # Run strand engine to find work
         local strand_result

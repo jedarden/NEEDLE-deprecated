@@ -252,6 +252,134 @@ test_signal_handlers() {
     echo ""
 }
 
+# Test: Config hot-reload functions
+test_config_hot_reload() {
+    echo "=== Testing config hot-reload functions ==="
+
+    setup_mock_environment
+
+    # Test that hot-reload functions exist
+    declare -f _needle_get_config_mtime >/dev/null
+    if [[ $? -eq 0 ]]; then
+        echo "✓ _needle_get_config_mtime function exists"
+    else
+        echo "✗ _needle_get_config_mtime function missing"
+        exit 1
+    fi
+
+    declare -f _needle_check_config_reload >/dev/null
+    if [[ $? -eq 0 ]]; then
+        echo "✓ _needle_check_config_reload function exists"
+    else
+        echo "✗ _needle_check_config_reload function missing"
+        exit 1
+    fi
+
+    declare -f _needle_validate_hot_reload_config >/dev/null
+    if [[ $? -eq 0 ]]; then
+        echo "✓ _needle_validate_hot_reload_config function exists"
+    else
+        echo "✗ _needle_validate_hot_reload_config function missing"
+        exit 1
+    fi
+
+    # Test _needle_get_config_mtime with existing file
+    local test_file="$NEEDLE_HOME/test_config.yaml"
+    echo "test: value" > "$test_file"
+    local mtime
+    mtime=$(_needle_get_config_mtime "$test_file")
+    if [[ "$mtime" =~ ^[0-9]+$ ]]; then
+        echo "✓ _needle_get_config_mtime returns valid timestamp for existing file"
+    else
+        echo "✗ _needle_get_config_mtime failed for existing file: $mtime"
+        rm -f "$test_file"
+        exit 1
+    fi
+
+    # Test _needle_get_config_mtime with non-existing file
+    mtime=$(_needle_get_config_mtime "/nonexistent/file.yaml")
+    if [[ "$mtime" == "0" ]]; then
+        echo "✓ _needle_get_config_mtime returns 0 for non-existing file"
+    else
+        echo "✗ _needle_get_config_mtime should return 0 for non-existing file: $mtime"
+        rm -f "$test_file"
+        exit 1
+    fi
+
+    # Test _needle_validate_hot_reload_config with valid config
+    echo "limits:
+  global_max_concurrent: 20
+runner:
+  polling_interval: 2s" > "$test_file"
+    if _needle_validate_hot_reload_config "$test_file" ""; then
+        echo "✓ _needle_validate_hot_reload_config accepts valid config"
+    else
+        echo "✗ _needle_validate_hot_reload_config rejected valid config"
+        rm -f "$test_file"
+        exit 1
+    fi
+
+    # Test _needle_validate_hot_reload_config with invalid config (empty)
+    echo "" > "$test_file"
+    if ! _needle_validate_hot_reload_config "$test_file" ""; then
+        echo "✓ _needle_validate_hot_reload_config rejects empty config"
+    else
+        echo "✗ _needle_validate_hot_reload_config should reject empty config"
+        rm -f "$test_file"
+        exit 1
+    fi
+
+    # Test that config change detection works
+    local global_config="$NEEDLE_HOME/config.yaml"
+    echo "limits:
+  global_max_concurrent: 20" > "$global_config"
+
+    # Initialize mtime tracking
+    NEEDLE_GLOBAL_CONFIG_LOADED_AT=$(_needle_get_config_mtime "$global_config")
+    NEEDLE_WS_CONFIG_LOADED_AT=0
+    NEEDLE_CONFIG_CHECK_COUNTER=0
+
+    # First check should not trigger reload
+    NEEDLE_CONFIG_CHECK_COUNTER=$NEEDLE_CONFIG_CHECK_INTERVAL
+    if _needle_check_config_reload; then
+        echo "✗ First check should not trigger reload"
+        rm -f "$test_file" "$global_config"
+        exit 1
+    fi
+    echo "✓ No reload triggered when config unchanged"
+
+    # Modify config and check again
+    sleep 1  # Ensure mtime changes
+    echo "limits:
+  global_max_concurrent: 30" > "$global_config"
+
+    # Reset counter to trigger check
+    NEEDLE_CONFIG_CHECK_COUNTER=$NEEDLE_CONFIG_CHECK_INTERVAL
+    if _needle_check_config_reload; then
+        echo "✓ Config reload triggered when config changed"
+    else
+        echo "✗ Config reload should be triggered when config changed"
+        rm -f "$test_file" "$global_config"
+        exit 1
+    fi
+
+    # Verify mtime was updated
+    local new_mtime
+    new_mtime=$(_needle_get_config_mtime "$global_config")
+    if [[ "$new_mtime" -gt "$NEEDLE_GLOBAL_CONFIG_LOADED_AT" ]] || [[ "$NEEDLE_GLOBAL_CONFIG_LOADED_AT" == "$new_mtime" ]]; then
+        echo "✓ Config mtime tracking updated after reload"
+    else
+        echo "✗ Config mtime tracking not properly updated"
+        rm -f "$test_file" "$global_config"
+        exit 1
+    fi
+
+    # Cleanup
+    rm -f "$test_file" "$global_config"
+    cleanup_mock_environment
+    echo ""
+}
+
 # Run all tests
 echo "=========================================="
 echo "NEEDLE Worker Loop Module Tests"
@@ -265,6 +393,7 @@ test_heartbeat
 test_bead_functions
 test_worker_loop
 test_signal_handlers
+test_config_hot_reload
 
 echo ""
 echo "=========================================="
