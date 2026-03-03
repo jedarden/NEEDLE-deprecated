@@ -22,6 +22,18 @@
 #   0 - Work was found and processed
 #   1 - No work found across all strands
 
+# ============================================================================
+# PATH Setup (CRITICAL: Must be done before any br calls)
+# ============================================================================
+# Ensure ~/.local/bin is in PATH for br CLI access
+# This fixes worker starvation caused by br not being found
+if [[ -d "$HOME/.local/bin" ]]; then
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) export PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+fi
+
 # Get NEEDLE_SRC if not already set
 if [[ -z "${NEEDLE_SRC:-}" ]]; then
     NEEDLE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -48,9 +60,9 @@ source "$NEEDLE_SRC/strands/knot.sh"
 _needle_is_strand_enabled() {
     local strand="$1"
 
-    # Default to false if not configured
+    # Default to true if not configured (changed from false to prevent worker starvation)
     local enabled
-    enabled="$(get_config "strands.$strand" "false" 2>/dev/null)"
+    enabled="$(get_config "strands.$strand" "true" 2>/dev/null)"
 
     # Handle various true representations
     case "$enabled" in
@@ -93,6 +105,8 @@ _needle_strand_engine() {
     local strands=(pluck explore mend weave unravel pulse knot)
     local strand_num=1
 
+    # DIAGNOSTIC: Log strand engine invocation
+    _needle_debug "DIAG: Strand engine started - workspace=$workspace, agent=$agent, NEEDLE_VERBOSE=${NEEDLE_VERBOSE:-false}"
     _needle_debug "Starting strand engine for workspace: $workspace, agent: $agent"
 
     for strand in "${strands[@]}"; do

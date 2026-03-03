@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# NEEDLE Bead Unclaim Tool
+# Releases a claimed bead by directly modifying the database
+# Workaround for br CLI missing --release flag and CHECK constraint
+
+set -e
+
+BEAD_ID="${1:-}"
+if [[ -z "$BEAD_ID" ]]; then
+    echo "Usage: $0 <bead_id>"
+    echo "Example: $0 nd-123"
+    exit 1
+fi
+
+# Find database
+DB_PATH=".beads/beads.db"
+if [[ ! -f "$DB_PATH" ]]; then
+    echo "Error: Database not found at $DB_PATH"
+    exit 1
+fi
+
+# Release the bead using Python (sqlite3 CLI not available)
+python3 -c "
+import sqlite3
+import sys
+
+conn = sqlite3.connect('$DB_PATH')
+cursor = conn.cursor()
+
+# Check if bead exists and is claimed
+cursor.execute('SELECT id, status, claimed_by FROM issues WHERE id = \"$BEAD_ID\"')
+row = cursor.fetchone()
+if row is None:
+    print(f'Error: Bead $BEAD_ID not found')
+    sys.exit(1)
+
+bead_id, status, claimed_by = row
+if claimed_by is None:
+    print(f'Bead $BEAD_ID is not claimed (status: {status})')
+    sys.exit(0)
+
+# Release the bead
+cursor.execute('''
+    UPDATE issues 
+    SET status = 'open', 
+        claimed_by = NULL, 
+        claim_timestamp = NULL 
+    WHERE id = \"$BEAD_ID\"
+''')
+conn.commit()
+print(f'Released bead $BEAD_ID (was claimed by: {claimed_by})')
+conn.close()
+"

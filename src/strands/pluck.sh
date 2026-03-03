@@ -303,6 +303,8 @@ _needle_strand_pluck() {
     local workspace="$1"
     local agent="$2"
 
+    # DIAGNOSTIC: Log pluck strand invocation
+    _needle_debug "DIAG: pluck strand invoked - workspace=$workspace, agent=$agent, NEEDLE_SESSION=${NEEDLE_SESSION:-unknown}"
     _needle_debug "pluck strand: checking for primary work"
 
     # Validate inputs
@@ -337,6 +339,9 @@ _needle_strand_pluck() {
         # Attempt to claim a bead from this workspace
         local bead_id
         bead_id=$(_needle_claim_bead --workspace "$ws" --actor "$NEEDLE_SESSION")
+
+        # DIAGNOSTIC: Log claim result
+        _needle_debug "DIAG: claim_bead returned: ${bead_id:-<empty>}"
 
         if [[ -z "$bead_id" ]]; then
             _needle_verbose "pluck strand: no claimable beads in $ws"

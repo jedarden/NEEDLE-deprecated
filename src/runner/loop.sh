@@ -46,6 +46,18 @@
 #   NEEDLE_STATE_DIR  - State directory path
 #   NEEDLE_HOME       - NEEDLE home directory
 
+# ============================================================================
+# PATH Setup (CRITICAL: Must be done before any br calls)
+# ============================================================================
+# Ensure ~/.local/bin is in PATH for br CLI access
+# This fixes worker starvation caused by br not being found
+if [[ -d "$HOME/.local/bin" ]]; then
+    case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) export PATH="$HOME/.local/bin:$PATH" ;;
+    esac
+fi
+
 # Get NEEDLE_SRC if not already set
 if [[ -z "${NEEDLE_SRC:-}" ]]; then
     NEEDLE_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -248,20 +260,12 @@ _needle_heartbeat_init() {
 }
 
 # ============================================================================
-# Strand Engine Stub
+# Strand Engine Integration
 # ============================================================================
 
-# Run strand engine to find work (stub)
-# Returns: 0 if work found, 1 if no work
-_needle_strand_engine() {
-    local workspace="$1"
-    local agent="$2"
-
-    _needle_debug "Strand engine checking for work in $workspace with agent $agent"
-    # TODO: Implement actual strand engine call
-    # For now, return 1 (no work found)
-    return 1
-}
+# Source the strand engine (implements the 7-strand priority waterfall)
+# This provides _needle_strand_engine() which dispatches through strands 1-7
+source "$NEEDLE_SRC/strands/engine.sh"
 
 # ============================================================================
 # Bead Processing Stubs
@@ -441,11 +445,14 @@ _needle_worker_loop() {
 
         # Run strand engine to find work
         local strand_result
+        # DIAGNOSTIC: Log strand engine call
+        _needle_debug "DIAG: Calling strand engine - consecutive_empty=$consecutive_empty"
         if _needle_strand_engine "$workspace" "$agent"; then
             strand_result=$?
         else
             strand_result=$?
         fi
+        _needle_debug "DIAG: Strand engine returned: $strand_result"
 
         if [[ $strand_result -eq 0 ]]; then
             # Work found and processed

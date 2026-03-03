@@ -78,6 +78,8 @@ _needle_get_priority_weight() {
 # br ready fails with "Invalid column type Text at index: 14, name: created_by"
 # It falls back to br list with client-side filtering when br ready fails.
 _needle_get_claimable_beads() {
+    # DIAGNOSTIC: Log entry to help debug worker starvation
+    _needle_debug "DIAG: _needle_get_claimable_beads called (workspace=${workspace:-current})"
     local workspace=""
     local candidates
 
@@ -115,9 +117,9 @@ _needle_get_claimable_beads() {
 
     # Check for error response (beads_rust v0.1.13 schema bug)
     if [[ -n "$candidates" ]] && echo "$candidates" | jq -e '.error.code == "DATABASE_ERROR"' &>/dev/null; then
-        _needle_debug "br ready returned DATABASE_ERROR, using fallback"
+        _needle_debug "DIAG: br ready returned DATABASE_ERROR, using fallback"
     elif [[ -z "$candidates" ]]; then
-        _needle_debug "br ready returned no JSON, using fallback"
+        _needle_debug "DIAG: br ready returned no JSON, using fallback"
     fi
 
     # br ready failed - use fallback with br list + client-side filtering
@@ -132,7 +134,8 @@ _needle_get_claimable_beads() {
     # NOTE: Also filter out beads with dependencies (dependency_count > 0) since
     # br ready would not return them anyway (they're not truly "ready")
     # NOTE: Also filter out HUMAN type beads - those are alerts, not work items
-    echo "$candidates" | jq -c '
+    local filtered
+    filtered=$(echo "$candidates" | jq -c '
         [.[] | select(
             .assignee == null and
             .blocked_by == null and
@@ -140,7 +143,14 @@ _needle_get_claimable_beads() {
             (.dependency_count == null or .dependency_count == 0) and
             (.issue_type == null or .issue_type != "human")
         )]
-    ' 2>/dev/null
+    ' 2>/dev/null)
+
+    # DIAGNOSTIC: Log the result count
+    local count
+    count=$(echo "$filtered" | jq 'length' 2>/dev/null || echo "0")
+    _needle_debug "DIAG: Fallback found $count claimable beads"
+
+    echo "$filtered"
 }
 
 # Select a bead from the ready queue using weighted random selection
