@@ -1,11 +1,55 @@
 #!/bin/bash
-# Proactive database health monitoring and repair
-# Detects WAL file anomalies and rebuilds database from JSONL source of truth
+# Proactive database health monitoring and maintenance
+# Detects WAL file anomalies and performs checkpoint before corruption occurs
+#
+# This script implements a tiered response:
+# 1. < 1MB: Healthy, no action needed
+# 2. 1-5MB: Warning, trigger proactive checkpoint
+# 3. 5-10MB: High warning, force checkpoint and alert
+# 4. > 10MB: Critical, rebuild database from JSONL
+#
+# The WAL checkpoint is now also triggered automatically by br sync operations,
+# but this script provides an additional safety net for long-running sessions.
 
 set -e
 
 WAL_FILE=".beads/beads.db-wal"
-THRESHOLD=10485760  # 10MB
+CHECKPOINT_THRESHOLD=1048576     # 1MB - proactive checkpoint
+WARNING_THRESHOLD=5242880        # 5MB - force checkpoint with alert
+CRITICAL_THRESHOLD=10485760      # 10MB - rebuild database
+
+# Function to format bytes nicely
+format_bytes() {
+    local bytes=$1
+    if command -v numfmt &> /dev/null; then
+        numfmt --to=iec-i --suffix=B "$bytes" 2>/dev/null || echo "${bytes} bytes"
+    else
+        echo "${bytes} bytes"
+    fi
+}
+
+# Function to trigger a checkpoint via br sync --flush-only
+trigger_checkpoint() {
+    local reason=$1
+    echo "🔄 Triggering checkpoint: $reason"
+
+    # br sync --flush-only will checkpoint after export
+    # If no dirty issues, it still opens the DB which triggers auto-checkpoint
+    if command -v br &> /dev/null; then
+        # First try to flush any dirty issues
+        if br sync --flush-only 2>&1 | grep -q "Nothing to export"; then
+            # No dirty issues, but we still want to checkpoint
+            # The checkpoint is called in the sync code even if nothing to export
+            echo "   Checkpoint completed (no dirty issues)"
+        else
+            echo "   Checkpoint completed (flushed dirty issues)"
+        fi
+        return 0
+    else
+        echo "⚠️ br command not available - cannot checkpoint"
+        return 1
+    fi
+}
 
 # Check if WAL file exists
 if [ ! -f "$WAL_FILE" ]; then
@@ -16,11 +60,15 @@ fi
 WAL_SIZE=$(stat -c%s "$WAL_FILE" 2>/dev/null || stat -f%z "$WAL_FILE" 2>/dev/null || echo "0")
 
 echo "📊 Database Health Check"
-echo "   WAL Size: $(numfmt --to=iec-i --suffix=B $WAL_SIZE 2>/dev/null || echo "${WAL_SIZE} bytes")"
-echo "   Threshold: $(numfmt --to=iec-i --suffix=B $THRESHOLD 2>/dev/null || echo "${THRESHOLD} bytes")"
+echo "   WAL Size: $(format_bytes $WAL_SIZE)"
+echo "   Checkpoint threshold: $(format_bytes $CHECKPOINT_THRESHOLD)"
+echo "   Warning threshold: $(format_bytes $WARNING_THRESHOLD)"
+echo "   Critical threshold: $(format_bytes $CRITICAL_THRESHOLD)"
 
-if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
-    echo "⚠️ WAL file exceeds threshold - database corruption suspected"
+# Tiered response based on WAL size
+if [ "$WAL_SIZE" -gt "$CRITICAL_THRESHOLD" ]; then
+    # CRITICAL: Rebuild database
+    echo "🚨 CRITICAL: WAL file exceeds 10MB - database corruption suspected"
 
     # Backup corrupted database
     BACKUP=".beads/beads.db.corrupted-$(date +%Y%m%d-%H%M%S)"
@@ -43,13 +91,17 @@ if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
         if br sync --import-only 2>&1; then
             echo "✅ Database rebuilt successfully from JSONL"
 
-            # Verify rebuild worked
-            NEW_WAL_SIZE=$(stat -c%s .beads/beads.db-wal 2>/dev/null || echo "0")
-            echo "   New WAL Size: $(numfmt --to=iec-i --suffix=B $NEW_WAL_SIZE 2>/dev/null || echo "${NEW_WAL_SIZE} bytes")"
+            # Verify rebuild worked (WAL should be absent or small)
+            if [ -f "$WAL_FILE" ]; then
+                NEW_WAL_SIZE=$(stat -c%s "$WAL_FILE" 2>/dev/null || echo "0")
+                echo "   New WAL Size: $(format_bytes $NEW_WAL_SIZE)"
+            else
+                echo "   WAL file removed (checkpointed)"
+            fi
 
             # Create notification bead
             if br create "Database corruption repaired automatically" \
-                --description "WAL file exceeded 10MB ($WAL_SIZE bytes). Database rebuilt from issues.jsonl source of truth using \`br sync --import-only\`. Corrupted DB backed up to $BACKUP." \
+                --description "WAL file exceeded 10MB ($(format_bytes $WAL_SIZE)). Database rebuilt from issues.jsonl source of truth using \`br sync --import-only\`. Corrupted DB backed up to $BACKUP." \
                 --type info \
                 --priority 4 2>/dev/null; then
                 echo "📝 Created notification bead"
@@ -66,6 +118,30 @@ if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
         echo "   Run: br sync --import-only"
         exit 1
     fi
+
+elif [ "$WAL_SIZE" -gt "$WARNING_THRESHOLD" ]; then
+    # WARNING: Force checkpoint with alert
+    echo "⚠️ WARNING: WAL file exceeds 5MB - forcing checkpoint"
+
+    if trigger_checkpoint "WAL size warning ($(format_bytes $WAL_SIZE))"; then
+        # Verify checkpoint worked
+        if [ -f "$WAL_FILE" ]; then
+            NEW_WAL_SIZE=$(stat -c%s "$WAL_FILE" 2>/dev/null || echo "0")
+            echo "   New WAL Size: $(format_bytes $NEW_WAL_SIZE)"
+        else
+            echo "   WAL file removed (checkpointed)"
+        fi
+        echo "✅ Checkpoint completed"
+    fi
+
+elif [ "$WAL_SIZE" -gt "$CHECKPOINT_THRESHOLD" ]; then
+    # PROACTIVE: Trigger checkpoint before issues arise
+    echo "ℹ️ INFO: WAL file exceeds 1MB - proactive checkpoint"
+
+    if trigger_checkpoint "Proactive maintenance ($(format_bytes $WAL_SIZE))"; then
+        echo "✅ Proactive checkpoint completed"
+    fi
+
 else
     echo "✅ Database healthy - WAL size within normal limits"
 fi
