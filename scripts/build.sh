@@ -71,12 +71,31 @@ process_module() {
     # Remove shebang (we'll add one at the top)
     content=$(echo "$content" | sed '1{/^#!/d}')
 
-    # Comment out source commands (modules will be inline)
-    content=$(echo "$content" | sed 's/^\([[:space:]]*\)source /\1# source /')
+    # Use perl to remove direct execution blocks, source commands, and module _LOADED assignments
+    # Note: Source guards are already skipped by setting _LOADED vars at top
+    content=$(echo "$content" | perl -0777 -pe '
+        # Remove direct execution blocks (BASH_SOURCE checks) that test modules standalone
+        # These cause module code to execute instead of just defining functions
+        s/^if\s+\[\[\s+"\$\{BASH_SOURCE\[0\]\}"\s+==\s+"\$\{0\}"\s+\]\];\s+then\s*\n.*?^fi\s*$//gsm;
 
-    # Remove "already loaded" guards since everything is in one file
-    content=$(echo "$content" | grep -v '_LOADED:-}' || true)
-    content=$(echo "$content" | grep -v '_LOADED=true' || true)
+        # Remove ALL source commands (both guarded and unguarded)
+        # Modules are inline, so source commands will fail
+        s/^[ \t]*source\s+[^\n]+\n//gm;
+
+        # Remove _LOADED=true assignments (we set these all at the top now)
+        s/^[ \t]*[A-Z_]+_LOADED=true\s*\n//gm;
+
+        # Clean up empty if-blocks that were left after removing source commands
+        # Run multiple times to handle nested empty blocks
+        for my $i (1..5) {
+            # Pattern 1: if [[ ... ]]; then\nfi
+            s/^[ \t]*if\s+\[\[.*?\]\]\s*;\s*then\s*\n\s*fi\s*\n//gm;
+            # Pattern 2: if ! declare ...; then\nfi
+            s/^[ \t]*if\s+!\s+declare.*?;\s*then\s*\n\s*fi\s*\n//gm;
+            # Pattern 3: if COMMAND; then\nfi (general case)
+            s/^[ \t]*if\s+[^;\n]+;\s*then\s*\n\s*fi\s*\n//gm;
+        }
+    ')
 
     if [[ "$MINIFY" == "true" ]]; then
         # Strip comment-only lines (keep inline comments)
@@ -166,6 +185,25 @@ set -euo pipefail
 
 NEEDLE_VERSION="$(get_version)"
 NEEDLE_BUILD_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+
+# -----------------------------------------------------------------------------
+# Module Loading Guards
+# -----------------------------------------------------------------------------
+# Set all module _LOADED variables to prevent source attempts in bundled code
+# This causes all source guards to skip, since modules are already inline
+_NEEDLE_BILLING_MODELS_LOADED=true
+_NEEDLE_CLAIM_LOADED=true
+_NEEDLE_CONFIG_LOADED=true
+_NEEDLE_CONSTANTS_LOADED=true
+_NEEDLE_DIAGNOSTIC_LOADED=true
+_NEEDLE_DISPATCH_LOADED=true
+_NEEDLE_JSON_LOADED=true
+_NEEDLE_MITOSIS_LOADED=true
+_NEEDLE_OUTPUT_LOADED=true
+_NEEDLE_PROMPT_LOADED=true
+_NEEDLE_SELECT_LOADED=true
+_NEEDLE_TELEMETRY_EVENTS_LOADED=true
+_NEEDLE_WORKSPACE_LOADED=true
 
 HEADER
 
