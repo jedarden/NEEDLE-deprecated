@@ -26,10 +26,11 @@ if [ "$READY_COUNT" -gt 0 ]; then
         echo "🔧 Backing up corrupted database and rebuilding..."
         # Backup corrupted database
         mv .beads/beads.db .beads/beads.db.corrupted-$(date +%Y%m%d-%H%M%S) 2>/dev/null || true
+        rm -f .beads/beads.db-wal .beads/beads.db-shm
 
-        # Rebuild from issues.jsonl using br sync import
+        # Rebuild from issues.jsonl using br sync
         if command -v br &> /dev/null; then
-            br sync import 2>/dev/null || echo "⚠️ br sync import failed"
+            br sync --import-only 2>/dev/null || echo "⚠️ br sync --import-only failed"
         fi
     else
         CAUSE="Worker query mismatch (unknown)"
@@ -39,7 +40,7 @@ if [ "$READY_COUNT" -gt 0 ]; then
     READY_SAMPLE=$(br ready 2>/dev/null | head -10)
 
     # Close as false alarm
-    br comment $BEAD_ID "**FALSE ALARM DETECTED**
+    br comments add $BEAD_ID "**FALSE ALARM DETECTED**
 
 Verification shows **$READY_COUNT beads ready to work**.
 

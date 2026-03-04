@@ -40,7 +40,7 @@ if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
 
     # Rebuild from JSONL using br sync
     if command -v br &> /dev/null; then
-        if br sync import 2>&1; then
+        if br sync --import-only 2>&1; then
             echo "✅ Database rebuilt successfully from JSONL"
 
             # Verify rebuild worked
@@ -49,13 +49,13 @@ if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
 
             # Create notification bead
             if br create "Database corruption repaired automatically" \
-                --description "WAL file exceeded 10MB ($WAL_SIZE bytes). Database rebuilt from issues.jsonl source of truth using \`br sync import\`. Corrupted DB backed up to $BACKUP." \
+                --description "WAL file exceeded 10MB ($WAL_SIZE bytes). Database rebuilt from issues.jsonl source of truth using \`br sync --import-only\`. Corrupted DB backed up to $BACKUP." \
                 --type info \
                 --priority 4 2>/dev/null; then
                 echo "📝 Created notification bead"
             fi
         else
-            echo "❌ ERROR: br sync import failed"
+            echo "❌ ERROR: br sync --import-only failed"
             # Restore backup
             mv "$BACKUP" .beads/beads.db
             echo "⚠️ Restored corrupted database from backup"
@@ -63,7 +63,7 @@ if [ "$WAL_SIZE" -gt "$THRESHOLD" ]; then
         fi
     else
         echo "⚠️ WARNING: br command not available - manual rebuild required"
-        echo "   Run: br sync import"
+        echo "   Run: br sync --import-only"
         exit 1
     fi
 else
