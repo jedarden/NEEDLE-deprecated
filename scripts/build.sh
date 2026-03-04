@@ -71,8 +71,8 @@ process_module() {
     # Remove shebang (we'll add one at the top)
     content=$(echo "$content" | sed '1{/^#!/d}')
 
-    # Remove source commands (modules will be inline)
-    content=$(echo "$content" | grep -v '^[[:space:]]*source ' || true)
+    # Comment out source commands (modules will be inline)
+    content=$(echo "$content" | sed 's/^\([[:space:]]*\)source /\1# source /')
 
     # Remove "already loaded" guards since everything is in one file
     content=$(echo "$content" | grep -v '_LOADED:-}' || true)

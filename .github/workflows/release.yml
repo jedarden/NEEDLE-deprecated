@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build dist/needle
+        run: |
+          bash scripts/build.sh
+          chmod +x dist/needle
+
+      - name: Verify build
+        run: |
+          if [ ! -f dist/needle ]; then
+            echo "Error: dist/needle was not created"
+            exit 1
+          fi
+          echo "Build size: $(wc -c < dist/needle) bytes"
+          echo "Build lines: $(wc -l < dist/needle)"
+          # Test that the binary runs
+          dist/needle --version || dist/needle version
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          name: Release v${{ steps.version.outputs.version }}
+          body: |
+            ## NEEDLE v${{ steps.version.outputs.version }}
+
+            Single-file distribution of NEEDLE CLI.
+
+            ### Installation
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
+            ```
+
+            Or install specific version:
+
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ steps.version.outputs.version }}
+            ```
+
+            ### Manual Installation
+
+            ```bash
+            # Download the binary
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/needle -o needle
+
+            # Make it executable
+            chmod +x needle
+
+            # Move to a directory in your PATH
+            sudo mv needle /usr/local/bin/needle
+
+            # Verify installation
+            needle --version
+            ```
+
+            ### What's Changed
+
+            See commit history for details.
+          files: |
+            dist/needle
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
