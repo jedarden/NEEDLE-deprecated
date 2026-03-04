@@ -14,6 +14,15 @@ if [[ -z "${_NEEDLE_OUTPUT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/output.sh"
 fi
 
+# Source billing models module for enforcement strategy
+if [[ -z "${_NEEDLE_BILLING_MODELS_LOADED:-}" ]]; then
+    local billing_path
+    billing_path="$(dirname "${BASH_SOURCE[0]}")/../lib/billing_models.sh"
+    if [[ -f "$billing_path" ]]; then
+        source "$billing_path"
+    fi
+fi
+
 # Module version
 _NEEDLE_BUDGET_VERSION="1.0.0"
 
@@ -274,11 +283,21 @@ check_budget() {
 
     _needle_debug "Budget check: spend=\$$daily_spend, limit=\$$daily_limit, ratio=$ratio, threshold=$warn_threshold"
 
-    # Check if budget exceeded (100%)
-    if _needle_float_compare_gte "$ratio" "1"; then
-        _needle_error "Budget exceeded: \$$daily_spend / \$$daily_limit (100%)"
-        _needle_event_budget_exceeded "$daily_spend" "$daily_limit"
-        return 2
+    # Check if budget exceeded using billing model enforcement strategy
+    # If billing models module is loaded, use it to determine if we should stop
+    if declare -f _needle_billing_should_stop_for_budget &>/dev/null; then
+        if _needle_billing_should_stop_for_budget "$daily_spend" "$daily_limit"; then
+            _needle_error "Budget exceeded: \$$daily_spend / \$$daily_limit"
+            _needle_event_budget_exceeded "$daily_spend" "$daily_limit"
+            return 2
+        fi
+    else
+        # Fallback: strict enforcement (100%)
+        if _needle_float_compare_gte "$ratio" "1"; then
+            _needle_error "Budget exceeded: \$$daily_spend / \$$daily_limit (100%)"
+            _needle_event_budget_exceeded "$daily_spend" "$daily_limit"
+            return 2
+        fi
     fi
 
     # Check if warning threshold reached

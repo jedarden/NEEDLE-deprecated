@@ -44,6 +44,15 @@ if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
     source "$NEEDLE_SRC/lib/diagnostic.sh"
 fi
 
+# Source billing models module for priority weights
+if [[ -z "${_NEEDLE_BILLING_MODELS_LOADED:-}" ]]; then
+    local billing_path
+    billing_path="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}/lib/billing_models.sh"
+    if [[ -f "$billing_path" ]]; then
+        source "$billing_path"
+    fi
+fi
+
 # Priority weight configuration
 # P0 (critical) = 8x, P1 (high) = 4x, P2 (normal) = 2x, P3 (low) = 1x
 NEEDLE_PRIORITY_WEIGHTS=(
@@ -60,6 +69,13 @@ NEEDLE_PRIORITY_WEIGHTS=(
 _needle_get_priority_weight() {
     local priority="${1:-2}"  # Default to P2 (normal)
 
+    # Use billing model module if available (adjusts weights based on billing model)
+    if declare -f _needle_billing_get_priority_weight &>/dev/null; then
+        _needle_billing_get_priority_weight "$priority"
+        return 0
+    fi
+
+    # Fallback: use base priority weights
     # Validate priority is a number
     if ! [[ "$priority" =~ ^[0-9]+$ ]]; then
         priority=2

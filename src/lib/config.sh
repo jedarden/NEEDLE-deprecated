@@ -10,6 +10,10 @@ NEEDLE_CONFIG_CACHE=""
 
 # Default configuration as JSON (used for merging)
 _NEEDLE_CONFIG_DEFAULTS='{
+  "billing": {
+    "model": "pay_per_token",
+    "daily_budget_usd": 10.0
+  },
   "limits": {
     "global_max_concurrent": 20,
     "providers": {
@@ -24,13 +28,13 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "idle_timeout": "300s"
   },
   "strands": {
-    "pluck": true,
-    "explore": true,
-    "mend": true,
-    "weave": false,
-    "unravel": false,
-    "pulse": false,
-    "knot": true
+    "pluck": "auto",
+    "explore": "auto",
+    "mend": "auto",
+    "weave": "auto",
+    "unravel": "auto",
+    "pulse": "auto",
+    "knot": "auto"
   },
   "mend": {
     "heartbeat_max_age": 3600,
@@ -92,6 +96,17 @@ _NEEDLE_CONFIG_DEFAULTS='{
 _NEEDLE_CONFIG_DEFAULTS_YAML='# NEEDLE Configuration
 # See: https://github.com/user/needle#configuration
 
+# Billing model configuration
+# Controls how aggressively NEEDLE uses API budget
+billing:
+  # model: Billing model profile
+  #   - pay_per_token: Conservative (default), minimize token usage
+  #   - use_or_lose: Aggressive, use allocated budget
+  #   - unlimited: Maximum throughput, no budget enforcement
+  model: pay_per_token
+  # daily_budget_usd: Daily budget in USD (used by use_or_lose model)
+  daily_budget_usd: 10.0
+
 limits:
   global_max_concurrent: 20
   providers:
@@ -103,14 +118,16 @@ runner:
   polling_interval: 2s
   idle_timeout: 300s
 
+# Strand configuration
+# Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
-  pluck: true
-  explore: true
-  mend: true
-  weave: false
-  unravel: false
-  pulse: false
-  knot: true
+  pluck: auto    # Primary work from configured workspaces
+  explore: auto  # Look for work in other workspaces
+  mend: auto     # Maintenance and cleanup
+  weave: auto    # Create beads from documentation gaps
+  unravel: auto  # Create alternatives for blocked beads
+  pulse: auto    # Codebase health monitoring
+  knot: auto     # Alert human when stuck
 
 # Maintenance strand configuration
 mend:
@@ -537,6 +554,17 @@ create_default_config() {
 # NEEDLE Configuration
 # See: https://github.com/user/needle#configuration
 
+# Billing model configuration
+# Controls how aggressively NEEDLE uses API budget
+billing:
+  # model: Billing model profile
+  #   - pay_per_token: Conservative (default), minimize token usage
+  #   - use_or_lose: Aggressive, use allocated budget
+  #   - unlimited: Maximum throughput, no budget enforcement
+  model: pay_per_token
+  # daily_budget_usd: Daily budget in USD (used by use_or_lose model)
+  daily_budget_usd: 10.0
+
 limits:
   global_max_concurrent: 20
   providers:
@@ -548,14 +576,16 @@ runner:
   polling_interval: 2s
   idle_timeout: 300s
 
+# Strand configuration
+# Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
-  pluck: true
-  explore: true
-  mend: true
-  weave: false
-  unravel: false
-  pulse: false
-  knot: true
+  pluck: auto    # Primary work from configured workspaces
+  explore: auto  # Look for work in other workspaces
+  mend: auto     # Maintenance and cleanup
+  weave: auto    # Create beads from documentation gaps
+  unravel: auto  # Create alternatives for blocked beads
+  pulse: auto    # Codebase health monitoring
+  knot: auto     # Alert human when stuck
 
 # Maintenance strand configuration
 mend:
@@ -679,6 +709,27 @@ validate_config() {
 
     if [[ ! "$daily_limit" =~ ^[0-9]+\.?[0-9]*$ ]] || [[ "$(echo "$daily_limit < 0" | bc 2>/dev/null || echo 0)" -eq 1 ]]; then
         _needle_error "Invalid effort.budget.daily_limit_usd: must be positive number"
+        return 1
+    fi
+
+    # Validate billing model
+    local billing_model
+    billing_model=$(get_config "billing.model" "pay_per_token")
+
+    case "$billing_model" in
+        pay_per_token|use_or_lose|unlimited)
+            ;;
+        *)
+            _needle_error "Invalid billing.model: must be pay_per_token, use_or_lose, or unlimited"
+            return 1
+            ;;
+    esac
+
+    local billing_budget
+    billing_budget=$(get_config "billing.daily_budget_usd" "10.0")
+
+    if [[ ! "$billing_budget" =~ ^[0-9]+\.?[0-9]*$ ]] || [[ "$(echo "$billing_budget < 0" | bc 2>/dev/null || echo 0)" -eq 1 ]]; then
+        _needle_error "Invalid billing.daily_budget_usd: must be positive number"
         return 1
     fi
 

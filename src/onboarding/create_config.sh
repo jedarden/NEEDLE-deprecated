@@ -275,6 +275,17 @@ budget:
   daily_limit_usd: $daily_limit
   warn_threshold: $warn_threshold
 
+# Billing model configuration
+# Controls how aggressively NEEDLE uses API budget
+billing:
+  # model: Billing model profile
+  #   - pay_per_token: Conservative (default), minimize token usage
+  #   - use_or_lose: Aggressive, use allocated budget
+  #   - unlimited: Maximum throughput, no budget enforcement
+  model: pay_per_token
+  # daily_budget_usd: Daily budget in USD (used by use_or_lose model)
+  daily_budget_usd: $daily_limit
+
 # Advanced settings (edit manually for customization)
 limits:
   global_max_concurrent: 20
@@ -287,14 +298,16 @@ runner:
   polling_interval: 2s
   idle_timeout: 300s
 
+# Strand configuration
+# Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
-  pluck: true
-  explore: true
-  mend: true
-  weave: false
-  unravel: false
-  pulse: false
-  knot: true
+  pluck: auto    # Primary work from configured workspaces
+  explore: auto  # Look for work in other workspaces
+  mend: auto     # Maintenance and cleanup
+  weave: auto    # Create beads from documentation gaps
+  unravel: auto  # Create alternatives for blocked beads
+  pulse: auto    # Codebase health monitoring
+  knot: auto     # Alert human when stuck
 
 mend:
   heartbeat_max_age: 3600

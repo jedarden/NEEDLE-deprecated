@@ -44,6 +44,11 @@ if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
     source "$NEEDLE_SRC/lib/diagnostic.sh"
 fi
 
+# Source billing models module for strand enablement
+if [[ -z "${_NEEDLE_BILLING_MODELS_LOADED:-}" ]]; then
+    source "$NEEDLE_SRC/lib/billing_models.sh"
+fi
+
 # Source individual strand implementations
 # Each strand file defines _needle_strand_<name>() function
 source "$NEEDLE_SRC/strands/pluck.sh"
@@ -65,6 +70,13 @@ source "$NEEDLE_SRC/strands/knot.sh"
 _needle_is_strand_enabled() {
     local strand="$1"
 
+    # Use billing model module if available (respects auto, true, false settings)
+    if declare -f _needle_billing_is_strand_enabled &>/dev/null; then
+        _needle_billing_is_strand_enabled "$strand"
+        return $?
+    fi
+
+    # Fallback: use config directly
     # Default to true if not configured (changed from false to prevent worker starvation)
     local enabled
     enabled="$(get_config "strands.$strand" "true" 2>/dev/null)"
@@ -73,6 +85,17 @@ _needle_is_strand_enabled() {
     case "$enabled" in
         true|True|TRUE|yes|Yes|YES|1)
             return 0
+            ;;
+        auto|Auto|AUTO)
+            # If auto but billing models not loaded, default to enabled for essential strands
+            case "$strand" in
+                pluck|explore|mend|knot)
+                    return 0
+                    ;;
+                *)
+                    return 1
+                    ;;
+            esac
             ;;
         *)
             return 1
