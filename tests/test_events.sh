@@ -447,12 +447,12 @@ fi
 _test_start "Strand event convenience functions"
 strand_conv_ok=true
 
-output=$(NEEDLE_VERBOSE=true _needle_event_strand_started "bead-abc" "5")
+output=$(NEEDLE_VERBOSE=true _needle_event_strand_started "bead-abc" "5" 2>&1)
 if ! echo "$output" | jq -e '.data.strand == 5' > /dev/null 2>&1; then
     strand_conv_ok=false
 fi
 
-output=$(NEEDLE_VERBOSE=true _needle_event_strand_completed "bead-abc" "5" "result=done")
+output=$(NEEDLE_VERBOSE=true _needle_event_strand_completed "bead-abc" "5" "result=done" 2>&1)
 if ! echo "$output" | jq -e '.data.strand == 5' > /dev/null 2>&1; then
     strand_conv_ok=false
 fi
@@ -467,12 +467,12 @@ fi
 _test_start "Error event convenience functions"
 error_conv_ok=true
 
-output=$(NEEDLE_VERBOSE=true _needle_event_error_claim_failed "bead-xyz" "reason=locked")
+output=$(NEEDLE_VERBOSE=true _needle_event_error_claim_failed "bead-xyz" "reason=locked" 2>&1)
 if ! echo "$output" | jq -e '.event == "error.claim_failed"' > /dev/null 2>&1; then
     error_conv_ok=false
 fi
 
-output=$(NEEDLE_VERBOSE=true _needle_event_error_timeout "claim_bead" "duration_seconds=60")
+output=$(NEEDLE_VERBOSE=true _needle_event_error_timeout "claim_bead" "duration_seconds=60" 2>&1)
 if ! echo "$output" | jq -e '.data.operation == "claim_bead"' > /dev/null 2>&1; then
     error_conv_ok=false
 fi
