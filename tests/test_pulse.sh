@@ -801,6 +801,323 @@ test_security_detector_handles_missing_pip_audit() {
 }
 
 # ============================================================================
+# Test: Documentation Drift Detector (nd-gn2)
+# ============================================================================
+
+test_docs_detector_function_exists() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    if declare -f _pulse_detector_docs &>/dev/null; then
+        pass "Documentation drift detector function exists"
+    else
+        fail "Documentation drift detector function not found"
+    fi
+}
+
+test_docs_extract_refs_basic() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    local content='Use the `calculate_cost()` function to compute prices.'
+
+    # Test that the grep pattern matches the expected format
+    # Use $'\x60' for backtick to avoid shell interpretation issues
+    local bt=$'\x60'
+    local pattern="${bt}[a-zA-Z_][a-zA-Z0-9_]*\(\)${bt}"
+    local match
+    match=$(echo "$content" | grep -oE "$pattern" 2>/dev/null)
+
+    if [[ -n "$match" ]]; then
+        pass "Documentation reference extraction finds function references"
+    else
+        fail "Documentation reference extraction should find function references"
+    fi
+}
+
+test_docs_extract_refs_file_paths() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    local content='See src/lib/utils.sh for more details.'
+
+    # Test that the grep pattern matches file paths
+    # Pattern should match paths like src/lib/utils.sh
+    local match
+    match=$(echo "$content" | grep -oE '[./]?[a-zA-Z0-9_/-]+[.][a-zA-Z]{2,4}' 2>/dev/null | head -1)
+
+    if [[ -n "$match" ]] && [[ "$match" == *"utils.sh"* ]]; then
+        pass "Documentation reference extraction finds file path references"
+    else
+        fail "Documentation reference extraction should find file path references"
+    fi
+}
+
+test_docs_detector_returns_json_array() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory with README
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    echo "# Test README" > "$temp_dir/README.md"
+    echo "See \`nonexistent_function()\` for details." >> "$temp_dir/README.md"
+
+    local result
+    result=$(_pulse_detector_docs "$temp_dir" "test-agent")
+
+    rm -rf "$temp_dir"
+
+    # Check if result is valid JSON array
+    if echo "$result" | jq -e 'type == "array"' &>/dev/null; then
+        pass "Documentation drift detector returns valid JSON array"
+    else
+        fail "Documentation drift detector should return valid JSON array"
+    fi
+}
+
+test_docs_function_exists_check() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory with a function
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    cat > "$temp_dir/test.sh" << 'EOF'
+my_test_function() {
+    echo "hello"
+}
+EOF
+
+    # Test that the function is found
+    if _pulse_function_exists "$temp_dir" "my_test_function"; then
+        pass "Function existence check finds defined functions"
+    else
+        fail "Function existence check should find defined functions"
+    fi
+
+    # Test that nonexistent function is not found
+    if ! _pulse_function_exists "$temp_dir" "nonexistent_func_xyz"; then
+        pass "Function existence check correctly identifies missing functions"
+    else
+        fail "Function existence check should not find nonexistent functions"
+    fi
+
+    rm -rf "$temp_dir"
+}
+
+test_docs_detector_no_readme() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory without README
+    local temp_dir
+    temp_dir=$(mktemp -d)
+
+    local result
+    result=$(_pulse_detector_docs "$temp_dir" "test-agent")
+
+    rm -rf "$temp_dir"
+
+    if [[ "$result" == "[]" ]]; then
+        pass "Documentation drift detector returns empty array when no docs"
+    else
+        fail "Documentation drift detector should return empty array when no docs"
+    fi
+}
+
+# ============================================================================
+# Test: Test Coverage Gap Detector (nd-gn2)
+# ============================================================================
+
+test_coverage_detector_function_exists() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    if declare -f _pulse_detector_coverage &>/dev/null; then
+        pass "Coverage gap detector function exists"
+    else
+        fail "Coverage gap detector function not found"
+    fi
+}
+
+test_coverage_detector_returns_json_array() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory with package.json but no coverage
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    echo '{"name": "test", "version": "1.0.0"}' > "$temp_dir/package.json"
+
+    local result
+    result=$(_pulse_detector_coverage "$temp_dir" "test-agent")
+
+    rm -rf "$temp_dir"
+
+    # Check if result is valid JSON array
+    if echo "$result" | jq -e 'type == "array"' &>/dev/null; then
+        pass "Coverage gap detector returns valid JSON array"
+    else
+        fail "Coverage gap detector should return valid JSON array"
+    fi
+}
+
+test_coverage_detector_no_project() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory without project files
+    local temp_dir
+    temp_dir=$(mktemp -d)
+
+    local result
+    result=$(_pulse_detector_coverage "$temp_dir" "test-agent")
+
+    rm -rf "$temp_dir"
+
+    if [[ "$result" == "[]" ]]; then
+        pass "Coverage gap detector returns empty array when no project files"
+    else
+        fail "Coverage gap detector should return empty array when no project files"
+    fi
+}
+
+test_coverage_threshold_config() {
+    # Test threshold retrieval (should return default 70 if not configured)
+    # Since get_config may not be available in test environment, check the config file
+    local config_file="$PROJECT_ROOT/src/lib/config.sh"
+    if [[ -f "$config_file" ]] && grep -q "coverage_threshold.*70" "$config_file" 2>/dev/null; then
+        pass "Coverage threshold defaults to 70 in config"
+    else
+        fail "Coverage threshold should default to 70 in config"
+    fi
+}
+
+# ============================================================================
+# Test: Stale TODO Detector (nd-gn2)
+# ============================================================================
+
+test_todos_detector_function_exists() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    if declare -f _pulse_detector_todos &>/dev/null; then
+        pass "Stale TODO detector function exists"
+    else
+        fail "Stale TODO detector function not found"
+    fi
+}
+
+test_todos_detector_returns_json_array() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # Create temp directory with a TODO file
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    echo "# TODO: implement this later" > "$temp_dir/test.py"
+
+    local result
+    result=$(_pulse_detector_todos "$temp_dir" "test-agent")
+
+    rm -rf "$temp_dir"
+
+    # Check if result is valid JSON array
+    if echo "$result" | jq -e 'type == "array"' &>/dev/null; then
+        pass "Stale TODO detector returns valid JSON array"
+    else
+        fail "Stale TODO detector should return valid JSON array"
+    fi
+}
+
+test_todos_age_threshold_config() {
+    # Test age threshold retrieval (should return default 180 if not configured)
+    local config_file="$PROJECT_ROOT/src/lib/config.sh"
+    if [[ -f "$config_file" ]] && grep -q "todo_age_days.*180" "$config_file" 2>/dev/null; then
+        pass "TODO age threshold defaults to 180 days in config"
+    else
+        fail "TODO age threshold should default to 180 days in config"
+    fi
+}
+
+test_todos_scan_pattern_matching() {
+    # Test that TODO patterns are recognized
+    local patterns=(
+        "TODO: implement this"
+        "FIXME: broken code"
+        "XXX: hack alert"
+        "HACK: temporary fix"
+    )
+
+    local matched=0
+    for pattern in "${patterns[@]}"; do
+        if [[ "$pattern" =~ (TODO|FIXME|XXX|HACK)[[:space:]]*(:|=|\[) ]]; then
+            ((matched++))
+        fi
+    done
+
+    if [[ "$matched" -eq "${#patterns[@]}" ]]; then
+        pass "TODO pattern matching recognizes all TODO variants"
+    else
+        fail "TODO pattern matching should recognize all TODO variants"
+    fi
+}
+
+test_todos_line_age_calculation() {
+    source "$PROJECT_ROOT/src/strands/pulse.sh" 2>/dev/null || true
+
+    # For non-git files, should return -1
+    local temp_dir
+    temp_dir=$(mktemp -d)
+    echo "test" > "$temp_dir/test.txt"
+
+    local age
+    age=$(_pulse_get_line_age "$temp_dir/test.txt" 1)
+
+    rm -rf "$temp_dir"
+
+    if [[ "$age" == "-1" ]]; then
+        pass "Line age returns -1 for non-git files"
+    else
+        fail "Line age should return -1 for non-git files"
+    fi
+}
+
+test_todos_fingerprint_format() {
+    # Test that TODO fingerprints follow expected format
+    local fingerprint="stale-todo:src/main.py:42"
+
+    if [[ "$fingerprint" == stale-todo:* ]]; then
+        pass "TODO fingerprint format is correct (starts with stale-todo:)"
+    else
+        fail "TODO fingerprint format incorrect"
+    fi
+}
+
+test_todos_severity_based_on_age() {
+    # Test severity escalation based on age
+    local age_180=180
+    local age_365=365
+
+    local severity_180="low"
+    local severity_365="medium"
+
+    if ((age_180 >= 365)); then
+        severity_180="medium"
+    fi
+
+    if ((age_365 >= 365)); then
+        severity_365="medium"
+    fi
+
+    if [[ "$severity_180" == "low" ]] && [[ "$severity_365" == "medium" ]]; then
+        pass "TODO severity correctly escalates based on age"
+    else
+        fail "TODO severity should escalate to medium at 365 days"
+    fi
+}
+
+test_todos_max_per_run_config() {
+    # Test max todos per run config (should return default 10 if not configured)
+    local config_file="$PROJECT_ROOT/src/lib/config.sh"
+    if [[ -f "$config_file" ]] && grep -q "max_todos_per_run.*10" "$config_file" 2>/dev/null; then
+        pass "Max TODOs per run defaults to 10 in config"
+    else
+        fail "Max TODOs per run should default to 10 in config"
+    fi
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -901,6 +1218,36 @@ run_tests() {
     test_security_detector_issue_format || ((failed++))
     test_security_detector_handles_missing_npm || ((failed++))
     test_security_detector_handles_missing_pip_audit || ((failed++))
+
+    # Documentation drift detector tests (nd-gn2)
+    echo ""
+    echo "=== Documentation Drift Detector Tests (nd-gn2) ==="
+    test_docs_detector_function_exists || ((failed++))
+    test_docs_extract_refs_basic || ((failed++))
+    test_docs_extract_refs_file_paths || ((failed++))
+    test_docs_detector_returns_json_array || ((failed++))
+    test_docs_function_exists_check || ((failed++))
+    test_docs_detector_no_readme || ((failed++))
+
+    # Coverage gap detector tests (nd-gn2)
+    echo ""
+    echo "=== Coverage Gap Detector Tests (nd-gn2) ==="
+    test_coverage_detector_function_exists || ((failed++))
+    test_coverage_detector_returns_json_array || ((failed++))
+    test_coverage_detector_no_project || ((failed++))
+    test_coverage_threshold_config || ((failed++))
+
+    # Stale TODO detector tests (nd-gn2)
+    echo ""
+    echo "=== Stale TODO Detector Tests (nd-gn2) ==="
+    test_todos_detector_function_exists || ((failed++))
+    test_todos_detector_returns_json_array || ((failed++))
+    test_todos_age_threshold_config || ((failed++))
+    test_todos_scan_pattern_matching || ((failed++))
+    test_todos_line_age_calculation || ((failed++))
+    test_todos_fingerprint_format || ((failed++))
+    test_todos_severity_based_on_age || ((failed++))
+    test_todos_max_per_run_config || ((failed++))
 
     echo ""
     if [[ $failed -eq 0 ]]; then

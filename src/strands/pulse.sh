@@ -822,6 +822,753 @@ _pulse_detector_security() {
 }
 
 # ============================================================================
+# Documentation Drift Detector (nd-gn2)
+# ============================================================================
+
+# Extract code references from markdown content
+# Looks for common patterns like:
+# - `function_name()`
+# - file paths: src/path/to/file.ext
+# - import statements
+# - API endpoints
+#
+# Usage: _pulse_extract_doc_refs <markdown_content>
+# Returns: JSON array of reference objects
+_pulse_extract_doc_refs() {
+    local content="$1"
+    local refs="[]"
+
+    # Pattern 1: Backticked function/method names with parens: `functionName()`
+    # Use $'\x60' to represent backtick character to avoid shell parsing issues
+    local bt=$'\x60'
+    while IFS= read -r match; do
+        [[ -z "$match" ]] && continue
+        # Extract function name from match like `calculate_cost()`
+        local func_name="$match"
+        func_name="${func_name#*${bt}}"     # Remove up to and including leading backtick
+        func_name="${func_name%${bt}*}"     # Remove trailing backtick and everything after
+        func_name="${func_name%()}"         # Remove trailing ()
+        func_name="${func_name%(}"          # Remove trailing ( if present
+
+        if [[ -n "$func_name" ]] && [[ ${#func_name} -ge 2 ]]; then
+            local ref
+            ref=$(jq -n --arg type "function" --arg name "$func_name" \
+                '{type: $type, name: $name}')
+            refs=$(echo "$refs" "$ref" | jq -s 'add' 2>/dev/null || echo "$refs")
+        fi
+    done < <(echo "$content" | grep -oE "${bt}[a-zA-Z_][a-zA-Z0-9_]*\(\)${bt}" 2>/dev/null)
+
+    # Pattern 2: File path references: src/path/to/file.ext or ./path/to/file.ext
+    while IFS= read -r match; do
+        [[ -z "$match" ]] && continue
+        # Clean up the match - extract just the path
+        local file_path="$match"
+        file_path="${file_path#*${bt}}"    # Remove up to and including leading backtick
+        file_path="${file_path%${bt}*}"    # Remove trailing backtick and everything after
+        file_path="${file_path#(}"         # Remove leading paren
+        file_path="${file_path%)}"         # Remove trailing paren
+
+        # Validate it looks like a file path
+        if [[ -n "$file_path" ]] && [[ "$file_path" =~ ^(\./|/|[a-zA-Z]) ]] && [[ "$file_path" =~ \.(sh|js|ts|py|go|rs|java|rb|php|yaml|yml|json|md)$ ]]; then
+            local ref
+            ref=$(jq -n --arg type "file" --arg path "$file_path" \
+                '{type: $type, path: $path}')
+            refs=$(echo "$refs" "$ref" | jq -s 'add' 2>/dev/null || echo "$refs")
+        fi
+    done < <(echo "$content" | grep -oE "[${bt}()]?[./]?[a-zA-Z0-9_/-]+[.][a-zA-Z]{2,4}[${bt}:)]?" 2>/dev/null | head -50)
+
+    echo "$refs"
+}
+
+# Check if a function exists in the codebase
+# Usage: _pulse_function_exists <workspace> <function_name>
+# Returns: 0 if found, 1 if not found
+_pulse_function_exists() {
+    local workspace="$1"
+    local func_name="$2"
+
+    # Search for function definition patterns
+    # Bash: func_name() { or function func_name {
+    # Python: def func_name(
+    # JavaScript: function func_name( or func_name = ( or func_name(
+    # TypeScript: same as JS plus func_name(
+
+    local patterns=(
+        "^[[:space:]]*(function[[:space:]]+)?${func_name}[[:space:]]*\(\)"
+        "^[[:space:]]*def[[:space:]]+${func_name}[[:space:]]*\("
+        "^[[:space:]]*${func_name}[[:space:]]*=[[:space:]]*(async[[:space:]]+)?\("
+        "^[[:space:]]*(const|let|var)[[:space:]]+${func_name}[[:space:]]*="
+    )
+
+    for pattern in "${patterns[@]}"; do
+        if grep -rqE "$pattern" "$workspace" --include="*.sh" --include="*.py" --include="*.js" --include="*.ts" 2>/dev/null; then
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+# Scan documentation files for references
+# Usage: _pulse_scan_docs <workspace>
+# Returns: JSON array of doc issue objects
+_pulse_scan_docs() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Find documentation files
+    local doc_files=()
+    while IFS= read -r -d '' file; do
+        doc_files+=("$file")
+    done < <(find "$workspace" -type f \( -name "*.md" -o -name "README*" -o -name "*.rst" \) \
+        -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/venv/*" -print0 2>/dev/null | head -20)
+
+    if [[ ${#doc_files[@]} -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local doc_drift_enabled
+    doc_drift_enabled=$(get_config "strands.pulse.detectors.doc_drift_enabled" "true")
+
+    if [[ "$doc_drift_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    for doc_file in "${doc_files[@]}"; do
+        local rel_path="${doc_file#$workspace/}"
+        local content
+        content=$(cat "$doc_file" 2>/dev/null) || continue
+
+        # Extract references
+        local refs
+        refs=$(_pulse_extract_doc_refs "$content")
+
+        local ref_count
+        ref_count=$(echo "$refs" | jq 'length' 2>/dev/null || echo 0)
+
+        if [[ "$ref_count" -eq 0 ]]; then
+            continue
+        fi
+
+        # Check each reference
+        local idx=0
+        while ((idx < ref_count)); do
+            local ref ref_type
+
+            ref=$(echo "$refs" | jq -c ".[$idx]" 2>/dev/null)
+            ref_type=$(echo "$ref" | jq -r '.type' 2>/dev/null)
+
+            local broken_ref=""
+
+            case "$ref_type" in
+                function)
+                    local func_name
+                    func_name=$(echo "$ref" | jq -r '.name' 2>/dev/null)
+
+                    if [[ -n "$func_name" ]] && ! _pulse_function_exists "$workspace" "$func_name"; then
+                        broken_ref="function \`$func_name()\`"
+                    fi
+                    ;;
+                file)
+                    local file_path
+                    file_path=$(echo "$ref" | jq -r '.path' 2>/dev/null)
+
+                    # Try multiple path resolutions
+                    local resolved_path=""
+                    if [[ -f "$workspace/$file_path" ]]; then
+                        resolved_path="$workspace/$file_path"
+                    elif [[ -f "$workspace/${rel_path%/*}/$file_path" ]]; then
+                        resolved_path="$workspace/${rel_path%/*}/$file_path"
+                    fi
+
+                    if [[ -z "$resolved_path" ]]; then
+                        broken_ref="file \`$file_path\`"
+                    fi
+                    ;;
+            esac
+
+            if [[ -n "$broken_ref" ]]; then
+                local title="Documentation drift: $broken_ref in $rel_path"
+                local fingerprint="doc-drift:${rel_path}:${broken_ref}"
+
+                local description="Documentation reference drift detected in **${rel_path}**.
+
+**Missing Reference:** ${broken_ref}
+
+## Context
+The documentation references code that no longer exists or has been moved. This creates confusion for users and developers.
+
+## Remediation
+1. Search the codebase for the renamed/moved code
+2. Update the documentation to reference the current location
+3. If the code was removed, remove or update the documentation"
+
+                local issue
+                issue=$(jq -n \
+                    --arg category "docs" \
+                    --arg severity "low" \
+                    --arg title "$title" \
+                    --arg description "$description" \
+                    --arg fingerprint "$fingerprint" \
+                    --arg labels "documentation,drift" \
+                    '{
+                        category: $category,
+                        severity: $severity,
+                        title: $title,
+                        description: $description,
+                        fingerprint: $fingerprint,
+                        labels: $labels
+                    }')
+
+                issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+            fi
+
+            ((idx++))
+        done
+    done
+
+    echo "$issues"
+}
+
+# Main documentation drift detector
+# Usage: _pulse_detector_docs <workspace> <agent>
+# Returns: JSON array of doc issue objects
+_pulse_detector_docs() {
+    local workspace="$1"
+    local agent="$2"
+
+    # Check if docs detector is enabled
+    local docs_enabled
+    docs_enabled=$(get_config "strands.pulse.detectors.docs" "true")
+
+    if [[ "$docs_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    _needle_diag_strand "pulse" "Running documentation drift detector" \
+        "workspace=$workspace" \
+        "agent=$agent"
+
+    _needle_telemetry_emit "pulse.detector_started" \
+        "detector=docs" \
+        "workspace=$workspace"
+
+    local issues
+    issues=$(_pulse_scan_docs "$workspace")
+
+    local issue_count
+    issue_count=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
+
+    _needle_telemetry_emit "pulse.detector_completed" \
+        "detector=docs" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    _needle_diag_strand "pulse" "Documentation drift detector completed" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    echo "$issues"
+}
+
+# ============================================================================
+# Test Coverage Gap Detector (nd-gn2)
+# ============================================================================
+
+# Run npm/jest coverage and parse results
+# Usage: _pulse_npm_coverage <workspace>
+# Returns: JSON array of coverage issue objects
+_pulse_npm_coverage() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check for package.json and coverage script
+    if [[ ! -f "$workspace/package.json" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check if npm is available
+    if ! command -v npm &>/dev/null; then
+        _needle_debug "pulse: npm not found, skipping JS coverage scan"
+        echo "[]"
+        return 0
+    fi
+
+    # Check for coverage script or common coverage tools
+    local has_coverage=false
+    if grep -q '"coverage"' "$workspace/package.json" 2>/dev/null; then
+        has_coverage=true
+    elif [[ -f "$workspace/jest.config.js" ]] || [[ -f "$workspace/jest.config.ts" ]]; then
+        has_coverage=true
+    elif [[ -f "$workspace/.nycrc" ]] || [[ -f "$workspace/nyc.config.js" ]]; then
+        has_coverage=true
+    fi
+
+    if [[ "$has_coverage" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Run coverage (this may take a while)
+    local coverage_output
+    coverage_output=$(cd "$workspace" && npm run coverage -- --json --outputFile=/tmp/coverage-report.json 2>/dev/null) || {
+        # Try alternative coverage commands
+        coverage_output=$(cd "$workspace" && npx nyc report --reporter=json 2>/dev/null) || {
+            echo "[]"
+            return 0
+        }
+    }
+
+    # Parse coverage summary
+    local coverage_file="$workspace/coverage/coverage-final.json"
+    if [[ ! -f "$coverage_file" ]]; then
+        coverage_file="/tmp/coverage-report.json"
+    fi
+
+    if [[ ! -f "$coverage_file" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Get coverage threshold from config
+    local threshold
+    threshold=$(get_config "strands.pulse.coverage_threshold" "70")
+
+    # Parse coverage data
+    # Istanbul/nyc format: { "filePath": "...", "coverage": {...} }
+    local file_idx=0
+    local file_count
+    file_count=$(jq 'length' "$coverage_file" 2>/dev/null || echo 0)
+
+    while ((file_idx < file_count)); do
+        local file_entry file_path line_coverage
+        file_entry=$(jq -c ".[$file_idx]" "$coverage_file" 2>/dev/null)
+        file_path=$(echo "$file_entry" | jq -r '.path // .filePath // empty' 2>/dev/null)
+
+        [[ -z "$file_path" ]] && { ((file_idx++)); continue; }
+
+        # Calculate coverage percentage
+        local covered total pct
+        covered=$(echo "$file_entry" | jq '[.l | to_entries[] | .value | select(. > 0)] | length // 0' 2>/dev/null || echo 0)
+        total=$(echo "$file_entry" | jq '[.l | to_entries[]] | length // 1' 2>/dev/null || echo 1)
+
+        if [[ "$total" -gt 0 ]]; then
+            pct=$((covered * 100 / total))
+        else
+            pct=100
+        fi
+
+        if ((pct < threshold)); then
+            local rel_path="${file_path#$workspace/}"
+            local title="Low test coverage: $rel_path (${pct}%)"
+            local fingerprint="coverage:${rel_path}"
+
+            local description="Test coverage below threshold detected for **${rel_path}**.
+
+**Coverage:** ${pct}%
+**Threshold:** ${threshold}%
+**Lines Covered:** ${covered}/${total}
+
+## Context
+Low test coverage increases the risk of bugs going undetected. This file needs more comprehensive tests.
+
+## Remediation
+1. Identify untested code paths in the file
+2. Write unit tests for critical functions
+3. Focus on edge cases and error handling
+4. Aim for at least ${threshold}% coverage"
+
+            local issue
+            issue=$(jq -n \
+                --arg category "coverage" \
+                --arg severity "medium" \
+                --arg title "$title" \
+                --arg description "$description" \
+                --arg fingerprint "$fingerprint" \
+                --arg labels "testing,coverage,javascript" \
+                '{
+                    category: $category,
+                    severity: $severity,
+                    title: $title,
+                    description: $description,
+                    fingerprint: $fingerprint,
+                    labels: $labels
+                }')
+
+            issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+        fi
+
+        ((file_idx++))
+    done
+
+    echo "$issues"
+}
+
+# Run pytest coverage and parse results
+# Usage: _pulse_pytest_coverage <workspace>
+# Returns: JSON array of coverage issue objects
+_pulse_pytest_coverage() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check for Python project files
+    local has_python=false
+    if [[ -f "$workspace/pyproject.toml" ]] || [[ -f "$workspace/setup.py" ]] || \
+       [[ -f "$workspace/pytest.ini" ]] || [[ -f "$workspace/tox.ini" ]]; then
+        has_python=true
+    fi
+
+    if [[ "$has_python" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check if pytest and pytest-cov are available
+    if ! command -v pytest &>/dev/null; then
+        _needle_debug "pulse: pytest not found, skipping Python coverage scan"
+        echo "[]"
+        return 0
+    fi
+
+    # Get coverage threshold from config
+    local threshold
+    threshold=$(get_config "strands.pulse.coverage_threshold" "70")
+
+    # Run pytest with coverage
+    local coverage_output
+    coverage_output=$(cd "$workspace" && pytest --cov=. --cov-report=json:/tmp/pytest-coverage.json --collect-only -q 2>/dev/null) || {
+        echo "[]"
+        return 0
+    }
+
+    local coverage_file="/tmp/pytest-coverage.json"
+    if [[ ! -f "$coverage_file" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Parse coverage JSON
+    # pytest-cov format: { "files": [{ "file": "...", "summary": { "percent_covered": 45.5 } }] }
+    local file_count
+    file_count=$(jq '.files | length // 0' "$coverage_file" 2>/dev/null || echo 0)
+
+    local idx=0
+    while ((idx < file_count)); do
+        local file_entry file_path pct
+        file_entry=$(jq -c ".files[$idx]" "$coverage_file" 2>/dev/null)
+        file_path=$(echo "$file_entry" | jq -r '.file // empty' 2>/dev/null)
+        pct=$(echo "$file_entry" | jq -r '.summary.percent_covered // 100' 2>/dev/null)
+
+        [[ -z "$file_path" ]] && { ((idx++)); continue; }
+
+        # Skip __pycache__ and test files
+        if [[ "$file_path" == *"__pycache__"* ]] || [[ "$file_path" == *"test_"* ]] || [[ "$file_path" == *"_test.py" ]]; then
+            ((idx++))
+            continue
+        fi
+
+        # Convert to integer for comparison
+        local pct_int
+        pct_int=$(echo "$pct" | awk '{printf "%.0f", $1}')
+
+        if ((pct_int < threshold)); then
+            local rel_path="$file_path"
+            local title="Low test coverage: $rel_path (${pct_int}%)"
+            local fingerprint="coverage:${rel_path}"
+
+            local description="Test coverage below threshold detected for **${rel_path}**.
+
+**Coverage:** ${pct_int}%
+**Threshold:** ${threshold}%
+
+## Context
+Low test coverage increases the risk of bugs going undetected. This file needs more comprehensive tests.
+
+## Remediation
+1. Run \`pytest --cov=${rel_path} --cov-report=term-missing\` to see uncovered lines
+2. Write tests for untested functions
+3. Focus on business logic and error handling"
+
+            local issue
+            issue=$(jq -n \
+                --arg category "coverage" \
+                --arg severity "medium" \
+                --arg title "$title" \
+                --arg description "$description" \
+                --arg fingerprint "$fingerprint" \
+                --arg labels "testing,coverage,python" \
+                '{
+                    category: $category,
+                    severity: $severity,
+                    title: $title,
+                    description: $description,
+                    fingerprint: $fingerprint,
+                    labels: $labels
+                }')
+
+            issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+        fi
+
+        ((idx++))
+    done
+
+    echo "$issues"
+}
+
+# Main test coverage detector
+# Usage: _pulse_detector_coverage <workspace> <agent>
+# Returns: JSON array of coverage issue objects
+_pulse_detector_coverage() {
+    local workspace="$1"
+    local agent="$2"
+
+    # Check if coverage detector is enabled
+    local coverage_enabled
+    coverage_enabled=$(get_config "strands.pulse.detectors.coverage" "false")
+
+    if [[ "$coverage_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    _needle_diag_strand "pulse" "Running coverage gap detector" \
+        "workspace=$workspace" \
+        "agent=$agent"
+
+    _needle_telemetry_emit "pulse.detector_started" \
+        "detector=coverage" \
+        "workspace=$workspace"
+
+    local all_issues="[]"
+
+    # Run npm/jest coverage for Node.js projects
+    local npm_issues
+    npm_issues=$(_pulse_npm_coverage "$workspace")
+    if [[ -n "$npm_issues" ]] && [[ "$npm_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$npm_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    # Run pytest coverage for Python projects
+    local pytest_issues
+    pytest_issues=$(_pulse_pytest_coverage "$workspace")
+    if [[ -n "$pytest_issues" ]] && [[ "$pytest_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$pytest_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    local issue_count
+    issue_count=$(echo "$all_issues" | jq 'length' 2>/dev/null || echo 0)
+
+    _needle_telemetry_emit "pulse.detector_completed" \
+        "detector=coverage" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    _needle_diag_strand "pulse" "Coverage gap detector completed" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    echo "$all_issues"
+}
+
+# ============================================================================
+# Stale TODO Detector (nd-gn2)
+# ============================================================================
+
+# Get the age of a line in days using git blame
+# Usage: _pulse_get_line_age <file> <line_number>
+# Returns: Age in days, or -1 if unavailable
+_pulse_get_line_age() {
+    local file="$1"
+    local line_num="$2"
+
+    # Check if file is in a git repo
+    if ! git -C "$(dirname "$file")" rev-parse --git-dir &>/dev/null; then
+        echo -1
+        return 0
+    fi
+
+    # Get the timestamp of the last change to this line
+    local timestamp
+    timestamp=$(git -C "$(dirname "$file")" blame -L "$line_num,$line_num" --format="%(committerdate:unix)" "$file" 2>/dev/null | head -1)
+
+    if [[ -z "$timestamp" ]] || ! [[ "$timestamp" =~ ^[0-9]+$ ]]; then
+        echo -1
+        return 0
+    fi
+
+    local now
+    now=$(date +%s)
+    local age_seconds=$((now - timestamp))
+    local age_days=$((age_seconds / 86400))
+
+    echo "$age_days"
+}
+
+# Scan files for stale TODO/FIXME comments
+# Usage: _pulse_scan_todos <workspace>
+# Returns: JSON array of TODO issue objects
+_pulse_scan_todos() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Get TODO age threshold from config
+    local age_threshold
+    age_threshold=$(get_config "strands.pulse.todo_age_days" "180")
+
+    # Find files with TODO/FIXME comments
+    local todo_files=()
+    while IFS= read -r -d '' file; do
+        todo_files+=("$file")
+    done < <(find "$workspace" -type f \( \
+        -name "*.sh" -o -name "*.py" -o -name "*.js" -o -name "*.ts" -o \
+        -name "*.go" -o -name "*.rs" -o -name "*.java" -o -name "*.rb" -o \
+        -name "*.php" -o -name "*.c" -o -name "*.cpp" -o -name "*.h" \
+        \) -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/venv/*" \
+        -not -path "*/dist/*" -not -path "*/build/*" -print0 2>/dev/null | head -100)
+
+    if [[ ${#todo_files[@]} -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local max_todos
+    max_todos=$(get_config "strands.pulse.max_todos_per_run" "10")
+    local todos_found=0
+
+    for file in "${todo_files[@]}"; do
+        # Stop if we've hit the limit
+        if ((todos_found >= max_todos)); then
+            break
+        fi
+
+        local rel_path="${file#$workspace/}"
+
+        # Skip test files for TODO detection (they often have intentional TODOs)
+        if [[ "$rel_path" == *"test"* ]] || [[ "$rel_path" == *"spec"* ]]; then
+            continue
+        fi
+
+        # Find TODO/FIXME lines
+        local line_num=0
+        while IFS= read -r line; do
+            ((line_num++))
+
+            # Check for TODO or FIXME pattern
+            if [[ "$line" =~ (TODO|FIXME|XXX|HACK)[[:space:]]*(:|=|\[) ]]; then
+                local age_days
+                age_days=$(_pulse_get_line_age "$file" "$line_num")
+
+                # Skip if age couldn't be determined or is below threshold
+                if [[ "$age_days" -lt 0 ]] || ((age_days < age_threshold)); then
+                    continue
+                fi
+
+                # Extract TODO content (remove leading whitespace and comment markers)
+                local todo_content="$line"
+                todo_content="${todo_content#*TODO}"
+                todo_content="${todo_content#*FIXME}"
+                todo_content="${todo_content#*XXX}"
+                todo_content="${todo_content#*HACK}"
+                todo_content="${todo_content#[:=[]}"
+                todo_content="${todo_content#"${todo_content%%[![:space:]]*}"}"  # Trim leading space
+                todo_content="${todo_content:0:80}"  # Truncate to 80 chars
+
+                local title="Stale TODO (${age_days}d old): $rel_path:$line_num"
+                local fingerprint="stale-todo:${rel_path}:${line_num}"
+
+                local description="Stale TODO/FIXME comment detected in **${rel_path}**.
+
+**Age:** ${age_days} days (threshold: ${age_threshold} days)
+**Line:** ${line_num}
+**Content:** \`${todo_content}\`
+
+## Context
+This TODO comment has been in the codebase for over ${age_threshold} days without being addressed. Stale TODOs accumulate and become outdated, making them unreliable indicators of actual work needed.
+
+## Remediation
+1. Review if the TODO is still relevant
+2. If relevant, create a proper issue/task to track it
+3. If no longer needed, remove the comment
+4. If blocked, document why and what's needed to unblock"
+
+                local severity="low"
+                if ((age_days >= 365)); then
+                    severity="medium"
+                fi
+
+                local issue
+                issue=$(jq -n \
+                    --arg category "todos" \
+                    --arg severity "$severity" \
+                    --arg title "$title" \
+                    --arg description "$description" \
+                    --arg fingerprint "$fingerprint" \
+                    --arg labels "todo,tech-debt,stale" \
+                    '{
+                        category: $category,
+                        severity: $severity,
+                        title: $title,
+                        description: $description,
+                        fingerprint: $fingerprint,
+                        labels: $labels
+                    }')
+
+                issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+                ((todos_found++))
+            fi
+        done < "$file"
+    done
+
+    echo "$issues"
+}
+
+# Main stale TODO detector
+# Usage: _pulse_detector_todos <workspace> <agent>
+# Returns: JSON array of TODO issue objects
+_pulse_detector_todos() {
+    local workspace="$1"
+    local agent="$2"
+
+    # Check if TODO detector is enabled
+    local todos_enabled
+    todos_enabled=$(get_config "strands.pulse.detectors.todos" "true")
+
+    if [[ "$todos_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    _needle_diag_strand "pulse" "Running stale TODO detector" \
+        "workspace=$workspace" \
+        "agent=$agent"
+
+    _needle_telemetry_emit "pulse.detector_started" \
+        "detector=todos" \
+        "workspace=$workspace"
+
+    local issues
+    issues=$(_pulse_scan_todos "$workspace")
+
+    local issue_count
+    issue_count=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
+
+    _needle_telemetry_emit "pulse.detector_completed" \
+        "detector=todos" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    _needle_diag_strand "pulse" "Stale TODO detector completed" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    echo "$issues"
+}
+
+# ============================================================================
 # Issue Collection and Processing
 # ============================================================================
 
@@ -866,12 +1613,21 @@ _pulse_collect_issues() {
         fi
     fi
 
-    # Test coverage detector (placeholder - implemented in nd-qpj-4)
+    # Test coverage detector (implemented in nd-gn2)
     if declare -f _pulse_detector_coverage &>/dev/null; then
         local coverage_issues
         coverage_issues=$(_pulse_detector_coverage "$workspace" "$agent")
         if [[ -n "$coverage_issues" ]] && [[ "$coverage_issues" != "[]" ]]; then
             all_issues=$(echo "$all_issues" "$coverage_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+        fi
+    fi
+
+    # Stale TODO detector (implemented in nd-gn2)
+    if declare -f _pulse_detector_todos &>/dev/null; then
+        local todo_issues
+        todo_issues=$(_pulse_detector_todos "$workspace" "$agent")
+        if [[ -n "$todo_issues" ]] && [[ "$todo_issues" != "[]" ]]; then
+            all_issues=$(echo "$all_issues" "$todo_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
         fi
     fi
 

@@ -83,11 +83,16 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "frequency": "24h",
     "max_beads_per_run": 5,
     "seen_issues_retention_days": 30,
+    "coverage_threshold": 70,
+    "todo_age_days": 180,
+    "max_todos_per_run": 10,
     "detectors": {
       "security": true,
       "dependencies": true,
       "docs": true,
-      "coverage": false
+      "doc_drift_enabled": true,
+      "coverage": false,
+      "todos": true
     }
   },
   "select": {
@@ -252,6 +257,15 @@ pulse:
   # seen_issues_retention_days: Days to remember seen issues for deduplication (default: 30)
   seen_issues_retention_days: 30
 
+  # coverage_threshold: Minimum test coverage percentage (default: 70)
+  coverage_threshold: 70
+
+  # todo_age_days: Days before a TODO is considered stale (default: 180)
+  todo_age_days: 180
+
+  # max_todos_per_run: Maximum stale TODOs to report per scan (default: 10)
+  max_todos_per_run: 10
+
   # detectors: Enable/disable specific health detectors
   detectors:
     # security: Scan for security vulnerabilities
@@ -260,8 +274,12 @@ pulse:
     dependencies: true
     # docs: Check for documentation drift
     docs: true
-    # coverage: Monitor test coverage trends
+    # doc_drift_enabled: Enable documentation reference drift detection
+    doc_drift_enabled: true
+    # coverage: Monitor test coverage trends (disabled by default)
     coverage: false
+    # todos: Detect stale TODO/FIXME comments
+    todos: true
 
 # Work stealing configuration
 # Allows idle workers to claim beads assigned to inactive assignees
