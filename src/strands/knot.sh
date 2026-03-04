@@ -114,12 +114,14 @@ _needle_knot_verify_work_available() {
     fi
 
     # Method 3: Direct br list check with comprehensive filtering
-    # Filters: open status, unclaimed, not blocked, not deferred, not HUMAN type
+    # Filters: open status, unclaimed, not blocked, not deferred, not HUMAN type, not assigned
+    # NOTE: Using length == 0 instead of == "" to avoid shell escaping issues with jq (nd-ane)
     diag_direct_count=$(cd "$workspace" 2>/dev/null && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-        jq '[.[] | select(.claimed_by == null or .claimed_by == "") |
-                   select(.blocked_by == null or .blocked_by == "") |
-                   select(.deferred_until == null or .deferred_until == "") |
-                   select(.issue_type == null or .issue_type != "human")] | length' 2>/dev/null || echo "0")
+        jq 'map(select(.claimed_by | length == 0) |
+                   select(.blocked_by | length == 0) |
+                   select(.deferred_until | length == 0) |
+                   select(.assignee | length == 0) |
+                   select(.issue_type | length == 0 or . == "task")) | length' 2>/dev/null || echo "0")
 
     if [[ "$diag_direct_count" -gt 0 ]]; then
         _needle_debug "knot: pre-flight found $diag_direct_count claimable beads via direct query"
@@ -139,21 +141,22 @@ _needle_knot_verify_work_available() {
         _needle_debug "knot: found $diag_any_open open beads but none claimable - logging diagnostics"
 
         # Log why beads aren't claimable for debugging
+        # NOTE: Using length > 0 instead of != "" to avoid shell escaping issues with jq (nd-ane)
         diag_claimed=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.claimed_by != null and .claimed_by != "")] | length' 2>/dev/null || echo "?")
+            jq 'map(select(.claimed_by | length > 0)) | length' 2>/dev/null || echo "?")
         diag_blocked=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.blocked_by != null and .blocked_by != "")] | length' 2>/dev/null || echo "?")
+            jq 'map(select(.blocked_by | length > 0)) | length' 2>/dev/null || echo "?")
         diag_deferred=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.deferred_until != null and .deferred_until != "")] | length' 2>/dev/null || echo "?")
+            jq 'map(select(.deferred_until | length > 0)) | length' 2>/dev/null || echo "?")
         diag_human_type=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.issue_type == "human")] | length' 2>/dev/null || echo "?")
+            jq 'map(select(.issue_type == "human")) | length' 2>/dev/null || echo "?")
         diag_has_deps=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.dependency_count != null and .dependency_count > 0)] | length' 2>/dev/null || echo "?")
+            jq 'map(select(.dependency_count > 0)) | length' 2>/dev/null || echo "?")
 
         # Check for assigned beads (persistent assignment vs temporary claim)
         # This detects when all work is assigned to specific workers - expected behavior
         diag_assigned=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
-            jq '[.[] | select(.assignee != null and .assignee != "")] | length' 2>/dev/null || echo "0")
+            jq 'map(select(.assignee | length > 0)) | length' 2>/dev/null || echo "0")
 
         _needle_debug "knot: bead status - claimed: $diag_claimed, assigned: $diag_assigned, blocked: $diag_blocked, deferred: $diag_deferred, human: $diag_human_type, has_deps: $diag_has_deps"
 

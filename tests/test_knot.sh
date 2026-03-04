@@ -420,6 +420,51 @@ else
 fi
 unset MOCK_BR_READY_COUNT
 
+# Test 24: Pre-flight skips alert when ALL beads are assigned (nd-ane)
+# This tests the fix for the jq != operator shell escaping issue
+_test_start "Pre-flight skips alert when ALL beads are assigned (nd-ane)"
+export MOCK_BR_READY_COUNT=""
+export MOCK_BR_LIST_DATA='[{"id":"nd-assigned-1","title":"Assigned bead 1","status":"open","priority":2,"claimed_by":"","blocked_by":"","deferred_until":"","issue_type":"task","assignee":"worker-alpha"},{"id":"nd-assigned-2","title":"Assigned bead 2","status":"open","priority":1,"claimed_by":"","blocked_by":"","deferred_until":"","issue_type":"task","assignee":"worker-beta"}]'
+
+# Capture output from verification
+output=$(_needle_knot_verify_work_available "$TEST_WORKSPACE_DIR" 2>&1)
+result=$?
+
+# Should return 1 (no work for THIS worker) but emit "all_work_assigned" event
+if [[ $result -ne 0 ]]; then
+    # Check that "all work assigned" event was emitted
+    if echo "$output" | grep -q "knot.all_work_assigned"; then
+        _test_pass "Pre-flight correctly detected all work assigned and skipped alert"
+    else
+        _test_fail "Pre-flight did not emit all_work_assigned event"
+    fi
+else
+    _test_fail "Pre-flight incorrectly found claimable beads when all are assigned"
+fi
+unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
+
+# Test 25: Pre-flight creates alert when SOME beads are unassigned (nd-ane)
+_test_start "Pre-flight creates alert when SOME beads are unassigned (nd-ane)"
+export MOCK_BR_READY_COUNT=""
+export MOCK_BR_LIST_DATA='[{"id":"nd-assigned-1","title":"Assigned bead","status":"open","priority":2,"claimed_by":"","blocked_by":"","deferred_until":"","issue_type":"task","assignee":"worker-alpha"},{"id":"nd-unassigned-1","title":"Unassigned bead","status":"open","priority":1,"claimed_by":"other","blocked_by":"","deferred_until":"","issue_type":"task","assignee":""}]'
+
+# Capture output from verification
+output=$(_needle_knot_verify_work_available "$TEST_WORKSPACE_DIR" 2>&1)
+result=$?
+
+# Should return 1 (no work) and NOT emit "all_work_assigned" since not all are assigned
+if [[ $result -ne 0 ]]; then
+    # Check that "all work assigned" event was NOT emitted
+    if ! echo "$output" | grep -q "knot.all_work_assigned"; then
+        _test_pass "Pre-flight correctly did not emit all_work_assigned when some unassigned"
+    else
+        _test_fail "Pre-flight incorrectly emitted all_work_assigned when some beads unassigned"
+    fi
+else
+    _test_fail "Pre-flight incorrectly found claimable beads"
+fi
+unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
+
 # Summary
 echo ""
 echo "=========================================="
