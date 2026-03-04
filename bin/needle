@@ -52,6 +52,7 @@ source "$NEEDLE_ROOT_DIR/src/agent/dispatch.sh"
 # Source onboarding modules
 source "$NEEDLE_ROOT_DIR/src/onboarding/welcome.sh"
 source "$NEEDLE_ROOT_DIR/src/onboarding/agents.sh"
+source "$NEEDLE_ROOT_DIR/src/onboarding/workspace_setup.sh"
 
 # Source CLI subcommands
 source "$NEEDLE_ROOT_DIR/src/cli/init.sh"
