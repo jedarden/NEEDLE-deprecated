@@ -14,6 +14,12 @@
 #   0 - Alert was sent successfully
 #   1 - Alert failed or rate-limited
 
+# Source bead claim module for _needle_create_bead
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/bead/claim.sh"
+fi
+
 # ============================================================================
 # Main Strand Entry Point
 # ============================================================================
@@ -386,13 +392,16 @@ $diag_info
 EOF
 )
 
-    # Create the human alert bead
+    # Create the human alert bead using wrapper
+    # Note: Human-type beads keep their assignment for visibility
     local bead_id
-    bead_id=$(br create \
+    bead_id=$(_needle_create_bead \
+        --workspace "$workspace" \
         --title "$title" \
         --type human \
         --priority 0 \
-        --labels "alert,needle-stuck" \
+        --label "alert" \
+        --label "needle-stuck" \
         --description "$description" \
         --silent 2>/dev/null)
 

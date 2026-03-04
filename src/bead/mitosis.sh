@@ -37,6 +37,10 @@ if [[ -z "${_NEEDLE_WORKSPACE_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/workspace.sh"
 fi
 
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/claim.sh"
+fi
+
 # ============================================================================
 # Mitosis Configuration
 # ============================================================================
@@ -626,38 +630,21 @@ _needle_perform_mitosis() {
 
         _needle_debug "Creating child $child_num: $title"
 
-        # Create child bead using br CLI
-        local child_result
+        # Create child bead using wrapper (handles unassigned_by_default)
         local child_id=""
 
-        # Build br create command
-        local br_cmd="br create \"$title\""
-        br_cmd+=" --workspace=\"$workspace\""
-        br_cmd+=" --description \"$description\""
-        br_cmd+=" --priority 2"
-        br_cmd+=" --type task"
-        br_cmd+=" --label mitosis-child"
-        br_cmd+=" --label parent-$parent_id"
-        br_cmd+=" --json"
+        child_id=$(_needle_create_bead \
+            --workspace "$workspace" \
+            --title "$title" \
+            --description "$description" \
+            --priority 2 \
+            --type task \
+            --label "mitosis-child" \
+            --label "parent-$parent_id" \
+            --silent 2>/dev/null)
 
-        # Execute br create
-        child_result=$(eval "$br_cmd" 2>&1)
-
-        if [[ $? -ne 0 ]]; then
-            _needle_warn "Failed to create child bead: $child_result"
-            continue
-        fi
-
-        # Extract child ID from result
-        child_id=$(echo "$child_result" | jq -r '.id // empty' 2>/dev/null)
-
-        if [[ -z "$child_id" ]]; then
-            # Try to extract from output text
-            child_id=$(echo "$child_result" | grep -oP 'Created issue \K[bd-\w]+' | head -1)
-        fi
-
-        if [[ -z "$child_id" ]]; then
-            _needle_warn "Could not extract child ID from result"
+        if [[ $? -ne 0 ]] || [[ -z "$child_id" ]]; then
+            _needle_warn "Failed to create child bead"
             continue
         fi
 

@@ -15,6 +15,12 @@
 #   0 - Work was found and processed (beads created)
 #   1 - No work found (fallthrough to next strand)
 
+# Source bead claim module for _needle_create_bead
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/bead/claim.sh"
+fi
+
 # ============================================================================
 # Main Strand Entry Point
 # ============================================================================
@@ -441,9 +447,10 @@ _needle_weave_create_beads() {
             done
         fi
 
-        # Create the bead
+        # Create the bead using wrapper (handles unassigned_by_default)
         local bead_id
-        bead_id=$(br create \
+        bead_id=$(_needle_create_bead \
+            --workspace "$workspace" \
             --title "$title" \
             --description "$full_description" \
             --priority "$priority" \

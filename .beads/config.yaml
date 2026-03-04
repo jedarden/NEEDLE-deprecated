@@ -64,3 +64,9 @@ select:
   # check_worker_heartbeat: Verify if assigned worker is still alive
   # Dead workers' beads can be stolen immediately
   check_worker_heartbeat: true
+
+  # unassigned_by_default: Leave new beads unassigned for workers to claim
+  # When true, NEEDLE creates beads without assignment, allowing workers to
+  # claim them immediately without waiting for work_stealing_timeout.
+  # This prevents worker starvation caused by all beads being auto-assigned to creator.
+  unassigned_by_default: true

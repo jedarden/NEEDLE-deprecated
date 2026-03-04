@@ -34,6 +34,11 @@ if [[ -z "${_NEEDLE_DISPATCH_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../agent/dispatch.sh"
 fi
 
+# Source bead claim module for _needle_create_bead
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../bead/claim.sh"
+fi
+
 # ============================================================================
 # Configuration Defaults
 # ============================================================================
@@ -497,9 +502,10 @@ _needle_unravel_create_alternatives() {
 
         full_description+="\n\n---\n**Alternative to:** $parent_id"
 
-        # Create the alternative bead
+        # Create the alternative bead using wrapper (handles unassigned_by_default)
         local bead_id
-        bead_id=$(br create \
+        bead_id=$(_needle_create_bead \
+            --workspace "$workspace" \
             --title "$title" \
             --description "$full_description" \
             --priority 2 \

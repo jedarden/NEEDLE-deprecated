@@ -433,9 +433,11 @@ The NEEDLE worker has experienced **$NEEDLE_FAILURE_COUNT consecutive failures**
 EOF
 )
 
-    # Create human bead for alert
+    # Create human bead for alert using wrapper
+    # Note: Human-type beads keep their assignment for visibility
     local bead_id
-    bead_id=$(br create \
+    bead_id=$(_needle_create_bead \
+        --workspace "$workspace" \
         --title "$title" \
         --type human \
         --priority 0 \

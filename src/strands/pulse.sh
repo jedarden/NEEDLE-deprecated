@@ -26,6 +26,12 @@ if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
     source "$NEEDLE_SRC/lib/diagnostic.sh"
 fi
 
+# Source bead claim module for _needle_create_bead
+if [[ -z "${_NEEDLE_CLAIM_LOADED:-}" ]]; then
+    NEEDLE_SRC="${NEEDLE_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+    source "$NEEDLE_SRC/bead/claim.sh"
+fi
+
 # ============================================================================
 # Pulse State Directory
 # ============================================================================
@@ -431,9 +437,10 @@ _pulse_create_bead() {
         labels="$labels,$extra_labels"
     fi
 
-    # Create the bead
+    # Create the bead using wrapper (handles unassigned_by_default)
     local bead_id
-    bead_id=$(br create \
+    bead_id=$(_needle_create_bead \
+        --workspace "$workspace" \
         --title "$title" \
         --description "$description" \
         --type task \

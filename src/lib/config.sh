@@ -101,7 +101,8 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "work_stealing_enabled": true,
     "work_stealing_timeout": 1800,
     "stealable_assignees": ["coder"],
-    "check_worker_heartbeat": true
+    "check_worker_heartbeat": true,
+    "unassigned_by_default": true
   }
 }'
 
@@ -306,6 +307,12 @@ select:
   # check_worker_heartbeat: Also check if assignee worker has no heartbeat (default: true)
   # If true, beads assigned to workers without heartbeats become stealable immediately
   check_worker_heartbeat: true
+
+  # unassigned_by_default: Leave new beads unassigned for workers to claim (default: true)
+  # When true, beads created by NEEDLE are immediately released after creation,
+  # allowing workers to claim them without waiting for work_stealing_timeout.
+  # This prevents worker starvation when all beads are auto-assigned to the creator.
+  unassigned_by_default: true
 '
 
 # Check if yq is available
@@ -711,6 +718,27 @@ unravel:
 
   # timeout: Timeout in seconds for unravel analysis (default: 120)
   timeout: 120
+
+# Work stealing configuration for multi-worker environments
+# Allows workers to claim beads assigned to inactive humans/workers
+select:
+  # work_stealing_enabled: Enable/disable work stealing (default: true)
+  work_stealing_enabled: true
+
+  # work_stealing_timeout: Seconds before an assigned bead becomes stealable (default: 30 minutes)
+  work_stealing_timeout: 1800
+
+  # stealable_assignees: Users whose assignments can be stolen (default: ["coder"])
+  stealable_assignees:
+    - coder
+
+  # check_worker_heartbeat: Verify if assigned worker is still alive (default: true)
+  check_worker_heartbeat: true
+
+  # unassigned_by_default: Leave new beads unassigned for workers to claim (default: true)
+  # When true, beads created by NEEDLE are immediately released after creation,
+  # allowing workers to claim them without waiting for work_stealing_timeout.
+  unassigned_by_default: true
 EOF
 
     if [[ $? -eq 0 ]]; then

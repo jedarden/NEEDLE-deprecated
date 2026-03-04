@@ -615,6 +615,193 @@ _needle_claim_stats() {
 }
 
 # ============================================================================
+# Bead Creation with Default Unassignment
+# ============================================================================
+
+# Check if unassigned_by_default is enabled
+# Usage: _needle_unassigned_by_default
+# Returns: 0 if enabled, 1 if disabled
+_needle_unassigned_by_default() {
+    local enabled
+    enabled=$(get_config "select.unassigned_by_default" "true" 2>/dev/null)
+
+    case "$enabled" in
+        true|True|TRUE|yes|Yes|YES|1) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Create a bead and immediately release assignment if unassigned_by_default is enabled
+# This prevents worker starvation by ensuring new beads are immediately claimable.
+#
+# Usage: _needle_create_bead [options] -- <title>
+# All options are passed through to br create
+# Returns: bead ID on success
+# Exit codes:
+#   0 - Success, bead created
+#   1 - Failed to create bead
+#
+# The function:
+# 1. Creates the bead using br create (which auto-assigns to creator)
+# 2. If unassigned_by_default is enabled AND bead is not human-type, releases the assignment
+# 3. Returns the bead ID
+#
+# Example:
+#   bead_id=$(_needle_create_bead --type task --priority 1 -- "Fix the bug")
+#   bead_id=$(_needle_create_bead --type human --title "HUMAN: Choose option")
+#
+# NOTE: Human-type beads are always kept assigned (human needs to see them).
+# Use --assignee to explicitly keep assignment for other types.
+_needle_create_bead() {
+    local br_args=()
+    local title=""
+    local has_assignee=false
+    local is_human_type=false
+    local workspace="${NEEDLE_WORKSPACE:-$(pwd)}"
+
+    # Parse arguments, collecting br create args
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --workspace)
+                workspace="$2"
+                shift 2
+                ;;
+            --assignee|-a)
+                has_assignee=true
+                br_args+=("$1" "$2")
+                shift 2
+                ;;
+            --type|-t)
+                br_args+=("$1" "$2")
+                if [[ "$2" == "human" ]]; then
+                    is_human_type=true
+                fi
+                shift 2
+                ;;
+            --title)
+                shift
+                br_args+=("--title" "$1")
+                title="$1"
+                shift
+                ;;
+            --description|-d|--body)
+                br_args+=("$1" "$2")
+                shift 2
+                ;;
+            --labels|-l)
+                br_args+=("$1" "$2")
+                shift 2
+                ;;
+            --label)
+                # Single label - convert to --labels
+                br_args+=("--labels" "$2")
+                shift 2
+                ;;
+            --priority|-p)
+                br_args+=("$1" "$2")
+                shift 2
+                ;;
+            --silent|--json|--dry-run)
+                br_args+=("$1")
+                shift
+                ;;
+            --)
+                # Title separator
+                shift
+                title="$*"
+                break
+                ;;
+            *)
+                br_args+=("$1")
+                shift
+                ;;
+        esac
+    done
+
+    # If we have remaining args after --, that's the title
+    if [[ -z "$title" ]] && [[ $# -gt 0 ]]; then
+        title="$*"
+        br_args+=("--title" "$title")
+    fi
+
+    # Create the bead
+    local create_output
+    local create_exit
+
+    _needle_debug "Creating bead: ${title:-<no title>}"
+    _needle_debug "br create args: ${br_args[*]}"
+
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        create_output=$(cd "$workspace" && br create "${br_args[@]}" 2>&1)
+    else
+        create_output=$(br create "${br_args[@]}" 2>&1)
+    fi
+    create_exit=$?
+
+    if [[ $create_exit -ne 0 ]]; then
+        _needle_error "Failed to create bead: $create_output"
+        return 1
+    fi
+
+    # Extract bead ID from output
+    # Format: "Created issue nd-xxxxx" or just the ID
+    local bead_id
+    bead_id=$(echo "$create_output" | grep -oP '(?:Created issue\s+)?[a-z]{2,}-[a-z0-9]+' | head -1)
+
+    if [[ -z "$bead_id" ]]; then
+        _needle_warn "Could not extract bead ID from: $create_output"
+        # Try to get last word as ID
+        bead_id=$(echo "$create_output" | awk '{print $NF}')
+    fi
+
+    _needle_debug "Created bead: $bead_id"
+
+    # Check if we should release the assignment
+    # Skip release if:
+    # 1. unassigned_by_default is disabled
+    # 2. An explicit assignee was provided (human wants to keep it)
+    # 3. This is a human-type bead (alerts that humans need to see)
+    if ! _needle_unassigned_by_default; then
+        _needle_debug "unassigned_by_default is disabled, keeping assignment"
+        echo "$bead_id"
+        return 0
+    fi
+
+    if $has_assignee; then
+        _needle_debug "Explicit assignee provided, keeping assignment"
+        echo "$bead_id"
+        return 0
+    fi
+
+    if $is_human_type; then
+        _needle_debug "Human-type bead, keeping assignment for visibility"
+        echo "$bead_id"
+        return 0
+    fi
+
+    # Release the assignment so workers can claim it immediately
+    _needle_debug "Releasing assignment for bead $bead_id (unassigned_by_default enabled)"
+
+    local release_result
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        release_result=$(cd "$workspace" && br update "$bead_id" --assignee "" --status open 2>&1)
+    else
+        release_result=$(br update "$bead_id" --assignee "" --status open 2>&1)
+    fi
+    local release_exit=$?
+
+    if [[ $release_exit -eq 0 ]]; then
+        _needle_debug "Released assignment for bead $bead_id"
+    else
+        # Non-fatal - bead was created, just couldn't release
+        _needle_warn "Created bead $bead_id but failed to release assignment: $release_result"
+    fi
+
+    echo "$bead_id"
+    return 0
+}
+
+# ============================================================================
 # Direct Execution Support (for testing)
 # ============================================================================
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
