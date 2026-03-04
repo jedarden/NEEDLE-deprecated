@@ -167,7 +167,7 @@ _needle_event_budget_warning() {
 
     # Emit the event
     if declare -f _needle_telemetry_emit &>/dev/null; then
-        _needle_telemetry_emit "budget.warning" \
+        _needle_telemetry_emit "budget.warning" "warn" \
             "daily_spend_usd=$daily_spend" \
             "daily_limit_usd=$daily_limit" \
             "threshold=$threshold"
@@ -191,7 +191,7 @@ _needle_event_budget_exceeded() {
 
     # Emit the event
     if declare -f _needle_telemetry_emit &>/dev/null; then
-        _needle_telemetry_emit "budget.exceeded" \
+        _needle_telemetry_emit "budget.exceeded" "error" \
             "daily_spend_usd=$daily_spend" \
             "daily_limit_usd=$daily_limit"
     fi
@@ -215,7 +215,7 @@ _needle_event_budget_per_bead_exceeded() {
 
     # Emit the event
     if declare -f _needle_telemetry_emit &>/dev/null; then
-        _needle_telemetry_emit "budget.per_bead_exceeded" \
+        _needle_telemetry_emit "budget.per_bead_exceeded" "error" \
             "bead_cost_usd=$bead_cost" \
             "bead_limit_usd=$bead_limit" \
             "bead_id=$bead_id"

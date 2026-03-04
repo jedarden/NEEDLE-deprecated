@@ -455,7 +455,7 @@ _pulse_create_bead() {
         _needle_info "pulse: created bead: $bead_id - $title"
 
         # Emit telemetry event
-        _needle_telemetry_emit "pulse.bead_created" \
+        _needle_telemetry_emit "pulse.bead_created" "info" \
             "bead_id=$bead_id" \
             "category=$category" \
             "severity=$severity" \
@@ -786,7 +786,7 @@ _pulse_detector_security() {
         "agent=$agent"
 
     # Emit detector started event
-    _needle_telemetry_emit "pulse.detector_started" \
+    _needle_telemetry_emit "pulse.detector_started" "info" \
         "detector=security" \
         "workspace=$workspace"
 
@@ -816,7 +816,7 @@ _pulse_detector_security() {
     fi
 
     # Emit detector completed event
-    _needle_telemetry_emit "pulse.detector_completed" \
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
         "detector=security" \
         "workspace=$workspace" \
         "issues_found=$issues_found"
@@ -1327,7 +1327,7 @@ _pulse_detector_dependencies() {
         "agent=$agent"
 
     # Emit detector started event
-    _needle_telemetry_emit "pulse.detector_started" \
+    _needle_telemetry_emit "pulse.detector_started" "info" \
         "detector=dependencies" \
         "workspace=$workspace"
 
@@ -1357,7 +1357,7 @@ _pulse_detector_dependencies() {
     fi
 
     # Emit detector completed event
-    _needle_telemetry_emit "pulse.detector_completed" \
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
         "detector=dependencies" \
         "workspace=$workspace" \
         "issues_found=$issues_found"
@@ -1600,7 +1600,7 @@ _pulse_detector_docs() {
         "workspace=$workspace" \
         "agent=$agent"
 
-    _needle_telemetry_emit "pulse.detector_started" \
+    _needle_telemetry_emit "pulse.detector_started" "info" \
         "detector=docs" \
         "workspace=$workspace"
 
@@ -1610,7 +1610,7 @@ _pulse_detector_docs() {
     local issue_count
     issue_count=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
 
-    _needle_telemetry_emit "pulse.detector_completed" \
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
         "detector=docs" \
         "workspace=$workspace" \
         "issues_found=$issue_count"
@@ -1887,7 +1887,7 @@ _pulse_detector_coverage() {
         "workspace=$workspace" \
         "agent=$agent"
 
-    _needle_telemetry_emit "pulse.detector_started" \
+    _needle_telemetry_emit "pulse.detector_started" "info" \
         "detector=coverage" \
         "workspace=$workspace"
 
@@ -1910,7 +1910,7 @@ _pulse_detector_coverage() {
     local issue_count
     issue_count=$(echo "$all_issues" | jq 'length' 2>/dev/null || echo 0)
 
-    _needle_telemetry_emit "pulse.detector_completed" \
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
         "detector=coverage" \
         "workspace=$workspace" \
         "issues_found=$issue_count"
@@ -2094,7 +2094,7 @@ _pulse_detector_todos() {
         "workspace=$workspace" \
         "agent=$agent"
 
-    _needle_telemetry_emit "pulse.detector_started" \
+    _needle_telemetry_emit "pulse.detector_started" "info" \
         "detector=todos" \
         "workspace=$workspace"
 
@@ -2104,7 +2104,7 @@ _pulse_detector_todos() {
     local issue_count
     issue_count=$(echo "$issues" | jq 'length' 2>/dev/null || echo 0)
 
-    _needle_telemetry_emit "pulse.detector_completed" \
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
         "detector=todos" \
         "workspace=$workspace" \
         "issues_found=$issue_count"
@@ -2290,7 +2290,7 @@ _needle_strand_pulse() {
         # Record scan even when no issues found
         _pulse_record_scan "$workspace"
 
-        _needle_telemetry_emit "pulse.scan_completed" \
+        _needle_telemetry_emit "pulse.scan_completed" "info" \
             "workspace=$workspace" \
             "issues_found=0" \
             "beads_created=0"
@@ -2311,7 +2311,7 @@ _needle_strand_pulse() {
         _needle_success "pulse: created $created bead(s) from health scan"
 
         # Emit completion event
-        _needle_telemetry_emit "pulse.scan_completed" \
+        _needle_telemetry_emit "pulse.scan_completed" "info" \
             "workspace=$workspace" \
             "issues_found=$issue_count" \
             "beads_created=$created"

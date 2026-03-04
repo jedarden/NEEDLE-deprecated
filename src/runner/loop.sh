@@ -206,7 +206,7 @@ _needle_apply_backoff() {
         _needle_warn "Applying backoff: sleeping for ${NEEDLE_BACKOFF_SECONDS}s..."
 
         # Emit backoff event for telemetry
-        _needle_telemetry_emit "worker.backoff" \
+        _needle_telemetry_emit "worker.backoff" "warn" \
             "failure_count=$NEEDLE_FAILURE_COUNT" \
             "backoff_seconds=$NEEDLE_BACKOFF_SECONDS" \
             "session=$NEEDLE_SESSION"
@@ -320,7 +320,7 @@ _needle_check_config_reload() {
         fi
 
         # Emit telemetry event
-        _needle_telemetry_emit "config.reloaded" \
+        _needle_telemetry_emit "config.reloaded" "info" \
             "sources=${reload_sources[*]}" \
             "global_mtime=$current_global_mtime" \
             "workspace_mtime=${current_ws_mtime:-0}" \
@@ -389,7 +389,7 @@ _needle_alert_crash_loop() {
     _needle_error "Worker in crash loop: $NEEDLE_FAILURE_COUNT consecutive failures"
 
     # Emit crash loop event
-    _needle_telemetry_emit "worker.crash_loop" \
+    _needle_telemetry_emit "worker.crash_loop" "error" \
         "failure_count=$NEEDLE_FAILURE_COUNT" \
         "session=$NEEDLE_SESSION" \
         "workspace=$workspace" \
@@ -487,7 +487,7 @@ _needle_handle_exit_code() {
 
                 # Emit success event
                 _needle_event_bead_completed "$bead_id"
-                _needle_telemetry_emit "bead.completed" \
+                _needle_telemetry_emit "bead.completed" "info" \
                     "bead_id=$bead_id" \
                     "exit_code=$exit_code" \
                     "session=$NEEDLE_SESSION"
@@ -508,7 +508,7 @@ _needle_handle_exit_code() {
 
             # Emit failure event
             _needle_event_bead_failed "$bead_id" "reason=agent_failed"
-            _needle_telemetry_emit "bead.failed" \
+            _needle_telemetry_emit "bead.failed" "error" \
                 "bead_id=$bead_id" \
                 "exit_code=$exit_code" \
                 "failure_count=$NEEDLE_FAILURE_COUNT" \
@@ -539,7 +539,7 @@ _needle_handle_exit_code() {
                 _needle_increment_backoff
 
                 # Emit timeout event
-                _needle_telemetry_emit "bead.timeout" \
+                _needle_telemetry_emit "bead.timeout" "error" \
                     "bead_id=$bead_id" \
                     "exit_code=$exit_code" \
                     "failure_count=$NEEDLE_FAILURE_COUNT" \
@@ -566,7 +566,7 @@ _needle_handle_exit_code() {
 
             # Emit error event
             _needle_event_bead_failed "$bead_id" "reason=unknown_error"
-            _needle_telemetry_emit "bead.error" \
+            _needle_telemetry_emit "bead.error" "error" \
                 "bead_id=$bead_id" \
                 "exit_code=$exit_code" \
                 "failure_count=$NEEDLE_FAILURE_COUNT" \
@@ -635,7 +635,7 @@ _needle_worker_cleanup() {
     fi
 
     # Emit final telemetry
-    _needle_telemetry_emit "worker.cleanup" \
+    _needle_telemetry_emit "worker.cleanup" "info" \
         "session=$NEEDLE_SESSION" \
         "failure_count=$NEEDLE_FAILURE_COUNT"
 
@@ -669,7 +669,7 @@ _needle_loop_handle_shutdown() {
     _needle_event_worker_draining
 
     # Emit telemetry event
-    _needle_telemetry_emit "worker.shutdown_initiated" \
+    _needle_telemetry_emit "worker.shutdown_initiated" "info" \
         "signal=$signal" \
         "session=$NEEDLE_SESSION" \
         "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -772,7 +772,7 @@ _needle_worker_loop() {
         "agent=$agent"
 
     # Also emit telemetry event
-    _needle_telemetry_emit "worker.started" \
+    _needle_telemetry_emit "worker.started" "info" \
         "workspace=$workspace" \
         "agent=$agent" \
         "session=$NEEDLE_SESSION" \
@@ -868,7 +868,7 @@ _needle_worker_loop() {
             if ((idle_seconds >= idle_timeout)); then
                 _needle_debug "Idle timeout reached (${idle_seconds}s >= ${idle_timeout}s)"
                 _needle_event_worker_stopped "reason=idle_timeout"
-                _needle_telemetry_emit "worker.stopped" \
+                _needle_telemetry_emit "worker.stopped" "info" \
                     "reason=idle_timeout" \
                     "session=$NEEDLE_SESSION" \
                     "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -885,7 +885,7 @@ _needle_worker_loop() {
     done
 
     # Emit final telemetry event
-    _needle_telemetry_emit "worker.stopped" \
+    _needle_telemetry_emit "worker.stopped" "info" \
         "reason=shutdown" \
         "session=$NEEDLE_SESSION" \
         "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -927,7 +927,7 @@ _needle_process_bead() {
     _needle_event_bead_claimed "$bead_id" "workspace=$workspace"
 
     # Also emit telemetry event
-    _needle_telemetry_emit "bead.claimed" \
+    _needle_telemetry_emit "bead.claimed" "info" \
         "bead_id=$bead_id" \
         "workspace=$workspace" \
         "session=$NEEDLE_SESSION" \
@@ -952,7 +952,7 @@ _needle_process_bead() {
     # Emit prompt built event
     local prompt_length=${#prompt}
     _needle_event_bead_prompt_built "$bead_id" "prompt_length=$prompt_length"
-    _needle_telemetry_emit "bead.prompt_built" \
+    _needle_telemetry_emit "bead.prompt_built" "info" \
         "bead_id=$bead_id" \
         "prompt_length=$prompt_length" \
         "session=$NEEDLE_SESSION" \
@@ -972,7 +972,7 @@ _needle_process_bead() {
 
     # Emit agent started event
     _needle_event_bead_agent_started "$bead_id" "agent=$agent"
-    _needle_telemetry_emit "bead.agent_started" \
+    _needle_telemetry_emit "bead.agent_started" "info" \
         "bead_id=$bead_id" \
         "agent=$agent" \
         "session=$NEEDLE_SESSION" \
@@ -993,7 +993,7 @@ _needle_process_bead() {
     _needle_event_bead_agent_completed "$bead_id" \
         "exit_code=$dispatch_exit" \
         "duration_ms=$dispatch_duration"
-    _needle_telemetry_emit "bead.agent_completed" \
+    _needle_telemetry_emit "bead.agent_completed" "info" \
         "bead_id=$bead_id" \
         "exit_code=$dispatch_exit" \
         "duration_ms=$dispatch_duration" \
@@ -1036,7 +1036,7 @@ _needle_process_bead() {
     fi
 
     # Emit effort recorded telemetry
-    _needle_telemetry_emit "bead.effort_recorded" \
+    _needle_telemetry_emit "bead.effort_recorded" "info" \
         "bead_id=$bead_id" \
         "agent=$agent" \
         "input_tokens=$input_tokens" \
@@ -1117,7 +1117,7 @@ _needle_complete_bead() {
 
     # Emit completed event
     _needle_event_bead_completed "$bead_id"
-    _needle_telemetry_emit "bead.completed" \
+    _needle_telemetry_emit "bead.completed" "info" \
         "bead_id=$bead_id" \
         "session=$NEEDLE_SESSION" \
         "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1157,7 +1157,7 @@ _needle_fail_bead() {
 
     # Emit failed event
     _needle_event_bead_failed "$bead_id" "reason=$reason"
-    _needle_telemetry_emit "bead.failed" \
+    _needle_telemetry_emit "bead.failed" "error" \
         "bead_id=$bead_id" \
         "reason=$reason" \
         "session=$NEEDLE_SESSION" \
@@ -1195,7 +1195,7 @@ _needle_release_bead() {
 
     # Emit released event
     _needle_event_bead_released "$bead_id" "reason=$reason"
-    _needle_telemetry_emit "bead.released" \
+    _needle_telemetry_emit "bead.released" "info" \
         "bead_id=$bead_id" \
         "reason=$reason" \
         "session=$NEEDLE_SESSION" \

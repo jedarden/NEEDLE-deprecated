@@ -604,7 +604,7 @@ _needle_event_effort_recorded() {
 
     # Emit the event
     if declare -f _needle_telemetry_emit &>/dev/null; then
-        _needle_telemetry_emit "effort.recorded" \
+        _needle_telemetry_emit "effort.recorded" "info" \
             "bead_id=$bead_id" \
             "cost=$cost" \
             "agent=$agent" \

@@ -323,7 +323,7 @@ _needle_claim_bead() {
 
         # Claim failed (race condition - another worker got it first)
         # Emit retry event and try again with a different bead
-        _needle_telemetry_emit "bead.claim_retry" \
+        _needle_telemetry_emit "bead.claim_retry" "warn" \
             "bead_id=$bead_id" \
             "attempt=$attempt" \
             "max_retries=$max_retries" \
@@ -351,7 +351,7 @@ _needle_claim_bead() {
         "max_retries=$max_retries" \
         "workspace=$workspace"
 
-    _needle_telemetry_emit "bead.claim_exhausted" \
+    _needle_telemetry_emit "bead.claim_exhausted" "error" \
         "max_retries=$max_retries" \
         "actor=$actor" \
         "workspace=$workspace"

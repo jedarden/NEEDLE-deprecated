@@ -48,19 +48,15 @@ if ! declare -f _needle_json_object &>/dev/null; then
 fi
 
 # ============================================================================
-# Event Envelope Structure
+# Event Envelope Structure (NEEDLE-FABRIC Aligned)
 # ============================================================================
 # All events share a common structure:
 # {
 #   "ts": "2026-03-01T10:00:00.123Z",      # ISO8601 timestamp with milliseconds
 #   "event": "bead.claimed",                # Event type (category.action)
+#   "level": "info",                        # Log level: debug/info/warn/error
 #   "session": "needle-claude-anthropic-sonnet-alpha",  # Worker session ID
-#   "worker": {
-#     "runner": "claude",
-#     "provider": "anthropic",
-#     "model": "sonnet",
-#     "identifier": "alpha"
-#   },
+#   "worker": "claude-anthropic-sonnet-alpha",  # Flat worker identity string
 #   "data": { ... }                         # Event-specific data
 # }
 
@@ -78,28 +74,49 @@ fi
 # Core Event Emission Functions
 # ============================================================================
 
-# Build the worker identity JSON object
-# Usage: _needle_telemetry_worker_json
-# Returns: JSON object with runner, provider, model, identifier
-_needle_telemetry_worker_json() {
-    if _needle_command_exists jq; then
-        jq -nc \
-            --arg runner "${NEEDLE_RUNNER:-unknown}" \
-            --arg provider "${NEEDLE_PROVIDER:-unknown}" \
-            --arg model "${NEEDLE_MODEL:-unknown}" \
-            --arg identifier "${NEEDLE_IDENTIFIER:-unknown}" \
-            '{runner: $runner, provider: $provider, model: $model, identifier: $identifier}'
-    else
-        # Fallback: build JSON manually
-        local runner provider model identifier
-        runner=$(_needle_json_escape "${NEEDLE_RUNNER:-unknown}")
-        provider=$(_needle_json_escape "${NEEDLE_PROVIDER:-unknown}")
-        model=$(_needle_json_escape "${NEEDLE_MODEL:-unknown}")
-        identifier=$(_needle_json_escape "${NEEDLE_IDENTIFIER:-unknown}")
+# Build the worker identity string (NEEDLE-FABRIC aligned format)
+# Usage: _needle_telemetry_worker_string
+# Returns: Flat string "${runner}-${provider}-${model}-${identifier}"
+_needle_telemetry_worker_string() {
+    local runner="${NEEDLE_RUNNER:-unknown}"
+    local provider="${NEEDLE_PROVIDER:-unknown}"
+    local model="${NEEDLE_MODEL:-unknown}"
+    local identifier="${NEEDLE_IDENTIFIER:-unknown}"
 
-        printf '{"runner":"%s","provider":"%s","model":"%s","identifier":"%s"}' \
-            "$runner" "$provider" "$model" "$identifier"
+    printf '%s-%s-%s-%s' "$runner" "$provider" "$model" "$identifier"
+}
+
+# Infer log level from event type (NEEDLE-FABRIC aligned)
+# Usage: _needle_telemetry_infer_level <event_type>
+# Returns: debug, info, warn, or error
+# Rules:
+#   - error.* -> error
+#   - *.failed, *.retry -> warn
+#   - debug.* -> debug
+#   - default -> info
+_needle_telemetry_infer_level() {
+    local event_type="$1"
+
+    # Error category events
+    if [[ "$event_type" == error.* ]]; then
+        printf 'error'
+        return
     fi
+
+    # Failed or retry events -> warn
+    if [[ "$event_type" == *.failed ]] || [[ "$event_type" == *.retry ]]; then
+        printf 'warn'
+        return
+    fi
+
+    # Debug category events
+    if [[ "$event_type" == debug.* ]]; then
+        printf 'debug'
+        return
+    fi
+
+    # Default to info
+    printf 'info'
 }
 
 # Get current ISO8601 timestamp with milliseconds
@@ -154,8 +171,12 @@ _needle_telemetry_build_data() {
 
 # Emit a structured telemetry event
 # This is the primary function for emitting events
-# Usage: _needle_telemetry_emit <event_type> [key=value ...]
+# Usage: _needle_telemetry_emit <event_type> [level] [key=value ...]
+#   - event_type: Required. Event category.action (e.g., "bead.claimed")
+#   - level: Optional. Log level (debug/info/warn/error). Auto-inferred if not provided.
+#   - key=value: Optional data pairs
 # Example: _needle_telemetry_emit "bead.claimed" "bead_id=nd-123" "workspace=/path"
+# Example: _needle_telemetry_emit "error.timeout" "error" "operation=claim"
 _needle_telemetry_emit() {
     local event_type="$1"
     shift
@@ -165,30 +186,41 @@ _needle_telemetry_emit() {
         return 1
     fi
 
+    # Determine level: check if first remaining arg is a valid level or infer from event type
+    local level
+    if [[ $# -gt 0 ]] && [[ "$1" =~ ^(debug|info|warn|error)$ ]]; then
+        level="$1"
+        shift
+    else
+        level=$(_needle_telemetry_infer_level "$event_type")
+    fi
+
     # Build event envelope
     local ts session worker data json
 
     ts=$(_needle_telemetry_timestamp)
     session="${NEEDLE_SESSION:-unknown}"
-    worker=$(_needle_telemetry_worker_json)
+    worker=$(_needle_telemetry_worker_string)
     data=$(_needle_telemetry_build_data "$@")
 
     if _needle_command_exists jq; then
-        # Build complete event JSON with jq
+        # Build complete event JSON with jq (worker is now a flat string)
         json=$(jq -nc \
             --arg ts "$ts" \
             --arg event "$event_type" \
+            --arg level "$level" \
             --arg session "$session" \
-            --argjson worker "$worker" \
+            --arg worker "$worker" \
             --argjson data "$data" \
-            '{ts: $ts, event: $event, session: $session, worker: $worker, data: $data}')
+            '{ts: $ts, event: $event, level: $level, session: $session, worker: $worker, data: $data}')
     else
-        # Fallback: build JSON manually
+        # Fallback: build JSON manually (worker is now a string, not an object)
         json="{"
         json+="\"ts\":\"$(_needle_json_escape "$ts")\""
         json+=",\"event\":\"$(_needle_json_escape "$event_type")\""
+        json+=",\"level\":\"$(_needle_json_escape "$level")\""
         json+=",\"session\":\"$(_needle_json_escape "$session")\""
-        json+=",\"worker\":$worker"
+        json+=",\"worker\":\"$(_needle_json_escape "$worker")\""
         json+=",\"data\":$data"
         json+="}"
     fi
@@ -216,25 +248,25 @@ _needle_telemetry_emit() {
 # Emit worker.started event
 # Usage: _needle_event_worker_started [key=value ...]
 _needle_event_worker_started() {
-    _needle_telemetry_emit "worker.started" "pid=$$" "$@"
+    _needle_telemetry_emit "worker.started" "info" "pid=$$" "$@"
 }
 
 # Emit worker.idle event
 # Usage: _needle_event_worker_idle [key=value ...]
 _needle_event_worker_idle() {
-    _needle_telemetry_emit "worker.idle" "$@"
+    _needle_telemetry_emit "worker.idle" "info" "$@"
 }
 
 # Emit worker.stopped event
 # Usage: _needle_event_worker_stopped [reason=...] [key=value ...]
 _needle_event_worker_stopped() {
-    _needle_telemetry_emit "worker.stopped" "pid=$$" "$@"
+    _needle_telemetry_emit "worker.stopped" "info" "pid=$$" "$@"
 }
 
 # Emit worker.draining event
 # Usage: _needle_event_worker_draining [key=value ...]
 _needle_event_worker_draining() {
-    _needle_telemetry_emit "worker.draining" "$@"
+    _needle_telemetry_emit "worker.draining" "info" "$@"
 }
 
 # ============================================================================
@@ -246,7 +278,7 @@ _needle_event_worker_draining() {
 _needle_event_bead_claimed() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.claimed" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.claimed" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.prompt_built event
@@ -254,7 +286,7 @@ _needle_event_bead_claimed() {
 _needle_event_bead_prompt_built() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.prompt_built" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.prompt_built" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.agent_started event
@@ -262,7 +294,7 @@ _needle_event_bead_prompt_built() {
 _needle_event_bead_agent_started() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.agent_started" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.agent_started" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.agent_completed event
@@ -270,7 +302,7 @@ _needle_event_bead_agent_started() {
 _needle_event_bead_agent_completed() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.agent_completed" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.agent_completed" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.completed event
@@ -278,7 +310,7 @@ _needle_event_bead_agent_completed() {
 _needle_event_bead_completed() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.completed" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.completed" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.failed event
@@ -286,7 +318,7 @@ _needle_event_bead_completed() {
 _needle_event_bead_failed() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.failed" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.failed" "error" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.released event
@@ -294,7 +326,7 @@ _needle_event_bead_failed() {
 _needle_event_bead_released() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.released" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.released" "info" "bead_id=$bead_id" "$@"
 }
 
 # ============================================================================
@@ -307,7 +339,7 @@ _needle_event_strand_started() {
     local bead_id="$1"
     local strand="$2"
     shift 2
-    _needle_telemetry_emit "strand.started" "bead_id=$bead_id" "strand=$strand" "$@"
+    _needle_telemetry_emit "strand.started" "info" "bead_id=$bead_id" "strand=$strand" "$@"
 }
 
 # Emit strand.fallthrough event
@@ -316,7 +348,7 @@ _needle_event_strand_fallthrough() {
     local bead_id="$1"
     local strand="$2"
     shift 2
-    _needle_telemetry_emit "strand.fallthrough" "bead_id=$bead_id" "strand=$strand" "$@"
+    _needle_telemetry_emit "strand.fallthrough" "info" "bead_id=$bead_id" "strand=$strand" "$@"
 }
 
 # Emit strand.completed event
@@ -325,7 +357,7 @@ _needle_event_strand_completed() {
     local bead_id="$1"
     local strand="$2"
     shift 2
-    _needle_telemetry_emit "strand.completed" "bead_id=$bead_id" "strand=$strand" "$@"
+    _needle_telemetry_emit "strand.completed" "info" "bead_id=$bead_id" "strand=$strand" "$@"
 }
 
 # Emit strand.skipped event
@@ -334,7 +366,7 @@ _needle_event_strand_skipped() {
     local bead_id="$1"
     local strand="$2"
     shift 2
-    _needle_telemetry_emit "strand.skipped" "bead_id=$bead_id" "strand=$strand" "$@"
+    _needle_telemetry_emit "strand.skipped" "info" "bead_id=$bead_id" "strand=$strand" "$@"
 }
 
 # ============================================================================
@@ -346,7 +378,7 @@ _needle_event_strand_skipped() {
 _needle_event_hook_started() {
     local hook_name="$1"
     shift
-    _needle_telemetry_emit "hook.started" "hook=$hook_name" "$@"
+    _needle_telemetry_emit "hook.started" "info" "hook=$hook_name" "$@"
 }
 
 # Emit hook.completed event
@@ -354,7 +386,7 @@ _needle_event_hook_started() {
 _needle_event_hook_completed() {
     local hook_name="$1"
     shift
-    _needle_telemetry_emit "hook.completed" "hook=$hook_name" "$@"
+    _needle_telemetry_emit "hook.completed" "info" "hook=$hook_name" "$@"
 }
 
 # Emit hook.failed event
@@ -362,7 +394,7 @@ _needle_event_hook_completed() {
 _needle_event_hook_failed() {
     local hook_name="$1"
     shift
-    _needle_telemetry_emit "hook.failed" "hook=$hook_name" "$@"
+    _needle_telemetry_emit "hook.failed" "error" "hook=$hook_name" "$@"
 }
 
 # ============================================================================
@@ -372,7 +404,7 @@ _needle_event_hook_failed() {
 # Emit heartbeat.emitted event
 # Usage: _needle_event_heartbeat_emitted [status=...] [key=value ...]
 _needle_event_heartbeat_emitted() {
-    _needle_telemetry_emit "heartbeat.emitted" "pid=$$" "$@"
+    _needle_telemetry_emit "heartbeat.emitted" "debug" "pid=$$" "$@"
 }
 
 # Emit heartbeat.stuck_detected event
@@ -380,7 +412,7 @@ _needle_event_heartbeat_emitted() {
 _needle_event_heartbeat_stuck_detected() {
     local stuck_session="$1"
     shift
-    _needle_telemetry_emit "heartbeat.stuck_detected" "stuck_session=$stuck_session" "$@"
+    _needle_telemetry_emit "heartbeat.stuck_detected" "warn" "stuck_session=$stuck_session" "$@"
 }
 
 # Emit heartbeat.recovery event
@@ -388,7 +420,7 @@ _needle_event_heartbeat_stuck_detected() {
 _needle_event_heartbeat_recovery() {
     local recovered_session="$1"
     shift
-    _needle_telemetry_emit "heartbeat.recovery" "recovered_session=$recovered_session" "$@"
+    _needle_telemetry_emit "heartbeat.recovery" "info" "recovered_session=$recovered_session" "$@"
 }
 
 # ============================================================================
@@ -400,7 +432,7 @@ _needle_event_heartbeat_recovery() {
 _needle_event_mend_orphan_released() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "mend.orphan_released" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "mend.orphan_released" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit mend.heartbeat_cleaned event
@@ -408,19 +440,19 @@ _needle_event_mend_orphan_released() {
 _needle_event_mend_heartbeat_cleaned() {
     local worker="$1"
     shift
-    _needle_telemetry_emit "mend.heartbeat_cleaned" "worker=$worker" "$@"
+    _needle_telemetry_emit "mend.heartbeat_cleaned" "info" "worker=$worker" "$@"
 }
 
 # Emit mend.logs_pruned event
 # Usage: _needle_event_mend_logs_pruned [count=...] [key=value ...]
 _needle_event_mend_logs_pruned() {
-    _needle_telemetry_emit "mend.logs_pruned" "$@"
+    _needle_telemetry_emit "mend.logs_pruned" "info" "$@"
 }
 
 # Emit mend.completed event
 # Usage: _needle_event_mend_completed [key=value ...]
 _needle_event_mend_completed() {
-    _needle_telemetry_emit "mend.completed" "$@"
+    _needle_telemetry_emit "mend.completed" "info" "$@"
 }
 
 # ============================================================================
@@ -432,7 +464,7 @@ _needle_event_mend_completed() {
 _needle_event_unravel_alternatives_created() {
     local parent_id="$1"
     shift
-    _needle_telemetry_emit "unravel.alternatives_created" "parent_id=$parent_id" "$@"
+    _needle_telemetry_emit "unravel.alternatives_created" "info" "parent_id=$parent_id" "$@"
 }
 
 # Emit unravel.alternative_created event (individual alternative)
@@ -441,19 +473,19 @@ _needle_event_unravel_alternative_created() {
     local parent_id="$1"
     local alternative_id="$2"
     shift 2
-    _needle_telemetry_emit "unravel.alternative_created" "parent_id=$parent_id" "alternative_id=$alternative_id" "$@"
+    _needle_telemetry_emit "unravel.alternative_created" "info" "parent_id=$parent_id" "alternative_id=$alternative_id" "$@"
 }
 
 # Emit unravel.analysis_started event
 # Usage: _needle_event_unravel_analysis_started [workspace=...] [human_bead_id=...] [key=value ...]
 _needle_event_unravel_analysis_started() {
-    _needle_telemetry_emit "unravel.analysis_started" "$@"
+    _needle_telemetry_emit "unravel.analysis_started" "info" "$@"
 }
 
 # Emit unravel.analysis_completed event
 # Usage: _needle_event_unravel_analysis_completed [alternatives_found=...] [key=value ...]
 _needle_event_unravel_analysis_completed() {
-    _needle_telemetry_emit "unravel.analysis_completed" "$@"
+    _needle_telemetry_emit "unravel.analysis_completed" "info" "$@"
 }
 
 # ============================================================================
@@ -465,19 +497,19 @@ _needle_event_unravel_analysis_completed() {
 _needle_event_weave_bead_created() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "weave.bead_created" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "weave.bead_created" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit weave.analysis_started event
 # Usage: _needle_event_weave_analysis_started [workspace=...] [doc_count=...] [key=value ...]
 _needle_event_weave_analysis_started() {
-    _needle_telemetry_emit "weave.analysis_started" "$@"
+    _needle_telemetry_emit "weave.analysis_started" "info" "$@"
 }
 
 # Emit weave.analysis_completed event
 # Usage: _needle_event_weave_analysis_completed [gaps_found=...] [beads_created=...] [key=value ...]
 _needle_event_weave_analysis_completed() {
-    _needle_telemetry_emit "weave.analysis_completed" "$@"
+    _needle_telemetry_emit "weave.analysis_completed" "info" "$@"
 }
 
 # ============================================================================
@@ -489,25 +521,25 @@ _needle_event_weave_analysis_completed() {
 _needle_event_pulse_bead_created() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "pulse.bead_created" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "pulse.bead_created" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit pulse.scan_started event
 # Usage: _needle_event_pulse_scan_started [workspace=...] [key=value ...]
 _needle_event_pulse_scan_started() {
-    _needle_telemetry_emit "pulse.scan_started" "$@"
+    _needle_telemetry_emit "pulse.scan_started" "info" "$@"
 }
 
 # Emit pulse.scan_completed event
 # Usage: _needle_event_pulse_scan_completed [issues_found=...] [beads_created=...] [key=value ...]
 _needle_event_pulse_scan_completed() {
-    _needle_telemetry_emit "pulse.scan_completed" "$@"
+    _needle_telemetry_emit "pulse.scan_completed" "info" "$@"
 }
 
 # Emit pulse.issue_detected event
 # Usage: _needle_event_pulse_issue_detected [category=...] [severity=...] [title=...] [key=value ...]
 _needle_event_pulse_issue_detected() {
-    _needle_telemetry_emit "pulse.issue_detected" "$@"
+    _needle_telemetry_emit "pulse.issue_detected" "info" "$@"
 }
 
 # Emit pulse.detector_started event
@@ -515,7 +547,7 @@ _needle_event_pulse_issue_detected() {
 _needle_event_pulse_detector_started() {
     local detector_name="$1"
     shift
-    _needle_telemetry_emit "pulse.detector_started" "detector=$detector_name" "$@"
+    _needle_telemetry_emit "pulse.detector_started" "info" "detector=$detector_name" "$@"
 }
 
 # Emit pulse.detector_completed event
@@ -523,7 +555,7 @@ _needle_event_pulse_detector_started() {
 _needle_event_pulse_detector_completed() {
     local detector_name="$1"
     shift
-    _needle_telemetry_emit "pulse.detector_completed" "detector=$detector_name" "$@"
+    _needle_telemetry_emit "pulse.detector_completed" "info" "detector=$detector_name" "$@"
 }
 
 # ============================================================================
@@ -535,7 +567,7 @@ _needle_event_pulse_detector_completed() {
 _needle_event_bead_mitosis_check() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.mitosis.check" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.check" "info" "bead_id=$bead_id" "$@"
 }
 
 # Emit bead.mitosis.started event
@@ -543,7 +575,7 @@ _needle_event_bead_mitosis_check() {
 _needle_event_bead_mitosis_started() {
     local parent_id="$1"
     shift
-    _needle_telemetry_emit "bead.mitosis.started" "parent_id=$parent_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.started" "info" "parent_id=$parent_id" "$@"
 }
 
 # Emit bead.mitosis.child_created event
@@ -552,7 +584,7 @@ _needle_event_bead_mitosis_child_created() {
     local parent_id="$1"
     local child_id="$2"
     shift 2
-    _needle_telemetry_emit "bead.mitosis.child_created" "parent_id=$parent_id" "child_id=$child_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.child_created" "info" "parent_id=$parent_id" "child_id=$child_id" "$@"
 }
 
 # Emit bead.mitosis.complete event
@@ -560,7 +592,7 @@ _needle_event_bead_mitosis_child_created() {
 _needle_event_bead_mitosis_complete() {
     local parent_id="$1"
     shift
-    _needle_telemetry_emit "bead.mitosis.complete" "parent_id=$parent_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.complete" "info" "parent_id=$parent_id" "$@"
 }
 
 # Emit bead.mitosis.failed event
@@ -568,7 +600,7 @@ _needle_event_bead_mitosis_complete() {
 _needle_event_bead_mitosis_failed() {
     local parent_id="$1"
     shift
-    _needle_telemetry_emit "bead.mitosis.failed" "parent_id=$parent_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.failed" "error" "parent_id=$parent_id" "$@"
 }
 
 # Emit bead.mitosis.skipped event
@@ -576,7 +608,7 @@ _needle_event_bead_mitosis_failed() {
 _needle_event_bead_mitosis_skipped() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "bead.mitosis.skipped" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "bead.mitosis.skipped" "info" "bead_id=$bead_id" "$@"
 }
 
 # ============================================================================
@@ -588,13 +620,13 @@ _needle_event_bead_mitosis_skipped() {
 _needle_event_error_claim_failed() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "error.claim_failed" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "error.claim_failed" "error" "bead_id=$bead_id" "$@"
 }
 
 # Emit error.agent_crash event
 # Usage: _needle_event_error_agent_crash [agent=...] [error=...] [key=value ...]
 _needle_event_error_agent_crash() {
-    _needle_telemetry_emit "error.agent_crash" "pid=$$" "$@"
+    _needle_telemetry_emit "error.agent_crash" "error" "pid=$$" "$@"
 }
 
 # Emit error.timeout event
@@ -602,7 +634,7 @@ _needle_event_error_agent_crash() {
 _needle_event_error_timeout() {
     local operation="$1"
     shift
-    _needle_telemetry_emit "error.timeout" "operation=$operation" "$@"
+    _needle_telemetry_emit "error.timeout" "error" "operation=$operation" "$@"
 }
 
 # ============================================================================
@@ -614,7 +646,7 @@ _needle_event_error_timeout() {
 _needle_event_effort_recorded() {
     local bead_id="$1"
     shift
-    _needle_telemetry_emit "effort.recorded" "bead_id=$bead_id" "$@"
+    _needle_telemetry_emit "effort.recorded" "info" "bead_id=$bead_id" "$@"
 }
 
 # ============================================================================
@@ -624,19 +656,19 @@ _needle_event_effort_recorded() {
 # Emit budget.warning event
 # Usage: _needle_event_budget_warning [daily_spend_usd=...] [daily_limit_usd=...] [threshold=...] [key=value ...]
 _needle_event_budget_warning() {
-    _needle_telemetry_emit "budget.warning" "$@"
+    _needle_telemetry_emit "budget.warning" "warn" "$@"
 }
 
 # Emit budget.exceeded event
 # Usage: _needle_event_budget_exceeded [daily_spend_usd=...] [daily_limit_usd=...] [key=value ...]
 _needle_event_budget_exceeded() {
-    _needle_telemetry_emit "budget.exceeded" "$@"
+    _needle_telemetry_emit "budget.exceeded" "error" "$@"
 }
 
 # Emit budget.per_bead_exceeded event
 # Usage: _needle_event_budget_per_bead_exceeded [bead_cost_usd=...] [bead_limit_usd=...] [bead_id=...] [key=value ...]
 _needle_event_budget_per_bead_exceeded() {
-    _needle_telemetry_emit "budget.per_bead_exceeded" "$@"
+    _needle_telemetry_emit "budget.per_bead_exceeded" "error" "$@"
 }
 
 # ============================================================================

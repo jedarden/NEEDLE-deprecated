@@ -51,7 +51,7 @@ _test_fail() {
 
 # Helper to emit with verbose output captured
 _emit_capture() {
-    NEEDLE_VERBOSE=true _needle_telemetry_emit "$@"
+    NEEDLE_VERBOSE=true _needle_telemetry_emit "$@" 2>&1
 }
 
 # Cleanup function
@@ -68,16 +68,13 @@ echo "=========================================="
 echo "Running telemetry/events.sh tests"
 echo "=========================================="
 
-# Test 1: Worker JSON generation
-_test_start "Worker JSON generation"
-worker_json=$(_needle_telemetry_worker_json)
-if echo "$worker_json" | jq -e '.runner == "test-runner"' > /dev/null 2>&1 && \
-   echo "$worker_json" | jq -e '.provider == "test-provider"' > /dev/null 2>&1 && \
-   echo "$worker_json" | jq -e '.model == "test-model"' > /dev/null 2>&1 && \
-   echo "$worker_json" | jq -e '.identifier == "test-identifier"' > /dev/null 2>&1; then
-    _test_pass "Worker JSON contains all required fields"
+# Test 1: Worker string generation (NEEDLE-FABRIC aligned flat format)
+_test_start "Worker string generation (flat format)"
+worker_string=$(_needle_telemetry_worker_string)
+if [[ "$worker_string" == "test-runner-test-provider-test-model-test-identifier" ]]; then
+    _test_pass "Worker string is flat format: $worker_string"
 else
-    _test_fail "Worker JSON missing required fields" "$worker_json"
+    _test_fail "Worker string format incorrect" "$worker_string"
 fi
 
 # Test 2: Timestamp generation
@@ -118,15 +115,71 @@ _test_start "Event envelope structure"
 output=$(_emit_capture "test.envelope" "test=value")
 has_ts=$(echo "$output" | jq 'has("ts")')
 has_event=$(echo "$output" | jq 'has("event")')
+has_level=$(echo "$output" | jq 'has("level")')
 has_session=$(echo "$output" | jq 'has("session")')
 has_worker=$(echo "$output" | jq 'has("worker")')
 has_data=$(echo "$output" | jq 'has("data")')
 
-if [[ "$has_ts" == "true" && "$has_event" == "true" && "$has_session" == "true" && \
-      "$has_worker" == "true" && "$has_data" == "true" ]]; then
-    _test_pass "Event envelope has all required fields"
+# Check that worker is a string, not an object
+worker_type=$(echo "$output" | jq -r '.worker | type')
+
+if [[ "$has_ts" == "true" && "$has_event" == "true" && "$has_level" == "true" && \
+      "$has_session" == "true" && "$has_worker" == "true" && "$has_data" == "true" && \
+      "$worker_type" == "string" ]]; then
+    _test_pass "Event envelope has all required fields (worker is flat string)"
 else
-    _test_fail "Event envelope missing fields"
+    _test_fail "Event envelope missing fields or worker not string" "worker_type=$worker_type"
+fi
+
+# Test 5b: Level field auto-inference based on event type
+_test_start "Level field auto-inference"
+level_ok=true
+
+# Test info level (default for unknown events)
+output=$(_emit_capture "test.event" "key=value")
+if [[ $(echo "$output" | jq -r '.level') != "info" ]]; then
+    level_ok=false
+fi
+
+# Test error level (error.* events auto-inferred)
+output=$(_emit_capture "error.claim_failed" "bead_id=test")
+if [[ $(echo "$output" | jq -r '.level') != "error" ]]; then
+    level_ok=false
+fi
+
+# Test warn level (*.failed events auto-inferred)
+output=$(_emit_capture "bead.failed" "bead_id=test")
+if [[ $(echo "$output" | jq -r '.level') != "warn" ]]; then
+    level_ok=false
+fi
+
+# Test warn level (*.retry events auto-inferred)
+output=$(_emit_capture "operation.retry" "attempt=1")
+if [[ $(echo "$output" | jq -r '.level') != "warn" ]]; then
+    level_ok=false
+fi
+
+# Test explicit level override
+output=$(_emit_capture "test.event" "warn" "key=value")
+if [[ $(echo "$output" | jq -r '.level') != "warn" ]]; then
+    level_ok=false
+fi
+
+if $level_ok; then
+    _test_pass "Level field auto-inference works correctly"
+else
+    _test_fail "Level field auto-inference failed"
+fi
+
+# Test 5c: Worker string format verification
+_test_start "Worker string format in events"
+output=$(_emit_capture "test.worker.format" "key=value")
+worker_val=$(echo "$output" | jq -r '.worker')
+expected_worker="test-runner-test-provider-test-model-test-identifier"
+if [[ "$worker_val" == "$expected_worker" ]]; then
+    _test_pass "Worker string format correct: $worker_val"
+else
+    _test_fail "Worker string format incorrect" "expected=$expected_worker got=$worker_val"
 fi
 
 # Test 6: Worker events
@@ -304,20 +357,20 @@ _test_start "Convenience functions for event emission"
 convenience_ok=true
 
 # Test _needle_event_bead_claimed
-output=$(NEEDLE_VERBOSE=true _needle_event_bead_claimed "bead-123" "workspace=/test")
+output=$(NEEDLE_VERBOSE=true _needle_event_bead_claimed "bead-123" "workspace=/test" 2>&1)
 if ! echo "$output" | jq -e '.event == "bead.claimed"' > /dev/null 2>&1 || \
    ! echo "$output" | jq -e '.data.bead_id == "bead-123"' > /dev/null 2>&1; then
     convenience_ok=false
 fi
 
 # Test _needle_event_worker_started
-output=$(NEEDLE_VERBOSE=true _needle_event_worker_started)
+output=$(NEEDLE_VERBOSE=true _needle_event_worker_started 2>&1)
 if ! echo "$output" | jq -e '.event == "worker.started"' > /dev/null 2>&1; then
     convenience_ok=false
 fi
 
 # Test _needle_event_bead_completed
-output=$(NEEDLE_VERBOSE=true _needle_event_bead_completed "bead-456" "result=success")
+output=$(NEEDLE_VERBOSE=true _needle_event_bead_completed "bead-456" "result=success" 2>&1)
 if ! echo "$output" | jq -e '.event == "bead.completed"' > /dev/null 2>&1; then
     convenience_ok=false
 fi
