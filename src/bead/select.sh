@@ -417,11 +417,12 @@ _needle_get_claimable_beads() {
         # See: nd-1sn8 (NEEDLE stuck: no work found)
         if _needle_work_stealing_enabled; then
             # Get ALL open beads (not just unassigned) to check for stealable ones
+            # FIX: Use --priority-min/max instead of comma-separated values (br CLI syntax)
             local all_open_beads
             if [[ -n "$workspace" && -d "$workspace" ]]; then
-                all_open_beads=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null)
+                all_open_beads=$(cd "$workspace" && br list --status open --priority-min 0 --priority-max 3 --json 2>/dev/null)
             else
-                all_open_beads=$(br list --status open --priority 0,1,2,3 --json 2>/dev/null)
+                all_open_beads=$(br list --status open --priority-min 0 --priority-max 3 --json 2>/dev/null)
             fi
 
             # Get beads that have assignees (potential steal candidates)
@@ -506,11 +507,12 @@ _needle_get_claimable_beads() {
     # Note: br list doesn't support --workspace flag, it operates on current directory
     # Workspace filtering is handled by running in the correct directory
     # FIX: Actually change to the workspace directory if provided
+    # FIX: Use --priority-min/max instead of comma-separated values (br CLI syntax)
     if [[ -n "$workspace" && -d "$workspace" ]]; then
         _needle_debug "DIAG: Running br list in workspace: $workspace"
-        candidates=$(cd "$workspace" && br list --status open --priority 0,1,2,3 --json 2>/dev/null)
+        candidates=$(cd "$workspace" && br list --status open --priority-min 0 --priority-max 3 --json 2>/dev/null)
     else
-        candidates=$(br list --status open --priority 0,1,2,3 --json 2>/dev/null)
+        candidates=$(br list --status open --priority-min 0 --priority-max 3 --json 2>/dev/null)
     fi
     local list_exit=$?
 
