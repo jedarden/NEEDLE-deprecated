@@ -404,6 +404,36 @@ else
     test_fail "Parse failed"
 fi
 
+test_case "_needle_run_parse_args: parses --name option"
+setup_test_workspace
+setup_test_agent
+result=$(_needle_run_parse_args -w "$TEST_WORKSPACE" -a "test-agent" --name "my-custom-session" 2>&1 && echo "OK" || echo "FAIL")
+if [[ "$result" == *"OK"* ]]; then
+    test_pass
+else
+    test_fail "Parse failed"
+fi
+
+test_case "_needle_run_parse_args: parses -n short option for name"
+setup_test_workspace
+setup_test_agent
+result=$(_needle_run_parse_args -w "$TEST_WORKSPACE" -a "test-agent" -n "my-session" 2>&1 && echo "OK" || echo "FAIL")
+if [[ "$result" == *"OK"* ]]; then
+    test_pass
+else
+    test_fail "Parse failed"
+fi
+
+test_case "_needle_run_parse_args: parses --name= format"
+setup_test_workspace
+setup_test_agent
+result=$(_needle_run_parse_args -w "$TEST_WORKSPACE" -a "test-agent" --name="explicit-name" 2>&1 && echo "OK" || echo "FAIL")
+if [[ "$result" == *"OK"* ]]; then
+    test_pass
+else
+    test_fail "Parse failed"
+fi
+
 test_case "_needle_run_parse_args: parses multiple options together"
 setup_test_workspace
 setup_test_agent

@@ -34,6 +34,7 @@ OPTIONS:
                              [default: from config or auto-detected]
     -c, --count <N>          Number of workers to start
                              [default: 1]
+    -n, --name <NAME>        Explicit session name (overrides auto-generated)
     --budget <USD>           Budget override for this run
                              [default: from config]
     --no-hooks               Skip hook execution for this run
@@ -291,6 +292,7 @@ _needle_run_parse_args() {
     local agent=""
     local count=""
     local budget=""
+    local session_name=""
     local no_hooks=false
     local dry_run=false
     local force=false
@@ -333,6 +335,18 @@ _needle_run_parse_args() {
                 ;;
             --count=*)
                 count="${1#*=}"
+                shift
+                ;;
+            -n|--name)
+                if [[ -z "${2:-}" ]]; then
+                    _needle_error "Option $1 requires an argument"
+                    exit $NEEDLE_EXIT_USAGE
+                fi
+                session_name="$2"
+                shift 2
+                ;;
+            --name=*)
+                session_name="${1#*=}"
                 shift
                 ;;
             --budget)
@@ -394,6 +408,7 @@ _needle_run_parse_args() {
     NEEDLE_RAW_AGENT="$agent"
     NEEDLE_RAW_COUNT="$count"
     NEEDLE_RAW_BUDGET="$budget"
+    NEEDLE_RAW_SESSION_NAME="$session_name"
     NEEDLE_RAW_NO_HOOKS="$no_hooks"
     NEEDLE_RAW_DRY_RUN="$dry_run"
     NEEDLE_RAW_FORCE="$force"
@@ -404,7 +419,8 @@ _needle_run_parse_args() {
     NEEDLE_VALIDATED_DRY_RUN="$dry_run"
     NEEDLE_VALIDATED_FORCE="$force"
     NEEDLE_VALIDATED_STATUS="$show_status"
-    export NEEDLE_VALIDATED_NO_HOOKS NEEDLE_VALIDATED_DRY_RUN NEEDLE_VALIDATED_FORCE NEEDLE_VALIDATED_STATUS
+    NEEDLE_VALIDATED_SESSION_NAME="$session_name"
+    export NEEDLE_VALIDATED_NO_HOOKS NEEDLE_VALIDATED_DRY_RUN NEEDLE_VALIDATED_FORCE NEEDLE_VALIDATED_STATUS NEEDLE_VALIDATED_SESSION_NAME
 
     # Validate workspace
     if ! _needle_validate_workspace "$workspace"; then
@@ -469,6 +485,7 @@ _needle_run() {
     local agent="${NEEDLE_VALIDATED_AGENT:-}"
     local count="$NEEDLE_VALIDATED_COUNT"
     local budget="${NEEDLE_VALIDATED_BUDGET:-}"
+    local session_name="${NEEDLE_VALIDATED_SESSION_NAME:-}"
     local no_hooks="$NEEDLE_VALIDATED_NO_HOOKS"
     local dry_run="$NEEDLE_VALIDATED_DRY_RUN"
     local force="$NEEDLE_VALIDATED_FORCE"
@@ -572,7 +589,7 @@ _needle_run() {
     if [[ "$count" -eq 1 ]]; then
         # Single worker - use existing session creation
         local session
-        session=$(_needle_spawn_single_worker "$workspace" "$agent" "$provider" "$budget" "$no_hooks")
+        session=$(_needle_spawn_single_worker "$workspace" "$agent" "$provider" "$budget" "$no_hooks" "$session_name")
         if [[ $? -eq 0 ]] && [[ -n "$session" ]]; then
             spawned_sessions+=("$session")
         else
@@ -628,14 +645,16 @@ _needle_run() {
 #   $3 - Provider name
 #   $4 - Budget (optional)
 #   $5 - No hooks flag (true/false)
+#   $6 - Explicit session name (optional)
 # Returns: Session name on success, empty on failure
-# Usage: session=$(_needle_spawn_single_worker "/workspace" "claude-anthropic-sonnet" "anthropic" "10.00" "false")
+# Usage: session=$(_needle_spawn_single_worker "/workspace" "claude-anthropic-sonnet" "anthropic" "10.00" "false" "my-session")
 _needle_spawn_single_worker() {
     local workspace="$1"
     local agent="$2"
     local provider="$3"
     local budget="$4"
     local no_hooks="$5"
+    local explicit_name="$6"
 
     # Parse agent name to get runner, provider, model components
     local runner model
@@ -645,9 +664,13 @@ _needle_spawn_single_worker() {
     local identifier
     identifier=$(get_next_identifier "$agent")
 
-    # Generate session name
+    # Generate session name (use explicit name if provided)
     local session
-    session=$(_needle_generate_session_name "" "$runner" "$provider" "$model" "$identifier")
+    if [[ -n "$explicit_name" ]]; then
+        session="$explicit_name"
+    else
+        session=$(_needle_generate_session_name "" "$runner" "$provider" "$model" "$identifier")
+    fi
 
     # Build command to run worker
     local cmd_args=(
@@ -655,6 +678,7 @@ _needle_spawn_single_worker() {
         "--workspace" "$workspace"
         "--agent" "$agent"
         "--identifier" "$identifier"
+        "--session" "$session"
     )
 
     [[ -n "$budget" ]] && cmd_args+=("--budget" "$budget")
