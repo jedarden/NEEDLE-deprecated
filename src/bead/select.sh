@@ -154,7 +154,27 @@ _needle_get_claimable_beads() {
             "count=$count" \
             "source=br_ready"
 
-        echo "$candidates"
+        # FIX: Filter out HUMAN type beads (alerts, not work items)
+        # This was previously only done in the fallback path
+        local filtered_candidates
+        filtered_candidates=$(echo "$candidates" | jq -c '
+            [.[] | select(
+                .issue_type == null or .issue_type != "human"
+            )]
+        ' 2>/dev/null)
+
+        local filtered_count
+        filtered_count=$(echo "$filtered_candidates" | jq 'length' 2>/dev/null || echo "0")
+
+        if [[ "$filtered_count" -lt "$count" ]]; then
+            _needle_debug "Filtered out $((count - filtered_count)) HUMAN type beads from br ready results"
+            _needle_diag_select "Filtered HUMAN beads from br ready" \
+                "workspace=$workspace" \
+                "original_count=$count" \
+                "filtered_count=$filtered_count"
+        fi
+
+        echo "$filtered_candidates"
         return 0
     fi
 
