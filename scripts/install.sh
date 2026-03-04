@@ -4,12 +4,12 @@
 # One-liner installation script for NEEDLE CLI
 #
 # Usage:
-#   curl -fsSL https://needle.dev/install | bash
-#   curl -fsSL https://needle.dev/install | bash -s -- --help
+#   curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash -s -- --help
 #
 # Options:
 #   --version VERSION     Install specific version (default: latest)
-#   --install-dir DIR     Installation directory (default: ~/.local/bin)
+#   --install-dir DIR     Installation directory (default: ~/.needle)
 #   --non-interactive     Skip all prompts
 #   --no-modify-path      Don't modify shell rc files
 #   --dry-run             Show what would be done without making changes
@@ -18,9 +18,8 @@
 #
 # Environment variables:
 #   NEEDLE_VERSION        Version to install (default: latest)
-#   NEEDLE_INSTALL_DIR    Installation directory (default: ~/.local/bin)
-#   NEEDLE_REPO           GitHub repository (default: needle-dev/needle)
-#   NEEDLE_AUTO_INIT      Run 'needle init' after installation (true/false)
+#   NEEDLE_INSTALL_DIR    Installation directory (default: ~/.needle)
+#   NEEDLE_REPO           GitHub repository (default: anthropics/needle)
 #   NEEDLE_NO_MODIFY_PATH Don't modify PATH (true/false)
 
 set -euo pipefail
@@ -31,10 +30,10 @@ set -euo pipefail
 
 # Default values (can be overridden by environment or CLI args)
 NEEDLE_VERSION="${NEEDLE_VERSION:-latest}"
-NEEDLE_INSTALL_DIR="${NEEDLE_INSTALL_DIR:-$HOME/.local/bin}"
-NEEDLE_REPO="${NEEDLE_REPO:-needle-dev/needle}"
-NEEDLE_AUTO_INIT="${NEEDLE_AUTO_INIT:-false}"
+NEEDLE_INSTALL_DIR="${NEEDLE_INSTALL_DIR:-$HOME/.needle}"
+NEEDLE_REPO="${NEEDLE_REPO:-anthropics/needle}"
 NEEDLE_NO_MODIFY_PATH="${NEEDLE_NO_MODIFY_PATH:-false}"
+NEEDLE_BIN_DIR="${NEEDLE_BIN_DIR:-$HOME/.local/bin}"
 
 # CLI flag overrides
 NON_INTERACTIVE=false
@@ -73,11 +72,11 @@ success() {
 }
 
 warn() {
-    printf '%b⚠%b %s\n' "$YELLOW" "$NC" >&2
+    printf '%b⚠%b %s\n' "$YELLOW" "$NC" "$*" >&2
 }
 
 error() {
-    printf '%b✗%b %s\n' "$RED" "$NC" >&2
+    printf '%b✗%b %s\n' "$RED" "$NC" "$*" >&2
 }
 
 debug() {
@@ -124,54 +123,6 @@ get_shell_rc() {
     esac
 }
 
-# Detect operating system
-detect_os() {
-    local os
-    os=$(uname -s | tr '[:upper:]' '[:lower:]')
-
-    case "$os" in
-        linux*)
-            echo "linux"
-            ;;
-        darwin*)
-            echo "macos"
-            ;;
-        mingw*|msys*|cygwin*)
-            error "Windows is not yet supported. Please use WSL."
-            exit 1
-            ;;
-        *)
-            error "Unsupported operating system: $os"
-            exit 1
-            ;;
-    esac
-}
-
-# Detect CPU architecture
-detect_arch() {
-    local arch
-    arch=$(uname -m)
-
-    case "$arch" in
-        x86_64|amd64)
-            echo "amd64"
-            ;;
-        aarch64|arm64|armv8*)
-            echo "arm64"
-            ;;
-        armv7*|armhf)
-            echo "arm"
-            ;;
-        i386|i686)
-            echo "386"
-            ;;
-        *)
-            error "Unsupported architecture: $arch"
-            exit 1
-            ;;
-    esac
-}
-
 # Check if directory is in PATH
 in_path() {
     local dir="$1"
@@ -195,38 +146,16 @@ get_latest_version() {
     fi
 }
 
-# Build download URL
+# Build tarball download URL
 build_download_url() {
     local repo="$1"
     local version="$2"
-    local os="$3"
-    local arch="$4"
 
-    local version_path
     if [[ "$version" == "latest" ]]; then
-        version_path="releases/latest/download"
+        echo "https://github.com/$repo/archive/refs/heads/main.tar.gz"
     else
-        version_path="releases/download/v${version#v}"
+        echo "https://github.com/$repo/archive/refs/tags/v${version#v}.tar.gz"
     fi
-
-    echo "https://github.com/$repo/$version_path/needle-${os}-${arch}"
-}
-
-# Verify installation
-verify_installation() {
-    local binary="$1"
-
-    if [[ ! -x "$binary" ]]; then
-        return 1
-    fi
-
-    # Try to run version command
-    if "$binary" version &>/dev/null; then
-        return 0
-    fi
-
-    # If version command fails, check if file exists and is executable
-    [[ -f "$binary" && -x "$binary" ]]
 }
 
 # -----------------------------------------------------------------------------
@@ -235,97 +164,125 @@ verify_installation() {
 
 # Download and install NEEDLE
 install_needle() {
-    local os arch version url
+    local version url
 
-    os=$(detect_os)
-    arch=$(detect_arch)
     version="$NEEDLE_VERSION"
 
-    info "Platform: $os/$arch"
     info "Version: $version"
     info "Install directory: $NEEDLE_INSTALL_DIR"
 
     # Build URL (skip version resolution in dry-run)
     if $DRY_RUN; then
-        url=$(build_download_url "$NEEDLE_REPO" "$version" "$os" "$arch")
+        url=$(build_download_url "$NEEDLE_REPO" "$version")
         info "[DRY RUN] Would download from: $url"
-        info "[DRY RUN] Would install to: $NEEDLE_INSTALL_DIR/needle"
+        info "[DRY RUN] Would install to: $NEEDLE_INSTALL_DIR"
         return 0
     fi
 
-    # Resolve 'latest' to actual version (only in actual install mode)
+    # Resolve 'latest' to actual version
     if [[ "$version" == "latest" ]]; then
         info "Finding latest version..."
-        version=$(get_latest_version "$NEEDLE_REPO")
+        version=$(get_latest_version "$NEEDLE_REPO") || true
         if [[ -z "$version" ]]; then
-            warn "Could not determine latest version, using 'latest'"
+            warn "Could not determine latest version, using main branch"
             version="latest"
         else
             success "Latest version: $version"
         fi
     fi
 
-    url=$(build_download_url "$NEEDLE_REPO" "$version" "$os" "$arch")
+    url=$(build_download_url "$NEEDLE_REPO" "$version")
 
-    # Create installation directory
-    if [[ ! -d "$NEEDLE_INSTALL_DIR" ]]; then
-        info "Creating installation directory..."
-        mkdir -p "$NEEDLE_INSTALL_DIR"
-        success "Created $NEEDLE_INSTALL_DIR"
-    fi
+    # Create temp directory for download
+    local tmp_dir
+    tmp_dir=$(mktemp -d)
+    trap "rm -rf '$tmp_dir'" EXIT
 
-    # Download binary
+    # Download tarball
     info "Downloading NEEDLE..."
     debug "Download URL: $url"
 
-    local binary="$NEEDLE_INSTALL_DIR/needle"
-    local http_code
+    local tarball="$tmp_dir/needle.tar.gz"
 
     if command_exists curl; then
-        http_code=$(curl -fsSL -w "%{http_code}" -o "$binary" "$url" 2>/dev/null) || {
+        curl -fsSL -o "$tarball" "$url" || {
             error "Download failed"
-            rm -f "$binary"
             exit 1
         }
     elif command_exists wget; then
-        http_code=$(wget -q -O "$binary" "$url" 2>/dev/null && echo "200" || echo "000")
+        wget -q -O "$tarball" "$url" || {
+            error "Download failed"
+            exit 1
+        }
     else
         error "Neither curl nor wget is available"
         exit 1
     fi
 
-    if [[ "$http_code" != "200" ]]; then
-        error "Download failed with HTTP status: $http_code"
-        rm -f "$binary"
-        info "This may mean the release for your platform ($os/$arch) is not available yet."
-        info "Check available releases at: https://github.com/$NEEDLE_REPO/releases"
+    success "Downloaded NEEDLE"
+
+    # Extract tarball
+    info "Extracting..."
+    tar -xzf "$tarball" -C "$tmp_dir"
+
+    # Find extracted directory (handles both needle-main and needle-X.Y.Z)
+    local extracted_dir
+    extracted_dir=$(find "$tmp_dir" -maxdepth 1 -type d -name "needle*" | head -1)
+
+    if [[ -z "$extracted_dir" || ! -d "$extracted_dir" ]]; then
+        error "Failed to extract archive"
         exit 1
     fi
 
-    # Make executable
-    chmod +x "$binary"
-    success "Downloaded NEEDLE to $binary"
+    # Remove existing installation
+    if [[ -d "$NEEDLE_INSTALL_DIR" ]]; then
+        info "Removing existing installation..."
+        rm -rf "$NEEDLE_INSTALL_DIR"
+    fi
 
-    # Verify
-    if verify_installation "$binary"; then
+    # Move to install directory
+    mkdir -p "$(dirname "$NEEDLE_INSTALL_DIR")"
+    mv "$extracted_dir" "$NEEDLE_INSTALL_DIR"
+
+    # Make bin/needle executable
+    chmod +x "$NEEDLE_INSTALL_DIR/bin/needle"
+
+    success "Installed NEEDLE to $NEEDLE_INSTALL_DIR"
+
+    # Create symlink in bin directory
+    mkdir -p "$NEEDLE_BIN_DIR"
+    ln -sf "$NEEDLE_INSTALL_DIR/bin/needle" "$NEEDLE_BIN_DIR/needle"
+    success "Created symlink: $NEEDLE_BIN_DIR/needle"
+
+    # Verify installation
+    if [[ -x "$NEEDLE_BIN_DIR/needle" ]]; then
         local installed_version
-        installed_version=$("$binary" version 2>/dev/null | head -1 || echo "unknown")
+        installed_version=$("$NEEDLE_BIN_DIR/needle" version 2>/dev/null | head -1 || echo "unknown")
         success "Installation verified: $installed_version"
-    else
-        warn "Could not verify installation, but binary was downloaded"
     fi
 
     # Handle PATH
-    if ! in_path "$NEEDLE_INSTALL_DIR"; then
+    if ! in_path "$NEEDLE_BIN_DIR"; then
         if [[ "$NEEDLE_NO_MODIFY_PATH" != "true" ]]; then
-            add_to_path "$NEEDLE_INSTALL_DIR"
+            add_to_path "$NEEDLE_BIN_DIR"
         else
-            warn "$NEEDLE_INSTALL_DIR is not in PATH"
-            info "Add it manually: export PATH=\"$NEEDLE_INSTALL_DIR:\$PATH\""
+            warn "$NEEDLE_BIN_DIR is not in PATH"
+            info "Add it manually: export PATH=\"$NEEDLE_BIN_DIR:\$PATH\""
         fi
     else
-        success "$NEEDLE_INSTALL_DIR is already in PATH"
+        success "$NEEDLE_BIN_DIR is already in PATH"
     fi
+
+    # Show installed agent configs
+    echo ""
+    info "Installed agent configurations:"
+    for config in "$NEEDLE_INSTALL_DIR/config/agents"/*.yaml; do
+        if [[ -f "$config" ]]; then
+            local name
+            name=$(basename "$config" .yaml)
+            printf '  %b•%b %s\n' "$CYAN" "$NC" "$name"
+        fi
+    done
 
     return 0
 }
@@ -342,7 +299,7 @@ add_to_path() {
     fi
 
     # Check if already added
-    if [[ -f "$shell_rc" ]] && grep -q "needle.*PATH" "$shell_rc" 2>/dev/null; then
+    if [[ -f "$shell_rc" ]] && grep -q "needle.*PATH\|$dir" "$shell_rc" 2>/dev/null; then
         debug "PATH entry already exists in $shell_rc"
         return 0
     fi
@@ -362,6 +319,7 @@ add_to_path() {
         echo ""
         echo "# Added by NEEDLE installer"
         echo "export PATH=\"$dir:\$PATH\""
+        echo "export NEEDLE_HOME=\"$NEEDLE_INSTALL_DIR\""
     } >> "$shell_rc"
 
     success "Updated $shell_rc"
@@ -370,55 +328,42 @@ add_to_path() {
 
 # Uninstall NEEDLE
 uninstall_needle() {
-    local binary="$NEEDLE_INSTALL_DIR/needle"
-
-    if [[ ! -f "$binary" ]]; then
-        warn "NEEDLE is not installed at $binary"
-        return 0
-    fi
-
     info "Uninstalling NEEDLE..."
 
     if $DRY_RUN; then
-        info "[DRY RUN] Would remove $binary"
+        info "[DRY RUN] Would remove $NEEDLE_INSTALL_DIR"
+        info "[DRY RUN] Would remove symlink $NEEDLE_BIN_DIR/needle"
         return 0
     fi
 
-    rm -f "$binary"
-    success "Removed $binary"
+    # Remove symlink
+    if [[ -L "$NEEDLE_BIN_DIR/needle" ]]; then
+        rm -f "$NEEDLE_BIN_DIR/needle"
+        success "Removed symlink"
+    fi
+
+    # Remove installation directory
+    if [[ -d "$NEEDLE_INSTALL_DIR" ]]; then
+        rm -rf "$NEEDLE_INSTALL_DIR"
+        success "Removed $NEEDLE_INSTALL_DIR"
+    else
+        warn "NEEDLE is not installed at $NEEDLE_INSTALL_DIR"
+    fi
 
     # Optionally remove from PATH
     local shell_rc
     shell_rc=$(get_shell_rc)
 
-    if [[ -f "$shell_rc" ]] && grep -q "needle.*PATH" "$shell_rc" 2>/dev/null; then
-        if [[ "$NON_INTERACTIVE" == "true" ]] || [[ "$NEEDLE_NO_MODIFY_PATH" != "true" ]]; then
-            info "Removing PATH entry from $shell_rc..."
-            # Create a temp file without the NEEDLE PATH entry
-            local temp_rc
-            temp_rc=$(mktemp)
-            grep -v "needle.*PATH" "$shell_rc" > "$temp_rc" || true
-            grep -v "# Added by NEEDLE" "$temp_rc" > "$shell_rc"
-            rm -f "$temp_rc"
-            success "Removed PATH entry from $shell_rc"
-        fi
+    if [[ -f "$shell_rc" ]] && grep -q "NEEDLE" "$shell_rc" 2>/dev/null; then
+        info "Removing NEEDLE entries from $shell_rc..."
+        local temp_rc
+        temp_rc=$(mktemp)
+        grep -v "NEEDLE\|needle" "$shell_rc" > "$temp_rc" || true
+        mv "$temp_rc" "$shell_rc"
+        success "Cleaned up $shell_rc"
     fi
 
     success "NEEDLE has been uninstalled"
-}
-
-# Run initialization
-run_init() {
-    local binary="$NEEDLE_INSTALL_DIR/needle"
-
-    if [[ ! -x "$binary" ]]; then
-        error "NEEDLE binary not found at $binary"
-        return 1
-    fi
-
-    info "Running 'needle init'..."
-    export PATH="$NEEDLE_INSTALL_DIR:$PATH"
-    "$binary" init
 }
 
 # -----------------------------------------------------------------------------
@@ -430,12 +375,12 @@ show_help() {
 NEEDLE Installer - One-liner installation for NEEDLE CLI
 
 Usage:
-  curl -fsSL https://needle.dev/install | bash
-  curl -fsSL https://needle.dev/install | bash -s -- [OPTIONS]
+  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash -s -- [OPTIONS]
 
 Options:
   --version VERSION     Install specific version (default: latest)
-  --install-dir DIR     Installation directory (default: ~/.local/bin)
+  --install-dir DIR     Installation directory (default: ~/.needle)
   --non-interactive     Skip all prompts and use defaults
   --no-modify-path      Don't modify shell rc files
   --dry-run             Show what would be done without making changes
@@ -444,28 +389,39 @@ Options:
 
 Environment Variables:
   NEEDLE_VERSION        Version to install (default: latest)
-  NEEDLE_INSTALL_DIR    Installation directory (default: ~/.local/bin)
-  NEEDLE_REPO           GitHub repository (default: needle-dev/needle)
-  NEEDLE_AUTO_INIT      Run 'needle init' after installation (true/false)
+  NEEDLE_INSTALL_DIR    Installation directory (default: ~/.needle)
+  NEEDLE_REPO           GitHub repository (default: anthropics/needle)
   NEEDLE_NO_MODIFY_PATH Don't modify PATH (true/false)
 
 Examples:
   # Install latest version
-  curl -fsSL https://needle.dev/install | bash
+  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
 
   # Install specific version
-  curl -fsSL https://needle.dev/install | bash -s -- --version 0.1.0
+  curl ... | bash -s -- --version 0.1.0
 
   # Install to custom directory
-  curl -fsSL https://needle.dev/install | bash -s -- --install-dir ~/bin
+  curl ... | bash -s -- --install-dir ~/tools/needle
 
   # Non-interactive installation (for CI/CD)
-  curl -fsSL https://needle.dev/install | bash -s -- --non-interactive
+  curl ... | bash -s -- --non-interactive
 
   # Uninstall
-  curl -fsSL https://needle.dev/install | bash -s -- --uninstall
+  curl ... | bash -s -- --uninstall
 
-For more information, visit: https://github.com/needle-dev/needle
+Installed Components:
+  ~/.needle/              NEEDLE installation directory
+  ├── bin/needle          Main CLI entry point
+  ├── src/                Core modules
+  ├── config/agents/      Agent configurations (YAML)
+  │   ├── claude-anthropic-sonnet.yaml
+  │   ├── claude-anthropic-opus.yaml
+  │   └── ...
+  └── bootstrap/          Dependency installers
+
+  ~/.local/bin/needle     Symlink to bin/needle (added to PATH)
+
+For more information, visit: https://github.com/anthropics/needle
 EOF
 }
 
@@ -542,11 +498,11 @@ main() {
     fi
     success "Download tool available"
 
-    if ! command_exists uname; then
-        error "uname command not found"
+    if ! command_exists tar; then
+        error "tar command not found"
         exit 1
     fi
-    success "System detection available"
+    success "tar available"
 
     # Install
     echo ""
@@ -557,25 +513,17 @@ main() {
     success "NEEDLE installed successfully!"
     echo ""
 
-    if in_path "$NEEDLE_INSTALL_DIR"; then
+    if in_path "$NEEDLE_BIN_DIR"; then
         printf '%bUsage:%b needle <command>\n' "$BOLD" "$NC"
         printf '%bExamples:%b\n' "$BOLD" "$NC"
-        printf '  needle init        Initialize NEEDLE configuration\n'
-        printf '  needle version     Show version information\n'
-        printf '  needle help        Show all available commands\n'
+        printf '  needle version         Show version information\n'
+        printf '  needle agents          List available agent configurations\n'
+        printf '  needle run             Start a worker\n'
+        printf '  needle help            Show all available commands\n'
     else
         printf '%bTo use NEEDLE, add it to your PATH:%b\n' "$BOLD" "$NC"
-        printf '  export PATH="%s:$PATH"\n' "$NEEDLE_INSTALL_DIR"
+        printf '  export PATH="%s:$PATH"\n' "$NEEDLE_BIN_DIR"
         printf '\nOr restart your shell to apply changes.\n'
-    fi
-
-    # Optional auto-init
-    if [[ "$NEEDLE_AUTO_INIT" == "true" ]]; then
-        echo ""
-        run_init
-    else
-        echo ""
-        info "Run 'needle init' to complete setup"
     fi
 }
 
