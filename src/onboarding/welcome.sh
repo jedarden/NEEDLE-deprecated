@@ -128,6 +128,6 @@ QUICKSTART
     fi
 
     _needle_print ""
-    _needle_info "Configuration: $NEEDLE_HOME/$NEEDLE_CONFIG_FILE"
+    _needle_info "Configuration: $NEEDLE_CONFIG_FILE"
     _needle_print ""
 }
