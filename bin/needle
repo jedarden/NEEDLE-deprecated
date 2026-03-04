@@ -55,6 +55,9 @@ source "$NEEDLE_ROOT_DIR/src/onboarding/agents.sh"
 source "$NEEDLE_ROOT_DIR/src/onboarding/create_config.sh"
 source "$NEEDLE_ROOT_DIR/src/onboarding/workspace_setup.sh"
 
+# Source bootstrap modules
+source "$NEEDLE_ROOT_DIR/bootstrap/check.sh"
+
 # Source CLI subcommands
 source "$NEEDLE_ROOT_DIR/src/cli/init.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/run.sh"

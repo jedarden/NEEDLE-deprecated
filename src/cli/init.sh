@@ -2,6 +2,72 @@
 # NEEDLE CLI Init Subcommand
 # Initialize NEEDLE configuration and directory structure
 
+# -----------------------------------------------------------------------------
+# Dependency Check for Init
+# -----------------------------------------------------------------------------
+
+# Check dependencies and display in init format
+# Output format:
+#   ✓ br       0.8.0    installed
+#   ✗ tmux     -        NOT FOUND
+#
+# Returns: 0 if all deps present, 1 if missing
+_needle_init_check_deps() {
+    local check_only="${1:-false}"
+
+    echo "Checking dependencies..."
+
+    # Run dependency check silently
+    _needle_check_deps &>/dev/null || true
+
+    local all_ok=true
+    local missing_list=()
+
+    # Process each dependency in a consistent order
+    local deps_order=("br" "yq" "jq" "tmux")
+
+    for dep in "${deps_order[@]}"; do
+        local status
+        status=$(_check_single_dep "$dep")
+        local version
+        version=$(_parse_dep_version "$dep")
+
+        case "$status" in
+            ok)
+                printf "  \033[0;32m✓\033[0m %-8s %-8s %s\n" "$dep" "$version" "installed"
+                ;;
+            missing)
+                printf "  \033[0;31m✗\033[0m %-8s %-8s %s\n" "$dep" "-" "NOT FOUND"
+                missing_list+=("$dep")
+                all_ok=false
+                ;;
+            outdated:*)
+                local have_version="${status#outdated:}"
+                local need_version="${NEEDLE_DEPS[$dep]}"
+                printf "  \033[0;33m⚠\033[0m %-8s %-8s %s\n" "$dep" "$have_version" "outdated (need $need_version)"
+                # Treat outdated as OK for init purposes (still functional)
+                ;;
+        esac
+    done
+
+    # If checking only, just return the status
+    if [[ "$check_only" == "true" ]]; then
+        $all_ok
+        return $?
+    fi
+
+    # Show missing deps message and exit if any missing
+    if [[ ${#missing_list[@]} -gt 0 ]]; then
+        echo ""
+        echo "Missing dependencies: ${missing_list[*]}"
+        echo "Run 'needle setup' to install missing dependencies"
+        return 1
+    fi
+
+    echo ""
+    return 0
+}
+
 _needle_init_help() {
     _needle_print "Initialize NEEDLE with interactive onboarding
 
@@ -81,6 +147,14 @@ _needle_init() {
 
     # Show welcome banner
     _needle_welcome_init
+
+    # -------------------------------------------------------------------------
+    # Step 0: Check Dependencies
+    # -------------------------------------------------------------------------
+    if ! _needle_init_check_deps; then
+        # Missing dependencies - exit with error
+        exit $NEEDLE_EXIT_CONFIG
+    fi
 
     # Check if already initialized
     if _needle_is_initialized && [[ "$force" != "true" ]]; then
