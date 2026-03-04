@@ -299,6 +299,34 @@ _needle_knot_has_existing_alert() {
 # Alert Creation
 # ============================================================================
 
+# Double-check if work is available before creating alert
+# This is a "belt and suspenders" check to prevent stale alerts
+# when work becomes available between pre-flight and alert creation.
+#
+# Returns: 0 if work IS available (should NOT alert), 1 if no work (can proceed)
+#
+# Implementation note (nd-kon): Uses br ready as the fastest, most reliable check.
+# This is intentionally simple - we've already done comprehensive checks in pre-flight.
+_needle_knot_double_check_work_available() {
+    local workspace="$1"
+
+    _needle_debug "knot: running double-check for $workspace"
+
+    # Use br ready --json for a quick, accurate check
+    # This accounts for dependencies, claims, blocking, deferral, and human type
+    local count
+    count=$(cd "$workspace" 2>/dev/null && br ready --json 2>/dev/null | \
+        jq 'length' 2>/dev/null || echo "0")
+
+    if [[ "$count" -gt 0 ]]; then
+        _needle_debug "knot: double-check found $count claimable beads"
+        return 0  # Work available - DON'T create alert
+    fi
+
+    _needle_debug "knot: double-check confirmed no claimable work"
+    return 1  # No work - can proceed with alert
+}
+
 # Create a human alert bead for stuck state
 # Returns: 0 on success, 1 on failure
 _needle_knot_create_alert() {
@@ -306,6 +334,18 @@ _needle_knot_create_alert() {
     local agent="$2"
 
     _needle_info "knot: creating stuck alert for workspace: $workspace"
+
+    # BELT-AND-SUSPENDERS: Double-check that no work is available
+    # This prevents stale alerts when the pre-flight check passed but
+    # work became available between the check and alert creation.
+    # (Implements nd-kon: Stale alert detection)
+    if _needle_knot_double_check_work_available "$workspace"; then
+        _needle_warn "knot: skipping alert - double-check found available work (stale alert prevented)"
+        _needle_emit_event "knot.stale_alert_prevented" \
+            "Double-check found available work, skipping alert creation" \
+            "workspace=$workspace"
+        return 1  # Don't create alert - work is available
+    fi
 
     # Collect diagnostic information
     local diag_info

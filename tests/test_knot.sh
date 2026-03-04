@@ -465,6 +465,69 @@ else
 fi
 unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
 
+# Test 26: Double-check function detects available work (nd-kon)
+_test_start "Double-check function detects available work (nd-kon)"
+export MOCK_BR_READY_COUNT=5
+if _needle_knot_double_check_work_available "$TEST_WORKSPACE_DIR"; then
+    _test_pass "Double-check correctly detected available work"
+else
+    _test_fail "Double-check failed to detect available work"
+fi
+unset MOCK_BR_READY_COUNT
+
+# Test 27: Double-check function returns no work when none available (nd-kon)
+_test_start "Double-check function returns no work when none available (nd-kon)"
+export MOCK_BR_READY_COUNT=""
+if ! _needle_knot_double_check_work_available "$TEST_WORKSPACE_DIR"; then
+    _test_pass "Double-check correctly detected no available work"
+else
+    _test_fail "Double-check incorrectly found available work when none exists"
+fi
+unset MOCK_BR_READY_COUNT
+
+# Test 28: Alert creation skips when double-check finds work (nd-kon)
+_test_start "Alert creation skips when double-check finds work (nd-kon)"
+# Clear rate limits first
+_needle_knot_clear_rate_limit "$TEST_WORKSPACE_DIR"
+# Set up mock to simulate: pre-flight passes (no work), but double-check finds work
+# This simulates a race condition where work becomes available between checks
+export MOCK_BR_READY_COUNT=3
+
+# Call create_alert directly - it should skip because double-check finds work
+output=$(_needle_knot_create_alert "$TEST_WORKSPACE_DIR" "test-agent" 2>&1)
+result=$?
+
+# Should return 1 (alert NOT created) and emit stale_alert_prevented event
+if [[ $result -ne 0 ]]; then
+    if echo "$output" | grep -q "knot.stale_alert_prevented"; then
+        _test_pass "Alert creation correctly skipped when double-check found work"
+    else
+        _test_fail "Alert creation skipped but did not emit stale_alert_prevented event"
+    fi
+else
+    _test_fail "Alert creation should have been skipped when work available"
+fi
+unset MOCK_BR_READY_COUNT
+
+# Test 29: Alert creation proceeds when double-check confirms no work (nd-kon)
+_test_start "Alert creation proceeds when double-check confirms no work (nd-kon)"
+# Clear rate limits first
+_needle_knot_clear_rate_limit "$TEST_WORKSPACE_DIR"
+# Set up mock to simulate: both pre-flight and double-check find no work
+export MOCK_BR_READY_COUNT=""
+
+# Call create_alert directly - it should proceed and create the alert
+output=$(_needle_knot_create_alert "$TEST_WORKSPACE_DIR" "test-agent" 2>&1)
+result=$?
+
+# Should return 0 (alert created)
+if [[ $result -eq 0 ]]; then
+    _test_pass "Alert creation correctly proceeded when no work available"
+else
+    _test_fail "Alert creation should have succeeded when no work available"
+fi
+unset MOCK_BR_READY_COUNT
+
 # Summary
 echo ""
 echo "=========================================="
