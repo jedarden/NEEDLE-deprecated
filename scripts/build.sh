@@ -254,6 +254,10 @@ MODULES=(
     "src/hooks/runner.sh"
 
     # Runner
+    "src/runner/state.sh"
+    "src/runner/naming.sh"
+    "src/runner/tmux.sh"
+    "src/runner/rate_limit.sh"
     "src/runner/limits.sh"
     "src/runner/loop.sh"
 
@@ -354,10 +358,10 @@ _needle_main() {
     # Dispatch to subcommand
     case "$cmd" in
         run|start)
-            _needle_cmd_run "$@"
+            _needle_run "$@"
             ;;
         init|setup)
-            _needle_cmd_init "$@"
+            _needle_init "$@"
             ;;
         version)
             _needle_show_version
@@ -366,7 +370,7 @@ _needle_main() {
             _needle_agents "$@"
             ;;
         test-agent)
-            _needle_cmd_test_agent "$@"
+            _needle_test_agent "$@"
             ;;
         help|--help|-h)
             _needle_show_help

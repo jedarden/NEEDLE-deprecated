@@ -86,7 +86,7 @@ _needle_verbose() {
 }
 
 _needle_header() {
-    if [[ "$NEEDLE_QUIET" == "true" ]]; then
+    if [[ "${NEEDLE_QUIET:-}" == "true" ]]; then
         return
     fi
     _needle_print ""
@@ -107,7 +107,7 @@ _needle_table_row() {
 
 # Print a section header
 _needle_section() {
-    if [[ "$NEEDLE_QUIET" == "true" ]]; then
+    if [[ "${NEEDLE_QUIET:-}" == "true" ]]; then
         return
     fi
     _needle_print ""
