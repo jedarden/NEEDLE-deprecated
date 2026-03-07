@@ -2117,6 +2117,599 @@ _pulse_detector_todos() {
 }
 
 # ============================================================================
+# Linter Issues Detector (nd-1oaq)
+# ============================================================================
+
+# Run eslint and collect errors
+# Usage: _pulse_run_eslint <workspace>
+# Returns: JSON array of lint issue objects
+_pulse_run_eslint() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check if eslint is available
+    if ! command -v npx &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check for package.json and eslint config
+    if [[ ! -f "$workspace/package.json" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check for eslint config files
+    local has_eslint_config=false
+    for config in .eslintrc .eslintrc.js .eslintrc.json .eslintrc.yml .eslintrc.yaml eslint.config.js; do
+        if [[ -f "$workspace/$config" ]]; then
+            has_eslint_config=true
+            break
+        fi
+    done
+
+    if [[ "$has_eslint_config" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Run eslint in JSON format, only errors
+    local eslint_output
+    eslint_output=$(cd "$workspace" && npx eslint --format json --quiet . 2>/dev/null) || true
+
+    if [[ -z "$eslint_output" ]] || [[ "$eslint_output" == "[]" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Parse eslint output
+    local max_issues=5
+    local count=0
+
+    while IFS= read -r file_result && ((count < max_issues)); do
+        [[ -z "$file_result" ]] && continue
+
+        local file_path
+        file_path=$(echo "$file_result" | jq -r '.filePath // empty' 2>/dev/null)
+        [[ -z "$file_path" ]] && continue
+
+        local rel_path="${file_path#$workspace/}"
+
+        # Get error messages
+        while IFS= read -r msg && ((count < max_issues)); do
+            [[ -z "$msg" ]] || [[ "$msg" == "null" ]] && continue
+
+            local line rule message
+            line=$(echo "$msg" | jq -r '.line // 0' 2>/dev/null)
+            rule=$(echo "$msg" | jq -r '.ruleId // "unknown"' 2>/dev/null)
+            message=$(echo "$msg" | jq -r '.message // "Unknown error"' 2>/dev/null)
+
+            local title="ESLint error: $rel_path:$line"
+            local fingerprint="eslint:${rel_path}:${line}:${rule}"
+            local description="ESLint error in **${rel_path}**
+
+**Rule:** ${rule}
+**Line:** ${line}
+**Message:** ${message}
+
+## Context
+This is a static analysis error detected by ESLint. Errors indicate potential bugs or problematic patterns that should be fixed.
+
+## Remediation
+1. Open the file and review the error
+2. Fix the issue according to the rule documentation
+3. Run \`npx eslint ${rel_path}\` to verify the fix"
+
+            local issue
+            issue=$(jq -n \
+                --arg category "linter" \
+                --arg severity "high" \
+                --arg title "$title" \
+                --arg description "$description" \
+                --arg fingerprint "$fingerprint" \
+                --arg labels "eslint,static-analysis" \
+                '{
+                    category: $category,
+                    severity: $severity,
+                    title: $title,
+                    description: $description,
+                    fingerprint: $fingerprint,
+                    labels: $labels
+                }')
+
+            issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+            ((count++))
+        done < <(echo "$file_result" | jq -c '.messages[] | select(.severity == 2)' 2>/dev/null)
+    done < <(echo "$eslint_output" | jq -c '.[]' 2>/dev/null)
+
+    echo "$issues"
+}
+
+# Run shellcheck and collect errors
+# Usage: _pulse_run_shellcheck <workspace>
+# Returns: JSON array of lint issue objects
+_pulse_run_shellcheck() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check if shellcheck is available
+    if ! command -v shellcheck &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Find shell scripts
+    local shell_scripts=()
+    while IFS= read -r -d '' file; do
+        shell_scripts+=("$file")
+    done < <(find "$workspace" -type f \( -name "*.sh" -o -name "*.bash" \) \
+        -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/venv/*" \
+        -print0 2>/dev/null | head -50)
+
+    if [[ ${#shell_scripts[@]} -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local max_issues=5
+    local count=0
+
+    for script in "${shell_scripts[@]}"; do
+        if ((count >= max_issues)); then
+            break
+        fi
+
+        local rel_path="${script#$workspace/}"
+
+        # Run shellcheck with JSON format
+        local shellcheck_output
+        shellcheck_output=$(shellcheck -f json "$script" 2>/dev/null) || true
+
+        if [[ -z "$shellcheck_output" ]] || [[ "$shellcheck_output" == "[]" ]]; then
+            continue
+        fi
+
+        # Parse errors only (level: error)
+        while IFS= read -r result && ((count < max_issues)); do
+            [[ -z "$result" ]] || [[ "$result" == "null" ]] && continue
+
+            local level line code message
+            level=$(echo "$result" | jq -r '.level // "info"' 2>/dev/null)
+            line=$(echo "$result" | jq -r '.line // 0' 2>/dev/null)
+            code=$(echo "$result" | jq -r '.code // "unknown"' 2>/dev/null)
+            message=$(echo "$result" | jq -r '.message // "Unknown error"' 2>/dev/null)
+
+            # Only process errors
+            if [[ "$level" != "error" ]]; then
+                continue
+            fi
+
+            local title="ShellCheck error: $rel_path:$line"
+            local fingerprint="shellcheck:${rel_path}:${line}:${code}"
+            local description="ShellCheck error in **${rel_path}**
+
+**Code:** SC${code}
+**Line:** ${line}
+**Message:** ${message}
+
+## Context
+This is a static analysis error detected by ShellCheck. Errors indicate potential bugs or unsafe patterns in shell scripts.
+
+## Remediation
+1. Open the file and review the error
+2. Fix the issue according to ShellCheck recommendations
+3. Run \`shellcheck ${rel_path}\` to verify the fix"
+
+            local severity="high"
+
+            local issue
+            issue=$(jq -n \
+                --arg category "linter" \
+                --arg severity "$severity" \
+                --arg title "$title" \
+                --arg description "$description" \
+                --arg fingerprint "$fingerprint" \
+                --arg labels "shellcheck,static-analysis,shell" \
+                '{
+                    category: $category,
+                    severity: $severity,
+                    title: $title,
+                    description: $description,
+                    fingerprint: $fingerprint,
+                    labels: $labels
+                }')
+
+            issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+            ((count++))
+        done < <(echo "$shellcheck_output" | jq -c '.[]' 2>/dev/null)
+    done
+
+    echo "$issues"
+}
+
+# Run ruff/pyflakes for Python linting
+# Usage: _pulse_run_python_lint <workspace>
+# Returns: JSON array of lint issue objects
+_pulse_run_python_lint() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check for Python files
+    local python_files=()
+    while IFS= read -r -d '' file; do
+        python_files+=("$file")
+    done < <(find "$workspace" -type f -name "*.py" \
+        -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/venv/*" \
+        -not -path "*/__pycache__/*" -not -path "*/.venv/*" \
+        -print0 2>/dev/null | head -100)
+
+    if [[ ${#python_files[@]} -eq 0 ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local max_issues=5
+    local count=0
+
+    # Try ruff first (faster)
+    if command -v ruff &>/dev/null; then
+        local ruff_output
+        ruff_output=$(cd "$workspace" && ruff check --output-format json . 2>/dev/null) || true
+
+        if [[ -n "$ruff_output" ]] && [[ "$ruff_output" != "[]" ]]; then
+            while IFS= read -r result && ((count < max_issues)); do
+                [[ -z "$result" ]] || [[ "$result" == "null" ]] && continue
+
+                local filename location code message
+                filename=$(echo "$result" | jq -r '.filename // empty' 2>/dev/null)
+                location=$(echo "$result" | jq -r '.location // empty' 2>/dev/null)
+                code=$(echo "$result" | jq -r '.code // "unknown"' 2>/dev/null)
+                message=$(echo "$result" | jq -r '.message // "Unknown error"' 2>/dev/null)
+
+                [[ -z "$filename" ]] && continue
+
+                local rel_path="${filename#$workspace/}"
+                local line="${location%%:*}"
+
+                local title="Ruff error: $rel_path:$line"
+                local fingerprint="ruff:${rel_path}:${location}:${code}"
+
+                local description="Ruff lint error in **${rel_path}**
+
+**Code:** ${code}
+**Location:** ${location}
+**Message:** ${message}
+
+## Context
+This is a static analysis error detected by Ruff. It indicates a potential issue in Python code.
+
+## Remediation
+1. Open the file and review the error
+2. Fix the issue according to the rule documentation
+3. Run \`ruff check ${rel_path}\` to verify the fix"
+
+                local issue
+                issue=$(jq -n \
+                    --arg category "linter" \
+                    --arg severity "high" \
+                    --arg title "$title" \
+                    --arg description "$description" \
+                    --arg fingerprint "$fingerprint" \
+                    --arg labels "ruff,static-analysis,python" \
+                    '{
+                        category: $category,
+                        severity: $severity,
+                        title: $title,
+                        description: $description,
+                        fingerprint: $fingerprint,
+                        labels: $labels
+                    }')
+
+                issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+                ((count++))
+            done < <(echo "$ruff_output" | jq -c '.[]' 2>/dev/null)
+        fi
+    fi
+
+    echo "$issues"
+}
+
+# Main linter issues detector
+# Usage: _pulse_detector_linter <workspace> <agent>
+# Returns: JSON array of linter issue objects
+_pulse_detector_linter() {
+    local workspace="$1"
+    local agent="$2"
+
+    # Check if linter detector is enabled
+    local linter_enabled
+    linter_enabled=$(get_config "strands.pulse.detectors.linter_issues" "true")
+
+    if [[ "$linter_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Get severity filter (only create beads for specified severity and above)
+    local min_severity
+    min_severity=$(get_config "strands.pulse.detectors.linter_severity" "error")
+
+    _needle_diag_strand "pulse" "Running linter issues detector" \
+        "workspace=$workspace" \
+        "agent=$agent" \
+        "min_severity=$min_severity"
+
+    _needle_telemetry_emit "pulse.detector_started" "info" \
+        "detector=linter" \
+        "workspace=$workspace"
+
+    local all_issues="[]"
+
+    # Run ESLint for JS/TS projects
+    local eslint_issues
+    eslint_issues=$(_pulse_run_eslint "$workspace")
+    if [[ -n "$eslint_issues" ]] && [[ "$eslint_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$eslint_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    # Run ShellCheck for shell scripts
+    local shellcheck_issues
+    shellcheck_issues=$(_pulse_run_shellcheck "$workspace")
+    if [[ -n "$shellcheck_issues" ]] && [[ "$shellcheck_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$shellcheck_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    # Run Python linter
+    local python_issues
+    python_issues=$(_pulse_run_python_lint "$workspace")
+    if [[ -n "$python_issues" ]] && [[ "$python_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$python_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    local issue_count
+    issue_count=$(echo "$all_issues" | jq 'length' 2>/dev/null || echo 0)
+
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
+        "detector=linter" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    _needle_diag_strand "pulse" "Linter issues detector completed" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    echo "$all_issues"
+}
+
+# ============================================================================
+# Dead Code Detector (nd-1oaq)
+# ============================================================================
+
+# Check for unused exports in TypeScript/JavaScript using ts-prune or similar
+# Usage: _pulse_scan_dead_code_ts <workspace>
+# Returns: JSON array of dead code issue objects
+_pulse_scan_dead_code_ts() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check for ts-prune availability
+    if ! command -v npx &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check for TypeScript project
+    if [[ ! -f "$workspace/tsconfig.json" ]] && [[ ! -f "$workspace/package.json" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # ts-prune requires installation, skip if not available
+    if ! npx ts-prune --help &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Run ts-prune to find unused exports
+    local tsprune_output
+    tsprune_output=$(cd "$workspace" && npx ts-prune 2>/dev/null) || true
+
+    if [[ -z "$tsprune_output" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local max_issues=5
+    local count=0
+
+    # Parse ts-prune output (format: "path:line - symbolName")
+    while IFS= read -r line && ((count < max_issues)); do
+        [[ -z "$line" ]] && continue
+
+        # Match lines like "src/utils.ts:10 - unusedFunction"
+        if [[ "$line" =~ ^(.+):([0-9]+)\ -\ (.+)$ ]]; then
+            local file_path="${BASH_REMATCH[1]}"
+            local line_num="${BASH_REMATCH[2]}"
+            local symbol="${BASH_REMATCH[3]}"
+
+            local rel_path="${file_path#$workspace/}"
+
+            local title="Unused export: ${symbol} in ${rel_path}"
+            local fingerprint="dead-code:${rel_path}:${symbol}"
+            local description="Potentially unused export in **${rel_path}**
+
+**Symbol:** ${symbol}
+**Line:** ${line_num}
+
+## Context
+This export was detected as potentially unused by ts-prune. Unused exports may indicate:
+- Dead code that can be removed
+- Code that should be used but isn't (potential bug)
+- Exports intended for external use (false positive)
+
+## Remediation
+1. Verify if the export is truly unused (check for dynamic imports, external packages)
+2. If unused, remove the export and related dead code
+3. If used externally, document the public API
+4. Run \`npx ts-prune\` to verify"
+
+            local issue
+            issue=$(jq -n \
+                --arg category "dead-code" \
+                --arg severity "low" \
+                --arg title "$title" \
+                --arg description "$description" \
+                --arg fingerprint "$fingerprint" \
+                --arg labels "dead-code,unused,cleanup" \
+                '{
+                    category: $category,
+                    severity: $severity,
+                    title: $title,
+                    description: $description,
+                    fingerprint: $fingerprint,
+                    labels: $labels
+                }')
+
+            issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+            ((count++))
+        fi
+    done <<< "$tsprune_output"
+
+    echo "$issues"
+}
+
+# Check for unused dependencies using depcheck
+# Usage: _pulse_scan_unused_deps <workspace>
+# Returns: JSON array of unused dependency issue objects
+_pulse_scan_unused_deps() {
+    local workspace="$1"
+    local issues="[]"
+
+    # Check for package.json
+    if [[ ! -f "$workspace/package.json" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Check if depcheck is available
+    if ! command -v npx &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Run depcheck with JSON output
+    local depcheck_output
+    depcheck_output=$(cd "$workspace" && npx depcheck --json 2>/dev/null) || true
+
+    if [[ -z "$depcheck_output" ]] || [[ "$depcheck_output" == "{}" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local max_issues=5
+    local count=0
+
+    # Parse unused dependencies
+    while IFS= read -r dep && ((count < max_issues)); do
+        [[ -z "$dep" ]] || [[ "$dep" == "null" ]] && continue
+
+        local title="Unused dependency: $dep"
+        local fingerprint="unused-dep:${dep}"
+        local description="Unused npm dependency detected: **${dep}**
+
+## Context
+This dependency is declared in package.json but does not appear to be used in the codebase. Unused dependencies:
+- Increase bundle size
+- Slow down npm install
+- Add unnecessary security surface area
+- Can cause confusion about project requirements
+
+## Remediation
+1. Verify the dependency is truly unused (check for dynamic imports, build tools)
+2. If unused, remove from package.json: \`npm uninstall ${dep}\`
+3. Run \`npm install\` to update lock file
+4. Run \`npx depcheck\` to verify"
+
+        local issue
+        issue=$(jq -n \
+            --arg category "dead-code" \
+            --arg severity "medium" \
+            --arg title "$title" \
+            --arg description "$description" \
+            --arg fingerprint "$fingerprint" \
+            --arg labels "dead-code,dependencies,unused" \
+            '{
+                category: $category,
+                severity: $severity,
+                title: $title,
+                description: $description,
+                fingerprint: $fingerprint,
+                labels: $labels
+            }')
+
+        issues=$(echo "$issues" "$issue" | jq -s 'add' 2>/dev/null || echo "$issues")
+        ((count++))
+    done < <(echo "$depcheck_output" | jq -r '.dependencies[]? // empty' 2>/dev/null)
+
+    echo "$issues"
+}
+
+# Main dead code detector
+# Usage: _pulse_detector_dead_code <workspace> <agent>
+# Returns: JSON array of dead code issue objects
+_pulse_detector_dead_code() {
+    local workspace="$1"
+    local agent="$2"
+
+    # Check if dead code detector is enabled (disabled by default - requires tooling)
+    local dead_code_enabled
+    dead_code_enabled=$(get_config "strands.pulse.detectors.dead_code" "false")
+
+    if [[ "$dead_code_enabled" != "true" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    _needle_diag_strand "pulse" "Running dead code detector" \
+        "workspace=$workspace" \
+        "agent=$agent"
+
+    _needle_telemetry_emit "pulse.detector_started" "info" \
+        "detector=dead_code" \
+        "workspace=$workspace"
+
+    local all_issues="[]"
+
+    # Scan for unused exports
+    local ts_issues
+    ts_issues=$(_pulse_scan_dead_code_ts "$workspace")
+    if [[ -n "$ts_issues" ]] && [[ "$ts_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$ts_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    # Scan for unused dependencies
+    local dep_issues
+    dep_issues=$(_pulse_scan_unused_deps "$workspace")
+    if [[ -n "$dep_issues" ]] && [[ "$dep_issues" != "[]" ]]; then
+        all_issues=$(echo "$all_issues" "$dep_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+    fi
+
+    local issue_count
+    issue_count=$(echo "$all_issues" | jq 'length' 2>/dev/null || echo 0)
+
+    _needle_telemetry_emit "pulse.detector_completed" "info" \
+        "detector=dead_code" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    _needle_diag_strand "pulse" "Dead code detector completed" \
+        "workspace=$workspace" \
+        "issues_found=$issue_count"
+
+    echo "$all_issues"
+}
+
+# ============================================================================
 # Issue Collection and Processing
 # ============================================================================
 
@@ -2176,6 +2769,24 @@ _pulse_collect_issues() {
         todo_issues=$(_pulse_detector_todos "$workspace" "$agent")
         if [[ -n "$todo_issues" ]] && [[ "$todo_issues" != "[]" ]]; then
             all_issues=$(echo "$all_issues" "$todo_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+        fi
+    fi
+
+    # Linter issues detector (implemented in nd-1oaq)
+    if declare -f _pulse_detector_linter &>/dev/null; then
+        local linter_issues
+        linter_issues=$(_pulse_detector_linter "$workspace" "$agent")
+        if [[ -n "$linter_issues" ]] && [[ "$linter_issues" != "[]" ]]; then
+            all_issues=$(echo "$all_issues" "$linter_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
+        fi
+    fi
+
+    # Dead code detector (implemented in nd-1oaq)
+    if declare -f _pulse_detector_dead_code &>/dev/null; then
+        local dead_code_issues
+        dead_code_issues=$(_pulse_detector_dead_code "$workspace" "$agent")
+        if [[ -n "$dead_code_issues" ]] && [[ "$dead_code_issues" != "[]" ]]; then
+            all_issues=$(echo "$all_issues" "$dead_code_issues" | jq -s 'add' 2>/dev/null || echo "$all_issues")
         fi
     fi
 
