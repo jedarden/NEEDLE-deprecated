@@ -2481,29 +2481,96 @@ When multiple workers operate on the same codebase, file write conflicts can occ
 
 ### Lock Structure
 
+Locks are stored as flat files in `/dev/shm/needle/` with a naming convention that enables efficient queries and automatic cleanup:
+
 ```
-/dev/shm/needle-locks/
-├── {md5(filepath)}.lock/       # Directory (mkdir for atomicity)
-│   └── info                    # JSON metadata
+/dev/shm/needle/{bead-id}-{path-uuid}
 ```
 
-**Lock info format:**
+- **bead-id**: The bead holding the lock (e.g., `nd-2ov`). Extractable from filename for quick validation.
+- **path-uuid**: First 8 characters of MD5 hash of the absolute file path. Enables lookup by file.
+
+**Example directory:**
+```
+/dev/shm/needle/
+├── nd-2ov-a7f3c821    # nd-2ov has write lock on /src/cli/run.sh
+├── bd-muv-a7f3c821    # bd-muv has read lock on same file
+├── nd-xyz-b4e2d910    # nd-xyz has lock on different file
+└── bd-abc-c5f1e023    # bd-abc has lock on another file
+```
+
+**Lock file contents:**
 ```json
 {
   "bead": "nd-2ov",
   "worker": "claude-code-glm-5-alpha",
   "path": "/home/coder/NEEDLE/src/cli/run.sh",
+  "type": "write",
   "ts": 1709337600,
   "workspace": "/home/coder/NEEDLE"
 }
 ```
+
+**Query patterns:**
+```bash
+# Generate path-uuid from file path
+path_uuid() {
+    echo -n "$1" | md5sum | cut -c1-8
+}
+
+# All locks on a specific file
+uuid=$(path_uuid "/home/coder/NEEDLE/src/cli/run.sh")
+ls /dev/shm/needle/*-$uuid
+
+# All locks held by a bead
+ls /dev/shm/needle/nd-2ov-*
+
+# Check if specific bead has lock on specific file
+[ -f "/dev/shm/needle/nd-2ov-$(path_uuid "$filepath")" ]
+```
+
+**Automatic cleanup (stale lock reaper):**
+```bash
+cleanup_stale_locks() {
+    for lock in /dev/shm/needle/*; do
+        [ -f "$lock" ] || continue
+
+        # Extract bead ID from filename
+        filename=$(basename "$lock")
+        bead_id=$(echo "$filename" | rev | cut -d'-' -f2- | rev)
+
+        # Read lock metadata
+        path=$(jq -r '.path' "$lock")
+
+        # Check 1: Bead reaped (closed/deleted)?
+        if ! br show "$bead_id" --json 2>/dev/null | jq -e '.[0].status == "open" or .[0].status == "in_progress"' >/dev/null; then
+            log_info "Removing lock for reaped bead: $bead_id"
+            rm "$lock"
+            continue
+        fi
+
+        # Check 2: File no longer exists?
+        if [ ! -e "$path" ]; then
+            log_info "Removing lock for deleted file: $path"
+            rm "$lock"
+            continue
+        fi
+    done
+}
+```
+
+**Benefits of this structure:**
+- **Flat directory**: O(1) lookup, fast `ls`, no deep nesting
+- **Bead ID in filename**: Quick reap check without reading file contents
+- **Path UUID**: Collision-free, enables grouping locks by file
+- **Self-cleaning**: Locks auto-removed when bead closes or file deleted
 
 ### Checkout Workflow
 
 ```
 Worker attempts file write (Edit tool)
     ↓
-checkout_file() checks /dev/shm/needle-locks/{hash}.lock
+checkout_file() checks /dev/shm/needle/{bead-id}-{path-uuid}
     ↓
 ┌─ Lock free ──────────────────────┐    ┌─ Lock held by bead X ────────────┐
 │ 1. mkdir lock dir (atomic)       │    │ 1. Read blocking bead ID         │
@@ -2604,7 +2671,7 @@ check_stale_locks() {
     local now=$(date +%s)
     local timeout=1800  # 30 minutes
 
-    for lock in /dev/shm/needle-locks/*.lock; do
+    for lock in /dev/shm/needle/*; do
         local ts=$(jq -r '.ts' "$lock/info")
         if (( now - ts > timeout )); then
             local bead=$(jq -r '.bead' "$lock/info")
@@ -2775,7 +2842,7 @@ Use Linux fanotify for permission-based file access control:
 
 ```bash
 # Requires CAP_SYS_ADMIN or root
-needle-fanotify-daemon --watch="$NEEDLE_WORKSPACE" --lock-dir=/dev/shm/needle-locks
+needle-fanotify-daemon --watch="$NEEDLE_WORKSPACE" --lock-dir=/dev/shm/needle
 ```
 
 **Pros:** Kernel-enforced, zero overhead for allowed operations
@@ -3201,7 +3268,7 @@ Locks require periodic heartbeat to remain valid. Stale locks auto-release:
 renew_lock_leases() {
     local bead_id="$1"
 
-    for lock in /dev/shm/needle-locks/*.lock; do
+    for lock in /dev/shm/needle/*; do
         local holder=$(jq -r '.bead' "$lock/info" 2>/dev/null)
         if [ "$holder" = "$bead_id" ]; then
             # Renew lease
@@ -3216,7 +3283,7 @@ expire_stale_leases() {
     local now=$(date +%s)
     local lease_timeout=60  # seconds
 
-    for lock in /dev/shm/needle-locks/*.lock; do
+    for lock in /dev/shm/needle/*; do
         [ -d "$lock" ] || continue
         local ts=$(jq -r '.ts' "$lock/info" 2>/dev/null)
         local bead=$(jq -r '.bead' "$lock/info" 2>/dev/null)
