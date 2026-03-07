@@ -34,6 +34,7 @@ source "$NEEDLE_ROOT_DIR/src/lib/json.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/config.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/utils.sh"
 source "$NEEDLE_ROOT_DIR/src/lib/workspace.sh"
+source "$NEEDLE_ROOT_DIR/src/lib/update_check.sh"
 
 # Source runner modules
 source "$NEEDLE_ROOT_DIR/src/runner/state.sh"
@@ -1074,6 +1075,9 @@ main() {
 
     # Check for initialization (unless running init/version/help)
     _needle_maybe_init "${NEEDLE_REMAINING_ARGS[@]:-}"
+
+    # Check for updates (non-blocking, cached for 24h)
+    _needle_check_updates_on_startup "${NEEDLE_REMAINING_ARGS[0]:-}"
 
     # Route to subcommand
     _needle_route_command "${NEEDLE_REMAINING_ARGS[@]:-}"

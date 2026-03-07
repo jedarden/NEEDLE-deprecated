@@ -103,6 +103,13 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "stealable_assignees": ["coder"],
     "check_worker_heartbeat": true,
     "unassigned_by_default": true
+  },
+  "updates": {
+    "check_on_startup": true,
+    "check_interval": "24h",
+    "auto_upgrade": false,
+    "include_prereleases": false,
+    "disabled": false
   }
 }'
 
@@ -313,6 +320,26 @@ select:
   # allowing workers to claim them without waiting for work_stealing_timeout.
   # This prevents worker starvation when all beads are auto-assigned to the creator.
   unassigned_by_default: true
+
+# Self-update configuration
+# Controls how NEEDLE checks for and installs updates
+updates:
+  # check_on_startup: Check for updates when needle starts (default: true)
+  # Displays non-blocking notification if update is available
+  check_on_startup: true
+
+  # check_interval: How often to check for updates (default: 24h)
+  # Supports: s (seconds), m (minutes), h (hours), d (days)
+  check_interval: 24h
+
+  # auto_upgrade: Automatically install updates without prompting (default: false)
+  auto_upgrade: false
+
+  # include_prereleases: Include pre-release versions in update checks (default: false)
+  include_prereleases: false
+
+  # disabled: Completely disable update checks (for air-gapped environments)
+  disabled: false
 '
 
 # Check if yq is available
@@ -739,6 +766,25 @@ select:
   # When true, beads created by NEEDLE are immediately released after creation,
   # allowing workers to claim them without waiting for work_stealing_timeout.
   unassigned_by_default: true
+
+# Self-update configuration
+# Controls how NEEDLE checks for and installs updates
+updates:
+  # check_on_startup: Check for updates when needle starts (default: true)
+  check_on_startup: true
+
+  # check_interval: How often to check for updates (default: 24h)
+  # Supports: s (seconds), m (minutes), h (hours), d (days)
+  check_interval: 24h
+
+  # auto_upgrade: Automatically install updates without prompting (default: false)
+  auto_upgrade: false
+
+  # include_prereleases: Include pre-release versions in update checks (default: false)
+  include_prereleases: false
+
+  # disabled: Completely disable update checks (for air-gapped environments)
+  disabled: false
 EOF
 
     if [[ $? -eq 0 ]]; then
