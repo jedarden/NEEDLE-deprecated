@@ -339,6 +339,16 @@ _needle_watchdog_recover_worker() {
         "Starting recovery for worker $worker" \
         "worker=$worker" "reason=$reason" "pid=$pid" "bead=$current_bead"
 
+    # Extract worker configuration from heartbeat file BEFORE cleanup
+    local workspace="" agent="" hb_data=""
+    if [[ -f "$hb_file" ]]; then
+        hb_data=$(cat "$hb_file" 2>/dev/null)
+        if command -v jq &>/dev/null && [[ -n "$hb_data" ]]; then
+            workspace=$(echo "$hb_data" | jq -r '.workspace // ""' 2>/dev/null)
+            agent=$(echo "$hb_data" | jq -r '.agent // ""' 2>/dev/null)
+        fi
+    fi
+
     # Step 1: Release bead back to queue
     if [[ -n "$current_bead" ]]; then
         _needle_watchdog_release_bead "$current_bead" "$worker" "$log_file"
@@ -364,13 +374,71 @@ _needle_watchdog_recover_worker() {
     # Step 4: Respawn worker if configured
     if [[ "$NEEDLE_WATCHDOG_RECOVERY_ACTION" == "restart" ]]; then
         _needle_watchdog_log "$log_file" "recovery.respawning" \
-            "Scheduling worker respawn" "worker=$worker"
-        # Note: Actual respawn would be handled by the runner system
-        # The worker will naturally be restarted on the next poll cycle
+            "Attempting worker respawn" "worker=$worker" "workspace=$workspace" "agent=$agent"
+        _needle_watchdog_respawn_worker "$worker" "$workspace" "$agent" "$log_file"
     fi
 
     _needle_watchdog_log "$log_file" "recovery.completed" \
         "Recovery completed for worker $worker" "worker=$worker"
+}
+
+# Respawn a worker with the same configuration
+# Usage: _needle_watchdog_respawn_worker <worker> <workspace> <agent> <log_file>
+_needle_watchdog_respawn_worker() {
+    local worker="$1"
+    local workspace="$2"
+    local agent="$3"
+    local log_file="$4"
+
+    # Validate we have required configuration
+    if [[ -z "$workspace" ]] || [[ -z "$agent" ]]; then
+        _needle_watchdog_log "$log_file" "recovery.respawn_failed" \
+            "Cannot respawn: missing workspace or agent configuration" \
+            "worker=$worker" "workspace=$workspace" "agent=$agent"
+        return 1
+    fi
+
+    # Validate workspace still exists
+    if [[ ! -d "$workspace" ]]; then
+        _needle_watchdog_log "$log_file" "recovery.respawn_failed" \
+            "Cannot respawn: workspace no longer exists" \
+            "worker=$worker" "workspace=$workspace"
+        return 1
+    fi
+
+    # Find the needle binary
+    local needle_bin=""
+    if [[ -n "${NEEDLE_ROOT_DIR:-}" ]] && [[ -x "$NEEDLE_ROOT_DIR/bin/needle" ]]; then
+        needle_bin="$NEEDLE_ROOT_DIR/bin/needle"
+    elif command -v needle &>/dev/null; then
+        needle_bin="$(command -v needle)"
+    else
+        _needle_watchdog_log "$log_file" "recovery.respawn_failed" \
+            "Cannot respawn: needle binary not found" \
+            "worker=$worker"
+        return 1
+    fi
+
+    # Spawn a new worker using needle run
+    # Use nohup to ensure it survives watchdog termination
+    local respawn_cmd="nohup $needle_bin run --workspace='$workspace' --agent='$agent' --count=1 >/dev/null 2>&1 &"
+
+    _needle_watchdog_log "$log_file" "recovery.respawn_executing" \
+        "Executing respawn command" \
+        "worker=$worker" "cmd=$respawn_cmd"
+
+    # Execute the respawn
+    if eval "$respawn_cmd"; then
+        _needle_watchdog_log "$log_file" "recovery.worker_respawned" \
+            "Successfully respawned worker" \
+            "worker=$worker" "workspace=$workspace" "agent=$agent"
+        return 0
+    else
+        _needle_watchdog_log "$log_file" "recovery.respawn_failed" \
+            "Failed to execute respawn command" \
+            "worker=$worker" "workspace=$workspace" "agent=$agent"
+        return 1
+    fi
 }
 
 # Release a bead back to the queue

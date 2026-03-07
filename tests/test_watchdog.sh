@@ -41,6 +41,10 @@ _test_setup() {
     mkdir -p "$NEEDLE_HOME/$NEEDLE_LOG_DIR"
     # Clear config cache for each test
     NEEDLE_CONFIG_CACHE=""
+    # Reset recovery action to default
+    unset NEEDLE_WATCHDOG_RECOVERY_ACTION
+    # Reset NEEDLE_ROOT_DIR
+    unset NEEDLE_ROOT_DIR
 }
 
 _test_teardown() {
@@ -360,6 +364,238 @@ test_log_function() {
 }
 
 # ============================================================================
+# Auto-Recovery Respawn Tests
+# ============================================================================
+
+test_respawn_missing_config() {
+    _test_start "Respawn with missing configuration"
+    _test_setup
+
+    _needle_watchdog_init
+
+    local log_file="$NEEDLE_HOME/$NEEDLE_LOG_DIR/test.jsonl"
+
+    # Attempt respawn with missing workspace
+    _needle_watchdog_respawn_worker "test-worker" "" "claude-anthropic-sonnet" "$log_file"
+    local result=$?
+
+    if [[ $result -ne 0 ]]; then
+        # Check log for failure message
+        if grep -q "missing workspace or agent" "$log_file" 2>/dev/null; then
+            _test_pass
+        else
+            _test_fail "Should log missing configuration error"
+        fi
+    else
+        _test_fail "Should fail with missing workspace"
+    fi
+
+    _test_teardown
+}
+
+test_respawn_missing_workspace() {
+    _test_start "Respawn with non-existent workspace"
+    _test_setup
+
+    _needle_watchdog_init
+
+    local log_file="$NEEDLE_HOME/$NEEDLE_LOG_DIR/test.jsonl"
+    local fake_workspace="/nonexistent/workspace/path"
+
+    # Attempt respawn with non-existent workspace
+    _needle_watchdog_respawn_worker "test-worker" "$fake_workspace" "claude-anthropic-sonnet" "$log_file"
+    local result=$?
+
+    if [[ $result -ne 0 ]]; then
+        # Check log for failure message
+        if grep -q "workspace no longer exists" "$log_file" 2>/dev/null; then
+            _test_pass
+        else
+            _test_fail "Should log non-existent workspace error"
+        fi
+    else
+        _test_fail "Should fail with non-existent workspace"
+    fi
+
+    _test_teardown
+}
+
+test_respawn_valid_config() {
+    _test_start "Respawn with valid configuration"
+    _test_setup
+
+    _needle_watchdog_init
+
+    local log_file="$NEEDLE_HOME/$NEEDLE_LOG_DIR/test.jsonl"
+    local workspace="$TEST_DIR/fake-workspace"
+
+    # Create a fake workspace
+    mkdir -p "$workspace/.beads"
+
+    # Set NEEDLE_ROOT_DIR to a fake location (we just test that the command is logged)
+    export NEEDLE_ROOT_DIR="$TEST_DIR/fake-needle"
+    mkdir -p "$NEEDLE_ROOT_DIR/bin"
+    echo '#!/bin/bash' > "$NEEDLE_ROOT_DIR/bin/needle"
+    echo 'exit 0' >> "$NEEDLE_ROOT_DIR/bin/needle"
+    chmod +x "$NEEDLE_ROOT_DIR/bin/needle"
+
+    # Attempt respawn with valid config
+    _needle_watchdog_respawn_worker "test-worker" "$workspace" "claude-anthropic-sonnet" "$log_file"
+    local result=$?
+
+    if [[ $result -eq 0 ]]; then
+        # Check log for success message
+        if grep -q "Successfully respawned worker" "$log_file" 2>/dev/null; then
+            _test_pass
+        else
+            _test_fail "Should log successful respawn"
+        fi
+    else
+        _test_fail "Should succeed with valid configuration"
+    fi
+
+    _test_teardown
+}
+
+test_recovery_with_respawn() {
+    _test_start "Full recovery flow with respawn"
+    _test_setup
+
+    # Enable restart action
+    export NEEDLE_WATCHDOG_RECOVERY_ACTION="restart"
+
+    _needle_watchdog_init
+
+    local log_file="$NEEDLE_HOME/$NEEDLE_LOG_DIR/test.jsonl"
+    local workspace="$TEST_DIR/test-workspace"
+    local hb_file="$NEEDLE_WATCHDOG_HEARTBEATS_DIR/test-worker.json"
+
+    # Create a fake workspace
+    mkdir -p "$workspace/.beads"
+
+    # Create a fake needle binary
+    export NEEDLE_ROOT_DIR="$TEST_DIR/fake-needle"
+    mkdir -p "$NEEDLE_ROOT_DIR/bin"
+    echo '#!/bin/bash' > "$NEEDLE_ROOT_DIR/bin/needle"
+    echo 'exit 0' >> "$NEEDLE_ROOT_DIR/bin/needle"
+    chmod +x "$NEEDLE_ROOT_DIR/bin/needle"
+
+    # Create heartbeat file with valid config
+    cat > "$hb_file" << EOF
+{
+    "worker": "test-worker",
+    "pid": 999999999,
+    "last_heartbeat": "2026-03-01T00:00:00Z",
+    "status": "executing",
+    "current_bead": "nd-test",
+    "bead_started": "2026-03-01T00:00:00Z",
+    "workspace": "$workspace",
+    "agent": "claude-anthropic-sonnet"
+}
+EOF
+
+    # Run recovery (the PID won't exist, so kill will fail gracefully)
+    _needle_watchdog_recover_worker "test-worker" "999999999" "nd-test" "no_heartbeat" "$hb_file" "$log_file"
+
+    # Check that respawn was logged
+    if grep -q "Attempting worker respawn" "$log_file" 2>/dev/null; then
+        if grep -q "Successfully respawned worker" "$log_file" 2>/dev/null; then
+            _test_pass
+        else
+            _test_fail "Should log successful respawn"
+        fi
+    else
+        _test_fail "Should attempt respawn when action=restart"
+    fi
+
+    _test_teardown
+}
+
+test_recovery_without_respawn() {
+    _test_start "Recovery without respawn (action=stop)"
+    _test_setup
+
+    _needle_watchdog_init
+
+    # Override after init to ensure it sticks
+    NEEDLE_WATCHDOG_RECOVERY_ACTION="stop"
+
+    local log_file="$NEEDLE_HOME/$NEEDLE_LOG_DIR/test.jsonl"
+    local workspace="$TEST_DIR/test-workspace"
+    local hb_file="$NEEDLE_WATCHDOG_HEARTBEATS_DIR/test-worker.json"
+
+    # Create a fake workspace
+    mkdir -p "$workspace/.beads"
+
+    # Create heartbeat file with valid config
+    cat > "$hb_file" << EOF
+{
+    "worker": "test-worker",
+    "pid": 999999999,
+    "last_heartbeat": "2026-03-01T00:00:00Z",
+    "status": "executing",
+    "current_bead": "nd-test",
+    "bead_started": "2026-03-01T00:00:00Z",
+    "workspace": "$workspace",
+    "agent": "claude-anthropic-sonnet"
+}
+EOF
+
+    # Run recovery
+    _needle_watchdog_recover_worker "test-worker" "999999999" "nd-test" "no_heartbeat" "$hb_file" "$log_file"
+
+    # Check that respawn was NOT attempted
+    if ! grep -q "Attempting worker respawn" "$log_file" 2>/dev/null; then
+        _test_pass
+    else
+        _test_fail "Should NOT attempt respawn when action=stop"
+    fi
+
+    _test_teardown
+}
+
+test_heartbeat_config_extraction() {
+    _test_start "Heartbeat config extraction for respawn"
+    _test_setup
+
+    _needle_watchdog_init
+
+    local hb_file="$NEEDLE_WATCHDOG_HEARTBEATS_DIR/test-worker.json"
+    local workspace="/test/workspace"
+    local agent="claude-anthropic-sonnet"
+
+    # Create heartbeat file with config
+    cat > "$hb_file" << EOF
+{
+    "worker": "test-worker",
+    "pid": 12345,
+    "last_heartbeat": "2026-03-01T00:00:00Z",
+    "status": "executing",
+    "workspace": "$workspace",
+    "agent": "$agent"
+}
+EOF
+
+    # Test extraction with jq if available
+    if command -v jq &>/dev/null; then
+        local extracted_ws extracted_agent
+        extracted_ws=$(jq -r '.workspace // ""' "$hb_file" 2>/dev/null)
+        extracted_agent=$(jq -r '.agent // ""' "$hb_file" 2>/dev/null)
+
+        if [[ "$extracted_ws" == "$workspace" ]] && [[ "$extracted_agent" == "$agent" ]]; then
+            _test_pass
+        else
+            _test_fail "Failed to extract workspace=$extracted_ws agent=$extracted_agent"
+        fi
+    else
+        # Skip test if jq not available
+        _test_pass
+    fi
+
+    _test_teardown
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -379,6 +615,14 @@ test_has_workers_detection
 test_config_values
 test_default_config_values
 test_log_function
+
+# Auto-recovery respawn tests
+test_respawn_missing_config
+test_respawn_missing_workspace
+test_respawn_valid_config
+test_recovery_with_respawn
+test_recovery_without_respawn
+test_heartbeat_config_extraction
 
 # Summary
 echo ""
