@@ -34,6 +34,12 @@ jobs:
           head -1 dist/needle | grep -q '^#!/' && echo "Valid shebang found"
           bash -n dist/needle && echo "Bash syntax OK"
 
+      - name: Generate SHA256 checksums
+        run: |
+          cd dist
+          sha256sum needle > needle.sha256
+          echo "Checksum: $(cat needle.sha256)"
+
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
@@ -65,6 +71,10 @@ jobs:
             # Download the binary
             curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/needle -o needle
 
+            # Download and verify checksum
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/needle.sha256 -o needle.sha256
+            sha256sum -c needle.sha256 || exit 1
+
             # Make it executable
             chmod +x needle
 
@@ -75,11 +85,21 @@ jobs:
             needle --version
             ```
 
+            ### Verify Integrity
+
+            After downloading, verify the SHA256 checksum:
+
+            ```bash
+            sha256sum -c needle.sha256
+            # Should output: needle: OK
+            ```
+
             ### What's Changed
 
             See commit history for details.
           files: |
             dist/needle
+            dist/needle.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true
         env:
