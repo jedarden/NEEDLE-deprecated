@@ -289,7 +289,7 @@ _needle_route_command() {
 }
 
 # -----------------------------------------------------------------------------
-# Shell Completion (Stub)
+# Shell Completion
 # -----------------------------------------------------------------------------
 
 _needle_completion() {
@@ -297,60 +297,717 @@ _needle_completion() {
 
     case "$shell" in
         bash)
-            cat << 'COMPLETION'
+            cat << 'BASH_COMPLETION'
 # NEEDLE bash completion
-_needle_completion() {
-    local cur prev words cword
-    _init_completion || return
+# To enable: source this file or add to your bash completion directory
+# Usage: eval "$(needle completion bash)"
 
-    local commands="init run list status config logs version upgrade rollback agents heartbeat attach stop restart test-agent setup help"
+# Helper function to get available agents
+_needle_list_available_agents() {
+    local agents_dir="${NEEDLE_HOME:-$HOME/.needle}/agents"
+    local builtin_dir=""
+    local needle_bin=""
+    local script_dir=""
 
-    if [[ $cword -eq 1 ]]; then
-        COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+    # Try to find builtin agents directory
+    if [[ -n "${BASH_SOURCE[0]}" ]]; then
+        needle_bin="${BASH_SOURCE[0]}"
+        script_dir="$(cd "$(dirname "$needle_bin")" && pwd)"
+        builtin_dir="$(dirname "$script_dir")/config/agents"
     fi
+
+    local agents=()
+
+    # User agents
+    if [[ -d "$agents_dir" ]]; then
+        for f in "$agents_dir"/*.yaml "$agents_dir"/*.yml; do
+            [[ -f "$f" ]] || continue
+            local name
+            name=$(basename "$f")
+            name="${name%.yaml}"
+            name="${name%.yml}"
+            agents+=("$name")
+        done 2>/dev/null
+    fi
+
+    # Builtin agents
+    if [[ -n "$builtin_dir" && -d "$builtin_dir" ]]; then
+        for f in "$builtin_dir"/*.yaml "$builtin_dir"/*.yml; do
+            [[ -f "$f" ]] || continue
+            local name
+            name=$(basename "$f")
+            name="${name%.yaml}"
+            name="${name%.yml}"
+            # Add only if not already present (user takes precedence)
+            if [[ ! " ${agents[*]} " =~ " ${name} " ]]; then
+                agents+=("$name")
+            fi
+        done 2>/dev/null
+    fi
+
+    # Output space-separated list
+    echo "${agents[*]}"
+}
+
+_needle_completion() {
+    local cur prev words cword split
+    _init_completion -s || return
+
+    # Global options that don't require a subcommand
+    local global_opts="-v --verbose -q --quiet --no-color --color -h --help -V --version -x"
+
+    # All available commands with descriptions
+    local commands="init run list ls status config logs version upgrade rollback agents heartbeat attach stop restart test-agent setup help completion"
+
+    # Command-specific options
+    local init_opts="-f --force -d --defaults -w --workspace -e --editor -t --timezone -h --help"
+    local run_opts="-w --workspace -a --agent -c --count -n --name --budget --no-hooks -d --dry-run -f --force --status -v --verbose -h --help"
+    local list_opts="-a --all -j --json -w --wide --runner --provider --model --workspace -q --quiet -h --help"
+    local status_opts="-w --watch -j --json -h --help"
+    local config_cmds="show get set edit validate path list"
+    local config_opts="-j --json --global --workspace -h --help"
+    local logs_opts="-f --follow -n --lines --since --until --event --bead --strand --raw -j --json -h --help"
+    local version_opts="-h --help"
+    local upgrade_opts="-c --check -f --force -y --yes -l --local -v --version --list --rollback --rollback-to -h --help"
+    local agents_opts="-s --scan -j --json -a --all -h --help"
+    local heartbeat_cmds="status recover pause resume"
+    local heartbeat_opts="-j --json -w --watch -f --force -h --help"
+    local attach_opts="-r --read-only -l --last -h --help"
+    local stop_opts="-a --all -g --graceful -i --immediate -f --force --timeout -h --help"
+    local restart_opts="-a --all -g --graceful -i --immediate --timeout -h --help"
+    local test_agent_opts="-p --prompt -t --timeout -v --verbose -h --help"
+    local setup_opts="-c --check -r --reinstall -y --yes -j --json -h --help"
+    local completion_opts="bash zsh -h --help"
+
+    # Get the command (first non-option argument)
+    local cmd=""
+    local cmd_idx=1
+    for ((i=1; i < ${#words[@]}; i++)); do
+        if [[ "${words[$i]}" != -* ]]; then
+            if [[ -z "$cmd" ]]; then
+                cmd="${words[$i]}"
+                cmd_idx=$i
+            fi
+        fi
+    done
+
+    # Determine what we're completing
+    case "$cmd" in
+        "")
+            # No command yet - complete commands or global options
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "$commands" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        init)
+            case "$prev" in
+                -w|--workspace|-e|--editor|-t|--timezone)
+                    # These need path/value completion
+                    _filedir
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$init_opts" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        run)
+            case "$prev" in
+                -w|--workspace)
+                    _filedir -d
+                    return 0
+                    ;;
+                -a|--agent)
+                    # Get available agents dynamically
+                    local agents
+                    agents=$(_needle_list_available_agents 2>/dev/null)
+                    if [[ -n "$agents" ]]; then
+                        COMPREPLY=($(compgen -W "$agents" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+                -c|--count|-n|--name|--budget)
+                    # These need user input, no completion
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$run_opts" -- "$cur"))
+                    else
+                        # Positional arg could be workspace path
+                        _filedir -d
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        list|ls)
+            case "$prev" in
+                --runner)
+                    COMPREPLY=($(compgen -W "claude opencode cursor aider" -- "$cur"))
+                    return 0
+                    ;;
+                --provider)
+                    COMPREPLY=($(compgen -W "anthropic openai alibaba" -- "$cur"))
+                    return 0
+                    ;;
+                --model)
+                    COMPREPLY=($(compgen -W "sonnet opus haiku gpt4 qwen" -- "$cur"))
+                    return 0
+                    ;;
+                --workspace)
+                    _filedir -d
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$list_opts" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        status)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$status_opts" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        config)
+            # Handle config subcommands
+            if [[ $cword -eq $((cmd_idx + 1)) ]] && [[ "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "$config_cmds" -- "$cur"))
+                return 0
+            fi
+            case "$prev" in
+                -j|--json)
+                    COMPREPLY=($(compgen -W "$config_opts" -- "$cur"))
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$config_opts" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        logs)
+            case "$prev" in
+                --event)
+                    COMPREPLY=($(compgen -W "worker.started worker.stopped worker.idle bead.claimed bead.completed bead.failed strand.started strand.fallthrough hook.started hook.completed hook.failed heartbeat.* error.*" -- "$cur"))
+                    return 0
+                    ;;
+                --strand)
+                    COMPREPLY=($(compgen -W "1 2 3 4 5 6 7" -- "$cur"))
+                    return 0
+                    ;;
+                -n|--lines|--since|--until|--bead)
+                    # These need user input
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$logs_opts" -- "$cur"))
+                    else
+                        # Worker identifier completion
+                        local sessions
+                        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-' | sed 's/.*-//' | sort -u)
+                        COMPREPLY=($(compgen -W "$sessions" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        version|-V)
+            # No options to complete
+            return 0
+            ;;
+
+        upgrade)
+            case "$prev" in
+                -v|--version)
+                    # Could list versions but requires network, skip
+                    return 0
+                    ;;
+                -l|--local)
+                    _filedir
+                    return 0
+                    ;;
+                --rollback-to)
+                    # Could list backup versions
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$upgrade_opts" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        rollback)
+            # Rollback uses upgrade's rollback logic
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "--rollback-to -h --help" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        agents)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$agents_opts" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        heartbeat)
+            # Handle heartbeat subcommands
+            if [[ $cword -eq $((cmd_idx + 1)) ]] && [[ "$cur" != -* ]]; then
+                COMPREPLY=($(compgen -W "$heartbeat_cmds" -- "$cur"))
+                return 0
+            fi
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$heartbeat_opts" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        attach)
+            case "$prev" in
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$attach_opts" -- "$cur"))
+                    else
+                        # Worker identifier completion
+                        local sessions identifiers
+                        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-')
+                        identifiers=$(echo "$sessions" | sed 's/.*-//' | sort -u)
+                        # Complete both full session names and short identifiers
+                        COMPREPLY=($(compgen -W "$sessions $identifiers" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        stop)
+            case "$prev" in
+                --timeout)
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$stop_opts" -- "$cur"))
+                    else
+                        # Worker identifier completion
+                        local sessions identifiers
+                        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-')
+                        identifiers=$(echo "$sessions" | sed 's/.*-//' | sort -u)
+                        COMPREPLY=($(compgen -W "$sessions $identifiers" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        restart)
+            case "$prev" in
+                --timeout)
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$restart_opts" -- "$cur"))
+                    else
+                        # Worker identifier completion
+                        local sessions identifiers
+                        sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-')
+                        identifiers=$(echo "$sessions" | sed 's/.*-//' | sort -u)
+                        COMPREPLY=($(compgen -W "$sessions $identifiers" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        test-agent)
+            case "$prev" in
+                -p|--prompt|-t|--timeout)
+                    return 0
+                    ;;
+                *)
+                    if [[ "$cur" == -* ]]; then
+                        COMPREPLY=($(compgen -W "$test_agent_opts" -- "$cur"))
+                    else
+                        # Agent name completion
+                        local agents
+                        agents=$(_needle_list_available_agents 2>/dev/null)
+                        COMPREPLY=($(compgen -W "$agents" -- "$cur"))
+                    fi
+                    return 0
+                    ;;
+            esac
+            ;;
+
+        setup)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$setup_opts" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        completion)
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$completion_opts" -- "$cur"))
+            else
+                COMPREPLY=($(compgen -W "bash zsh" -- "$cur"))
+            fi
+            return 0
+            ;;
+
+        help|--help|-h)
+            # No further completion
+            return 0
+            ;;
+
+        *)
+            # Unknown command - might be a worker identifier
+            if [[ "$cur" == -* ]]; then
+                COMPREPLY=($(compgen -W "$global_opts" -- "$cur"))
+            fi
+            return 0
+            ;;
+    esac
 }
 
 complete -F _needle_completion needle
-COMPLETION
+BASH_COMPLETION
             ;;
         zsh)
-            cat << 'COMPLETION'
+            cat << 'ZSH_COMPLETION'
 # NEEDLE zsh completion
+# To enable: source this file or add to your fpath
+# Usage: eval "$(needle completion zsh)"
+
 #compdef needle
 
+# Helper function to get available agents
+_needle_get_agents() {
+    local agents_dir
+    agents_dir="${NEEDLE_HOME:-$HOME/.needle}/agents"
+    local builtin_dir
+    # Try to find builtin agents directory
+    builtin_dir="${${(%):-%x}:A:h:h}/config/agents"
+
+    local -a agents=()
+    # User agents
+    if [[ -d "$agents_dir" ]]; then
+        agents+=(${${f:-$(print -m "$agents_dir"/*.yaml(.:r:t))}%.*})
+    fi
+    # Builtin agents
+    if [[ -d "$builtin_dir" ]]; then
+        agents+=(${${f:-$(print -m "$builtin_dir"/*.yaml(.:r:t))}%.*})
+    fi
+    print -l ${(u)agents}
+}
+
+# Helper function to get running workers
+_needle_get_workers() {
+    local -a sessions
+    sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-')"})
+    print -l $sessions
+}
+
+# Helper function to get worker identifiers
+_needle_get_identifiers() {
+    local -a sessions identifiers
+    sessions=(${(f)"$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^needle-')"})
+    identifiers=(${sessions[@]##*-})
+    print -l ${(u)identifiers}
+}
+
 _needle() {
-    local commands=(
-        'init:Initialize NEEDLE configuration'
-        'run:Execute a workflow or script'
-        'list:List running workers'
-        'status:Show worker health and statistics'
-        'config:View and modify configuration'
-        'logs:View or tail worker logs'
+    local curcontext="$curcontext" state line context
+    typeset -A opt_args
+
+    # Main commands with descriptions
+    local -a commands=(
+        'init:Initialize NEEDLE configuration and onboarding'
+        'run:Start a worker to process beads from the queue'
+        'list:List running workers with status and workspace info'
+        'status:Show current status and health dashboard'
+        'config:View and modify NEEDLE configuration'
+        'logs:View or filter worker logs'
         'version:Display version information'
-        'upgrade:Upgrade NEEDLE to latest version'
+        'upgrade:Upgrade NEEDLE to the latest version'
         'rollback:Rollback to a previous version'
-        'setup:Check and install dependencies'
-        'agents:Detect and manage coding CLI agents'
+        'setup:Check and install NEEDLE dependencies'
+        'agents:Detect and manage agent adapters'
         'heartbeat:Manage worker heartbeat and recovery'
         'attach:Attach to worker tmux sessions'
         'stop:Stop running workers'
+        'restart:Restart running workers'
         'test-agent:Test agent adapter configuration'
+        'completion:Generate shell completion scripts'
         'help:Show help information'
     )
 
+    # Global options
+    local -a global_opts=(
+        '(-v --verbose)'{-v,--verbose}'[Enable verbose output]'
+        '(-q --quiet)'{-q,--quiet}'[Suppress non-essential output]'
+        '--no-color[Disable colored output]'
+        '--color[Enable colored output]'
+        '(-h --help)'{-h,--help}'[Show help message]'
+        '(-V --version)'{-V,--version}'[Show version information]'
+        '-x[Enable bash xtrace debugging]'
+    )
+
     _arguments -C \
+        $global_opts \
         '1: :->command' \
         '*:: :->args'
 
     case $state in
         command)
             _describe 'command' commands
+            return
+            ;;
+    esac
+
+    # Handle command-specific completion
+    local cmd="${words[1]}"
+
+    case $cmd in
+        init)
+            _arguments \
+                '(-f --force)'{-f,--force}'[Overwrite existing configuration]' \
+                '(-d --defaults)'{-d,--defaults}'[Use all default values (non-interactive)]' \
+                '(-w --workspace)'{-w,--workspace}'[Set workspace path]:workspace:_directories' \
+                '(-e --editor)'{-e,--editor}'[Set default editor]:editor:_command_names' \
+                '(-t --timezone)'{-t,--timezone}'[Set timezone]:timezone:(UTC America/New_York America/Los_Angeles Europe/London Asia/Tokyo)' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        run)
+            _arguments \
+                '(-w --workspace)'{-w,--workspace}'[Workspace directory]:workspace:_directories' \
+                '(-a --agent)'{-a,--agent}'[Agent to use]:agent:->agents' \
+                '(-c --count)'{-c,--count}'[Number of workers to start]:count:(1 2 3 4 5)' \
+                '(-n --name)'{-n,--name}'[Explicit session name]:name: ' \
+                '--budget[Budget override for this run]:budget: ' \
+                '--no-hooks[Skip hook execution for this run]' \
+                '(-d --dry-run)'{-d,--dry-run}'[Show what would be done without executing]' \
+                '(-f --force)'{-f,--force}'[Skip concurrency limit checks]' \
+                '--status[Show concurrency status for agent]' \
+                '(-v --verbose)'{-v,--verbose}'[Show detailed output]' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '1:workspace:_directories'
+            ;;
+
+        list|ls)
+            _arguments \
+                '(-a --all)'{-a,--all}'[Include stopped/crashed workers]' \
+                '(-j --json)'{-j,--json}'[Output as JSON]' \
+                '(-w --wide)'{-w,--wide}'[Show extended information]' \
+                '--runner[Filter by runner]:runner:(claude opencode cursor aider)' \
+                '--provider[Filter by provider]:provider:(anthropic openai alibaba)' \
+                '--model[Filter by model]:model:(sonnet opus haiku gpt4 qwen)' \
+                '--workspace[Filter by workspace path]:workspace:_directories' \
+                '(-q --quiet)'{-q,--quiet}'[Only show session names]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        status)
+            _arguments \
+                '(-w --watch)'{-w,--watch}'[Auto-refresh display every 2 seconds]' \
+                '(-j --json)'{-j,--json}'[Output in JSON format]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        config)
+            local -a config_cmds=(
+                'show:Display current config (default)'
+                'get:Get a configuration value'
+                'set:Set a configuration value'
+                'list:List all configuration values'
+                'edit:Open configuration in $EDITOR'
+                'validate:Validate configuration syntax'
+                'path:Show all configuration file paths'
+            )
+            if (( CURRENT == 2 )); then
+                _describe 'config command' config_cmds
+            fi
+            _arguments \
+                '(-j --json)'{-j,--json}'[Output in JSON format]' \
+                '--global[Use global config (default)]' \
+                '--workspace[Use workspace config (.needle.yaml)]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        logs)
+            _arguments \
+                '(-f --follow)'{-f,--follow}'[Follow log output (like tail -f)]' \
+                '(-n --lines)'{-n,--lines}'[Number of lines to show]:lines:(10 50 100 200 500)' \
+                '--since[Show logs since timestamp or duration]:since: ' \
+                '--until[Show logs until timestamp]:until: ' \
+                '--event[Filter by event type]:event:(worker.started worker.stopped bead.claimed bead.completed bead.failed)' \
+                '--bead[Filter by bead ID]:bead: ' \
+                '--strand[Filter by strand number]:strand:(1 2 3 4 5 6 7)' \
+                '--raw[Show raw JSONL without formatting]' \
+                '(-j --json)'{-j,--json}'[Output as JSON array]' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '1:worker:->workers'
+            ;;
+
+        version|-V)
+            _arguments \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        upgrade)
+            _arguments \
+                '(-c --check)'{-c,--check}'[Check for available updates without installing]' \
+                '(-f --force)'{-f,--force}'[Force upgrade even if already at latest version]' \
+                '(-y --yes)'{-y,--yes}'[Skip confirmation prompt]' \
+                '(-l --local)'{-l,--local}'[Install from local file]:file:_files' \
+                '(-v --version)'{-v,--version}'[Upgrade to specific version]:version: ' \
+                '--list[List available versions]' \
+                '--rollback[Rollback to previous version]' \
+                '--rollback-to[Rollback to specific version]:version: ' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        rollback)
+            _arguments \
+                '--rollback-to[Rollback to specific version]:version: ' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        agents)
+            _arguments \
+                '(-s --scan)'{-s,--scan}'[Re-scan PATH for available agents]' \
+                '(-j --json)'{-j,--json}'[Output as JSON]' \
+                '(-a --all)'{-a,--all}'[Include unavailable agents]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        heartbeat)
+            local -a heartbeat_cmds=(
+                'status:Show heartbeat status for all workers (default)'
+                'recover:Trigger manual recovery for stuck workers'
+                'pause:Pause automatic recovery'
+                'resume:Resume automatic recovery'
+            )
+            if (( CURRENT == 2 )); then
+                _describe 'heartbeat command' heartbeat_cmds
+            fi
+            _arguments \
+                '(-j --json)'{-j,--json}'[Output in JSON format]' \
+                '(-w --watch)'{-w,--watch}'[Auto-refresh display every 2 seconds]' \
+                '(-f --force)'{-f,--force}'[Force recovery even if paused]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        attach)
+            _arguments \
+                '(-r --read-only)'{-r,--read-only}'[Attach in read-only mode]' \
+                '(-l --last)'{-l,--last}'[Attach to most recent worker]' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '1:worker:->identifiers'
+            ;;
+
+        stop)
+            _arguments \
+                '(-a --all)'{-a,--all}'[Stop all running workers]' \
+                '(-g --graceful)'{-g,--graceful}'[Wait for current bead to complete (default)]' \
+                '(-i --immediate)'{-i,--immediate}'[Stop immediately, release current bead]' \
+                '(-f --force)'{-f,--force}'[Kill process without cleanup]' \
+                '--timeout[Graceful shutdown timeout in seconds]:timeout:(60 120 300 600)' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '*:workers:->identifiers'
+            ;;
+
+        restart)
+            _arguments \
+                '(-a --all)'{-a,--all}'[Restart all running workers]' \
+                '(-g --graceful)'{-g,--graceful}'[Wait for current bead to complete (default)]' \
+                '(-i --immediate)'{-i,--immediate}'[Restart immediately, release current bead]' \
+                '--timeout[Graceful shutdown timeout in seconds]:timeout:(60 120 300 600)' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '*:workers:->identifiers'
+            ;;
+
+        test-agent)
+            _arguments \
+                '(-p --prompt)'{-p,--prompt}'[Custom test prompt]:prompt: ' \
+                '(-t --timeout)'{-t,--timeout}'[Timeout for test execution]:timeout:(30 60 120 300)' \
+                '(-v --verbose)'{-v,--verbose}'[Show full agent output]' \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '1:agent:->agents'
+            ;;
+
+        setup)
+            _arguments \
+                '(-c --check)'{-c,--check}'[Check only, don'\''t install anything]' \
+                '(-r --reinstall)'{-r,--reinstall}'[Force reinstall all dependencies]' \
+                '(-y --yes)'{-y,--yes}'[Don'\''t prompt for confirmation]' \
+                '(-j --json)'{-j,--json}'[Output in JSON format]' \
+                '(-h --help)'{-h,--help}'[Show help message]'
+            ;;
+
+        completion)
+            _arguments \
+                '(-h --help)'{-h,--help}'[Show help message]' \
+                '1:shell:(bash zsh)'
+            ;;
+
+        help)
+            # No further arguments
+            ;;
+
+        *)
+            _message "Unknown command: $cmd"
+            ;;
+    esac
+
+    # Handle special completion contexts
+    case $state in
+        agents)
+            local -a agents
+            agents=(${(f)"$(_needle_get_agents)"})
+            _describe 'agent' agents
+            ;;
+        workers)
+            local -a workers
+            workers=(${(f)"$(_needle_get_workers)"})
+            _describe 'worker' workers
+            ;;
+        identifiers)
+            local -a identifiers
+            identifiers=(${(f)"$(_needle_get_identifiers)"})
+            _describe 'identifier' identifiers
             ;;
     esac
 }
 
 _needle
-COMPLETION
+ZSH_COMPLETION
             ;;
         *)
             _needle_error "Unsupported shell: $shell"
