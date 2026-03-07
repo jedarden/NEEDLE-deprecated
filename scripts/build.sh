@@ -170,7 +170,7 @@ cat > "$OUTPUT_FILE" <<HEADER
 # Version: $(get_version)
 #
 # Universal orchestration wrapper for headless coding CLI agents
-# https://github.com/anthropics/needle
+# https://github.com/jedarden/NEEDLE
 #
 # This is a bundled distribution. Source available at the URL above.
 #
@@ -410,7 +410,7 @@ Examples:
   needle agents                         List available agents
   needle test-agent claude-anthropic-sonnet
 
-Documentation: https://github.com/anthropics/needle
+Documentation: https://github.com/jedarden/NEEDLE
 EOF
 }
 

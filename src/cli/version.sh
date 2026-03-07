@@ -68,7 +68,7 @@ _needle_count_log_sessions() {
 
 # Output version as human-readable text
 _needle_version_text() {
-    local repo_url="https://github.com/anthropics/needle"
+    local repo_url="https://github.com/jedarden/NEEDLE"
 
     _needle_print ""
     _needle_print_color "$NEEDLE_COLOR_BOLD$NEEDLE_COLOR_MAGENTA" "NEEDLE v$NEEDLE_VERSION"
@@ -166,7 +166,7 @@ _needle_version_text() {
 
 # Output version as JSON
 _needle_version_json() {
-    local repo_url="https://github.com/anthropics/needle"
+    local repo_url="https://github.com/jedarden/NEEDLE"
 
     # Start JSON object
     echo "{"

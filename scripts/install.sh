@@ -4,8 +4,9 @@
 # One-liner installation script for NEEDLE CLI
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash -s -- --help
+#   curl -fsSL https://needle.dev/install | bash
+#   curl -fsSL https://raw.githubusercontent.com/jedarden/NEEDLE/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jedarden/NEEDLE/main/scripts/install.sh | bash -s -- --help
 #
 # Options:
 #   --version VERSION     Install specific version (default: latest)
@@ -19,7 +20,7 @@
 # Environment variables:
 #   NEEDLE_VERSION        Version to install (default: latest)
 #   NEEDLE_INSTALL_DIR    Installation directory (default: ~/.needle)
-#   NEEDLE_REPO           GitHub repository (default: anthropics/needle)
+#   NEEDLE_REPO           GitHub repository (default: jedarden/NEEDLE)
 #   NEEDLE_NO_MODIFY_PATH Don't modify PATH (true/false)
 
 set -euo pipefail
@@ -31,7 +32,7 @@ set -euo pipefail
 # Default values (can be overridden by environment or CLI args)
 NEEDLE_VERSION="${NEEDLE_VERSION:-latest}"
 NEEDLE_INSTALL_DIR="${NEEDLE_INSTALL_DIR:-$HOME/.needle}"
-NEEDLE_REPO="${NEEDLE_REPO:-anthropics/needle}"
+NEEDLE_REPO="${NEEDLE_REPO:-jedarden/NEEDLE}"
 NEEDLE_NO_MODIFY_PATH="${NEEDLE_NO_MODIFY_PATH:-false}"
 NEEDLE_BIN_DIR="${NEEDLE_BIN_DIR:-$HOME/.local/bin}"
 
@@ -260,6 +261,17 @@ install_needle() {
     info "Agent configurations are embedded in the binary"
     info "They will be extracted to ~/.needle/agents/ on first run"
 
+    # Run needle init to start onboarding (unless non-interactive or dry-run)
+    if ! $DRY_RUN && [[ "$NON_INTERACTIVE" != "true" ]]; then
+        echo ""
+        info "Starting NEEDLE onboarding..."
+        if "$NEEDLE_BIN_DIR/needle" init; then
+            success "NEEDLE configuration initialized"
+        else
+            warn "Onboarding skipped or failed. Run 'needle init' manually to configure."
+        fi
+    fi
+
     return 0
 }
 
@@ -351,8 +363,9 @@ show_help() {
 NEEDLE Installer - One-liner installation for NEEDLE CLI
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
-  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash -s -- [OPTIONS]
+  curl -fsSL https://needle.dev/install | bash
+  curl -fsSL https://raw.githubusercontent.com/jedarden/NEEDLE/main/scripts/install.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/jedarden/NEEDLE/main/scripts/install.sh | bash -s -- [OPTIONS]
 
 Options:
   --version VERSION     Install specific version (default: latest)
@@ -366,12 +379,15 @@ Options:
 Environment Variables:
   NEEDLE_VERSION        Version to install (default: latest)
   NEEDLE_INSTALL_DIR    Installation directory (default: ~/.needle)
-  NEEDLE_REPO           GitHub repository (default: anthropics/needle)
+  NEEDLE_REPO           GitHub repository (default: jedarden/NEEDLE)
   NEEDLE_NO_MODIFY_PATH Don't modify PATH (true/false)
 
 Examples:
-  # Install latest version
-  curl -fsSL https://raw.githubusercontent.com/anthropics/needle/main/scripts/install.sh | bash
+  # Install latest version (via needle.dev)
+  curl -fsSL https://needle.dev/install | bash
+
+  # Install latest version (via GitHub)
+  curl -fsSL https://raw.githubusercontent.com/jedarden/NEEDLE/main/scripts/install.sh | bash
 
   # Install specific version
   curl ... | bash -s -- --version 0.1.0
@@ -395,7 +411,7 @@ Installed Components:
 
   ~/.local/bin/needle     Symlink to bin/needle (added to PATH)
 
-For more information, visit: https://github.com/anthropics/needle
+For more information, visit: https://github.com/jedarden/NEEDLE
 EOF
 }
 
