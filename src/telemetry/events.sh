@@ -672,6 +672,36 @@ _needle_event_budget_per_bead_exceeded() {
 }
 
 # ============================================================================
+# File Lock Events
+# ============================================================================
+
+# Emit file.checkout event
+# Usage: _needle_event_file_checkout <bead_id> [path=...] [status=...] [key=value ...]
+_needle_event_file_checkout() {
+    local bead_id="$1"
+    shift
+    _needle_telemetry_emit "file.checkout" "info" "bead_id=$bead_id" "$@"
+}
+
+# Emit file.conflict event
+# Usage: _needle_event_file_conflict [bead=...] [path=...] [blocked_by=...] [key=value ...]
+_needle_event_file_conflict() {
+    _needle_telemetry_emit "file.conflict" "warn" "$@"
+}
+
+# Emit file.release event
+# Usage: _needle_event_file_release [bead=...] [path=...] [held_for_ms=...] [key=value ...]
+_needle_event_file_release() {
+    _needle_telemetry_emit "file.release" "info" "$@"
+}
+
+# Emit file.stale event
+# Usage: _needle_event_file_stale [bead=...] [path=...] [age_s=...] [action=...] [key=value ...]
+_needle_event_file_stale() {
+    _needle_telemetry_emit "file.stale" "warn" "$@"
+}
+
+# ============================================================================
 # Event Category Listing
 # ============================================================================
 
@@ -730,6 +760,10 @@ effort.recorded
 budget.warning
 budget.exceeded
 budget.per_bead_exceeded
+file.checkout
+file.conflict
+file.release
+file.stale
 EOF
 }
 

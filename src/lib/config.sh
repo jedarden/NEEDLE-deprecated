@@ -110,6 +110,10 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "auto_upgrade": false,
     "include_prereleases": false,
     "disabled": false
+  },
+  "file_locks": {
+    "timeout": "30m",
+    "stale_action": "warn"
   }
 }'
 
@@ -340,6 +344,17 @@ updates:
 
   # disabled: Completely disable update checks (for air-gapped environments)
   disabled: false
+
+# File lock configuration for collision management
+# Prevents multiple workers from editing the same file simultaneously
+file_locks:
+  # timeout: Maximum time a lock can be held before considered stale (default: 30m)
+  # Supports: s (seconds), m (minutes), h (hours)
+  timeout: 30m
+
+  # stale_action: What to do when a stale lock is detected (default: warn)
+  # Options: warn (log warning), release (remove lock), ignore (do nothing)
+  stale_action: warn
 '
 
 # Check if yq is available
@@ -785,6 +800,17 @@ updates:
 
   # disabled: Completely disable update checks (for air-gapped environments)
   disabled: false
+
+# File lock configuration for collision management
+# Prevents multiple workers from editing the same file simultaneously
+file_locks:
+  # timeout: Maximum time a lock can be held before considered stale (default: 30m)
+  # Supports: s (seconds), m (minutes), h (hours)
+  timeout: 30m
+
+  # stale_action: What to do when a stale lock is detected (default: warn)
+  # Options: warn (log warning), release (remove lock), ignore (do nothing)
+  stale_action: warn
 EOF
 
     if [[ $? -eq 0 ]]; then

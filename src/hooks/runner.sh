@@ -52,6 +52,37 @@ NEEDLE_HOOK_TYPES=(
 )
 
 # ============================================================================
+# Workspace-Aware Config Helper
+# ============================================================================
+
+# Get a hook-related config value with workspace-level override support
+# Workspace-level config (.needle.yaml) takes precedence over global config
+# Usage: _needle_get_hook_config <key> [default]
+# Example: _needle_get_hook_config "hooks.pre_claim" ""
+_needle_get_hook_config() {
+    local key="$1"
+    local default="${2:-}"
+    local value=""
+
+    # First check workspace-level config if we have a workspace
+    if [[ -n "${NEEDLE_WORKSPACE:-}" ]] && declare -f get_workspace_setting &>/dev/null; then
+        value=$(get_workspace_setting "$NEEDLE_WORKSPACE" "$key" "")
+    fi
+
+    # Fall back to global config if not found in workspace
+    if [[ -z "$value" ]] || [[ "$value" == "null" ]]; then
+        value=$(get_config "$key" "$default")
+    fi
+
+    # Return default if still empty
+    if [[ -z "$value" ]] || [[ "$value" == "null" ]]; then
+        echo "$default"
+    else
+        echo "$value"
+    fi
+}
+
+# ============================================================================
 # Hook Environment Setup
 # ============================================================================
 
@@ -106,6 +137,11 @@ _needle_set_hook_env() {
     # Hook-specific context
     export NEEDLE_HOOK_CONFIG_FILE="$NEEDLE_CONFIG_FILE"
     export NEEDLE_HOOK_HOME="$NEEDLE_HOME"
+
+    # File change context (set after execution)
+    export NEEDLE_FILES_CHANGED="${NEEDLE_FILES_CHANGED:-}"
+    export NEEDLE_LINES_ADDED="${NEEDLE_LINES_ADDED:-}"
+    export NEEDLE_LINES_REMOVED="${NEEDLE_LINES_REMOVED:-}"
 }
 
 # ============================================================================
@@ -136,9 +172,9 @@ _needle_run_hook() {
         return 0
     fi
 
-    # Get hook path from config
+    # Get hook path from config (workspace-level overrides global)
     local hook_path
-    hook_path=$(get_config "hooks.$hook_name" "")
+    hook_path=$(_needle_get_hook_config "hooks.$hook_name" "")
 
     # No hook configured
     if [[ -z "$hook_path" ]]; then
@@ -148,6 +184,11 @@ _needle_run_hook() {
 
     # Expand ~ to home directory
     hook_path="${hook_path/#\~/$HOME}"
+
+    # For workspace-relative paths, make them absolute
+    if [[ -n "${NEEDLE_WORKSPACE:-}" ]] && [[ "$hook_path" == ./* ]]; then
+        hook_path="${NEEDLE_WORKSPACE}/${hook_path#./}"
+    fi
 
     # Check if hook file exists
     if [[ ! -f "$hook_path" ]]; then
@@ -163,12 +204,10 @@ _needle_run_hook() {
         }
     fi
 
-    # Get timeout and fail_action settings
-    local timeout
-    timeout=$(get_config "hooks.timeout" "30s")
-
-    local fail_action
-    fail_action=$(get_config "hooks.fail_action" "warn")
+    # Get timeout and fail_action settings (workspace-level overrides global)
+    local timeout fail_action
+    timeout=$(_needle_get_hook_config "hooks.timeout" "30s")
+    fail_action=$(_needle_get_hook_config "hooks.fail_action" "warn")
 
     # Remove 's' suffix from timeout for the timeout command
     local timeout_seconds="${timeout%s}"
@@ -348,13 +387,46 @@ _needle_hook_pre_complete() {
 # Run post_complete hook
 # Usage: _needle_hook_post_complete [bead_id]
 _needle_hook_post_complete() {
-    _needle_run_hook "post_complete" "${1:-}"
+    local bead_id="${1:-}"
+    _needle_run_hook "post_complete" "$bead_id"
+
+    # Release all file locks held by this bead
+    # This ensures locks are always released when a bead completes
+    _needle_release_bead_locks_on_close "$bead_id"
 }
 
 # Run on_failure hook
 # Usage: _needle_hook_on_failure [bead_id]
 _needle_hook_on_failure() {
-    _needle_run_hook "on_failure" "${1:-}"
+    local bead_id="${1:-}"
+    _needle_run_hook "on_failure" "$bead_id"
+
+    # Release all file locks held by this bead
+    # This ensures locks are always released when a bead fails
+    _needle_release_bead_locks_on_close "$bead_id"
+}
+
+# Internal function to release locks when a bead is closed (success or failure)
+# Usage: _needle_release_bead_locks_on_close [bead_id]
+_needle_release_bead_locks_on_close() {
+    local bead_id="${1:-${NEEDLE_BEAD_ID:-}}"
+
+    if [[ -z "$bead_id" ]]; then
+        return 0
+    fi
+
+    # Source the lock module if not already loaded
+    if ! declare -f release_bead_locks &>/dev/null; then
+        local lock_module="${NEEDLE_SRC_DIR:-${BASH_SOURCE[0]%/*/*}}/lock/checkout.sh"
+        if [[ -f "$lock_module" ]]; then
+            source "$lock_module" 2>/dev/null || return 0
+        else
+            return 0
+        fi
+    fi
+
+    # Release all locks for this bead
+    release_bead_locks "$bead_id" 2>/dev/null || true
 }
 
 # Run on_quarantine hook
@@ -376,7 +448,7 @@ _needle_list_hooks() {
 
     for hook_type in "${NEEDLE_HOOK_TYPES[@]}"; do
         local hook_path
-        hook_path=$(get_config "hooks.$hook_type" "")
+        hook_path=$(_needle_get_hook_config "hooks.$hook_type" "")
 
         if [[ -n "$hook_path" ]]; then
             if [[ "$first" == "true" ]]; then
@@ -388,6 +460,10 @@ _needle_list_hooks() {
             # Check if hook file exists
             local exists="false"
             local expanded_path="${hook_path/#\~/$HOME}"
+            # Handle workspace-relative paths
+            if [[ -n "${NEEDLE_WORKSPACE:-}" ]] && [[ "$expanded_path" == ./* ]]; then
+                expanded_path="${NEEDLE_WORKSPACE}/${expanded_path#./}"
+            fi
             if [[ -f "$expanded_path" ]]; then
                 exists="true"
             fi
@@ -409,10 +485,14 @@ _needle_validate_hooks() {
 
     for hook_type in "${NEEDLE_HOOK_TYPES[@]}"; do
         local hook_path
-        hook_path=$(get_config "hooks.$hook_type" "")
+        hook_path=$(_needle_get_hook_config "hooks.$hook_type" "")
 
         if [[ -n "$hook_path" ]]; then
             local expanded_path="${hook_path/#\~/$HOME}"
+            # Handle workspace-relative paths
+            if [[ -n "${NEEDLE_WORKSPACE:-}" ]] && [[ "$expanded_path" == ./* ]]; then
+                expanded_path="${NEEDLE_WORKSPACE}/${expanded_path#./}"
+            fi
 
             if [[ ! -f "$expanded_path" ]]; then
                 _needle_warn "Hook file not found: $hook_type -> $hook_path"
@@ -426,7 +506,7 @@ _needle_validate_hooks() {
 
     # Validate timeout setting
     local timeout
-    timeout=$(get_config "hooks.timeout" "30s")
+    timeout=$(_needle_get_hook_config "hooks.timeout" "30s")
 
     if [[ ! "$timeout" =~ ^[0-9]+s?$ ]]; then
         _needle_warn "Invalid hooks.timeout format: $timeout (expected: Ns)"
@@ -435,7 +515,7 @@ _needle_validate_hooks() {
 
     # Validate fail_action setting
     local fail_action
-    fail_action=$(get_config "hooks.fail_action" "warn")
+    fail_action=$(_needle_get_hook_config "hooks.fail_action" "warn")
 
     case "$fail_action" in
         warn|abort|ignore)
@@ -538,8 +618,8 @@ SAMPLE_HOOK
 # Returns: Human-readable hook status
 _needle_hook_status() {
     local timeout fail_action
-    timeout=$(get_config "hooks.timeout" "30s")
-    fail_action=$(get_config "hooks.fail_action" "warn")
+    timeout=$(_needle_get_hook_config "hooks.timeout" "30s")
+    fail_action=$(_needle_get_hook_config "hooks.fail_action" "warn")
 
     _needle_section "Hook Configuration"
     _needle_table_row "timeout" "$timeout"
@@ -549,11 +629,15 @@ _needle_hook_status() {
     local has_hooks=false
     for hook_type in "${NEEDLE_HOOK_TYPES[@]}"; do
         local hook_path
-        hook_path=$(get_config "hooks.$hook_type" "")
+        hook_path=$(_needle_get_hook_config "hooks.$hook_type" "")
 
         if [[ -n "$hook_path" ]]; then
             has_hooks=true
             local expanded_path="${hook_path/#\~/$HOME}"
+            # Handle workspace-relative paths
+            if [[ -n "${NEEDLE_WORKSPACE:-}" ]] && [[ "$expanded_path" == ./* ]]; then
+                expanded_path="${NEEDLE_WORKSPACE}/${expanded_path#./}"
+            fi
             local status
 
             if [[ -f "$expanded_path" ]]; then
