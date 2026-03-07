@@ -2468,6 +2468,181 @@ exit 0
 
 ---
 
+## File Collision Management
+
+When multiple workers operate on the same codebase, file write conflicts can occur. NEEDLE provides a checkout system using `/dev/shm` for fast, volatile file locks that automatically convert conflicts into bead dependencies.
+
+### Design Principles
+
+1. **No blocking** - Workers never wait for file locks; conflicts become dependencies
+2. **Self-healing** - Closing a bead releases all its file claims automatically
+3. **Cross-workspace** - All NEEDLE workers share the same lock namespace
+4. **Volatile** - Locks live in `/dev/shm` (RAM), no stale locks after reboot
+
+### Lock Structure
+
+```
+/dev/shm/needle-locks/
+├── {md5(filepath)}.lock/       # Directory (mkdir for atomicity)
+│   └── info                    # JSON metadata
+```
+
+**Lock info format:**
+```json
+{
+  "bead": "nd-2ov",
+  "worker": "claude-code-glm-5-alpha",
+  "path": "/home/coder/NEEDLE/src/cli/run.sh",
+  "ts": 1709337600,
+  "workspace": "/home/coder/NEEDLE"
+}
+```
+
+### Checkout Workflow
+
+```
+Worker attempts file write (Edit tool)
+    ↓
+checkout_file() checks /dev/shm/needle-locks/{hash}.lock
+    ↓
+┌─ Lock free ──────────────────────┐    ┌─ Lock held by bead X ────────────┐
+│ 1. mkdir lock dir (atomic)       │    │ 1. Read blocking bead ID         │
+│ 2. Write info JSON               │    │ 2. br dep add current-bead X     │
+│ 3. Proceed with file write       │    │ 3. br update current --status open│
+│ 4. (on bead close) release lock  │    │ 4. Worker abandons, finds other  │
+└──────────────────────────────────┘    │    work from ready queue         │
+                                        └───────────────────────────────────┘
+```
+
+### API (src/lock/checkout.sh)
+
+```bash
+# Attempt to checkout a file for writing
+# Returns: 0 = acquired, 1 = blocked (prints blocking bead)
+checkout_file "$filepath" "$bead_id" "$worker_id"
+
+# Release a specific file lock
+release_file "$filepath"
+
+# Release ALL locks held by a bead (called on bead close)
+release_bead_locks "$bead_id"
+
+# Check if file is locked (read-only query)
+# Returns: 0 = locked (prints info), 1 = free
+check_file "$filepath"
+
+# List all current locks (debugging)
+list_locks
+```
+
+### Integration with Agent Tools
+
+NEEDLE intercepts file write operations via Claude Code hooks:
+
+```json
+// Agent settings.json (injected by NEEDLE)
+{
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hook": "~/.needle/hooks/file-checkout.sh"
+      }
+    ]
+  }
+}
+```
+
+**Hook script (file-checkout.sh):**
+```bash
+#!/bin/bash
+# Called before Edit/Write tool execution
+# Receives: $TOOL_NAME, $TOOL_INPUT (JSON)
+
+filepath=$(echo "$TOOL_INPUT" | jq -r '.file_path // .path')
+bead_id="$NEEDLE_BEAD_ID"
+worker_id="$NEEDLE_WORKER"
+
+if ! checkout_file "$filepath" "$bead_id" "$worker_id"; then
+    blocking_bead=$(check_file "$filepath" | jq -r '.bead')
+    echo "FILE_CONFLICT: $filepath locked by $blocking_bead"
+
+    # Add dependency and abort this bead's execution
+    br dep add "$bead_id" "$blocking_bead"
+    exit 1  # Signals NEEDLE to re-queue this bead
+fi
+```
+
+### Bead Completion Hook
+
+When a bead is closed (success or failure), all its file claims are released:
+
+```bash
+# ~/.needle/hooks/post-complete.sh (or on_failure.sh)
+release_bead_locks "$NEEDLE_BEAD_ID"
+```
+
+This ensures:
+- Completed work releases locks immediately
+- Failed beads don't hold locks forever
+- Quarantined beads release locks for other workers
+
+### Stale Lock Detection
+
+Locks older than the configured timeout (default: 30 minutes) can be forcibly released:
+
+```yaml
+# ~/.needle/config.yaml
+file_locks:
+  timeout: 30m        # Max lock age before considered stale
+  stale_action: warn  # warn | release | ignore
+```
+
+**Stale lock handling:**
+```bash
+check_stale_locks() {
+    local now=$(date +%s)
+    local timeout=1800  # 30 minutes
+
+    for lock in /dev/shm/needle-locks/*.lock; do
+        local ts=$(jq -r '.ts' "$lock/info")
+        if (( now - ts > timeout )); then
+            local bead=$(jq -r '.bead' "$lock/info")
+            log_warn "Stale lock: $lock (held by $bead for $((now - ts))s)"
+            # Optionally: rm -rf "$lock"
+        fi
+    done
+}
+```
+
+### Cross-Workspace Coordination
+
+Since `/dev/shm` is shared across all processes, workers from different workspaces (NEEDLE, FABRIC, etc.) see the same locks:
+
+```
+NEEDLE worker (nd-2ov) checks out:  /home/coder/shared-lib/utils.ts
+FABRIC worker (bd-muv) attempts:    /home/coder/shared-lib/utils.ts
+    ↓
+FABRIC sees lock, adds dependency: br dep add bd-muv nd-2ov
+    ↓
+FABRIC worker moves to other work
+    ↓
+NEEDLE completes nd-2ov, releases lock
+    ↓
+bd-muv becomes unblocked, FABRIC worker picks it up
+```
+
+### Telemetry
+
+```jsonl
+{"ts":"...","event":"file.checkout","session":"...","data":{"bead":"nd-2ov","path":"/src/cli/run.sh","status":"acquired"}}
+{"ts":"...","event":"file.conflict","session":"...","data":{"bead":"bd-muv","path":"/src/cli/run.sh","blocked_by":"nd-2ov"}}
+{"ts":"...","event":"file.release","session":"...","data":{"bead":"nd-2ov","path":"/src/cli/run.sh","held_for_ms":45000}}
+{"ts":"...","event":"file.stale","session":"...","data":{"bead":"nd-xxx","path":"/src/old.sh","age_s":3600,"action":"released"}}
+```
+
+---
+
 ## Worker Heartbeat & Auto-Recovery
 
 Workers emit periodic heartbeats. Stuck workers are detected and recovered automatically.
