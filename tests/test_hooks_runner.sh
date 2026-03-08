@@ -227,6 +227,72 @@ else
     test_fail "Create sample hook should succeed"
 fi
 
+# Test 14: All 8 hook types are registered
+echo ""
+echo "Test 14: All 8 hook points are registered"
+expected_hooks=(pre_claim post_claim pre_execute post_execute pre_complete post_complete on_failure on_quarantine)
+missing_hooks=()
+for hook in "${expected_hooks[@]}"; do
+    found=false
+    for registered in "${NEEDLE_HOOK_TYPES[@]}"; do
+        if [[ "$registered" == "$hook" ]]; then
+            found=true
+            break
+        fi
+    done
+    [[ "$found" == "false" ]] && missing_hooks+=("$hook")
+done
+if [[ ${#missing_hooks[@]} -eq 0 ]]; then
+    test_pass "All 8 hook types registered: ${expected_hooks[*]}"
+else
+    test_fail "Missing hook types: ${missing_hooks[*]}"
+fi
+
+# Test 15: pre_claim hook with skip (exit 3) returns 2
+echo ""
+echo "Test 15: pre_claim skip hook returns 2"
+create_hook "pre-claim-skip.sh" "exit 3"
+write_hook_config "pre_claim" "$NEEDLE_HOME/hooks/pre-claim-skip.sh"
+result=$(_needle_run_hook "pre_claim" "test-15" 2>/dev/null; echo $?)
+if [[ "$result" == "2" ]]; then
+    test_pass "pre_claim skip returns 2 (caller should try next bead)"
+else
+    test_fail "pre_claim skip should return 2, got: $result"
+fi
+
+# Test 16: post_claim hook succeeds
+echo ""
+echo "Test 16: post_claim hook runs on successful claim"
+create_hook "post-claim-success.sh" "exit 0"
+write_hook_config "post_claim" "$NEEDLE_HOME/hooks/post-claim-success.sh"
+if _needle_run_hook "post_claim" "test-16" 2>/dev/null; then
+    test_pass "post_claim hook runs successfully"
+else
+    test_fail "post_claim hook should run successfully"
+fi
+
+# Test 17: on_quarantine hook runs
+echo ""
+echo "Test 17: on_quarantine hook runs"
+create_hook "on-quarantine.sh" "exit 0"
+write_hook_config "on_quarantine" "$NEEDLE_HOME/hooks/on-quarantine.sh"
+if _needle_run_hook "on_quarantine" "test-17" 2>/dev/null; then
+    test_pass "on_quarantine hook runs successfully"
+else
+    test_fail "on_quarantine hook should run successfully"
+fi
+
+# Test 18: on_failure hook convenience function
+echo ""
+echo "Test 18: on_failure convenience function works"
+create_hook "on-failure.sh" "exit 0"
+write_hook_config "on_failure" "$NEEDLE_HOME/hooks/on-failure.sh"
+if _needle_hook_on_failure "test-18" 2>/dev/null; then
+    test_pass "on_failure convenience function works"
+else
+    test_fail "on_failure convenience function should work"
+fi
+
 # Cleanup
 rm -rf "$NEEDLE_HOME"
 

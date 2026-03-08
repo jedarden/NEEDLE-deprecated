@@ -1172,6 +1172,45 @@ _needle_fail_bead() {
 }
 
 # ============================================================================
+# Bead Quarantine Function
+# ============================================================================
+
+# Quarantine a bead (permanently close, not retryable)
+# Usage: _needle_quarantine_bead <bead_id> [reason]
+# Return values:
+#   0 - Bead quarantined successfully
+#   1 - Quarantine failed
+_needle_quarantine_bead() {
+    local bead_id="$1"
+    local reason="${2:-quarantined}"
+
+    _needle_debug "Quarantining bead: $bead_id (reason: $reason)"
+
+    # Close with quarantined label so status dashboard can count it
+    if ! br update "$bead_id" --status closed --add-label "quarantined" 2>/dev/null; then
+        _needle_error "Failed to quarantine bead: $bead_id"
+        _needle_event_error_complete_failed "$bead_id" "reason=quarantine_command_failed"
+        # Still run on_quarantine hook for alerting
+        _needle_run_hook "on_quarantine" "$bead_id"
+        return 1
+    fi
+
+    # Emit quarantined event
+    _needle_telemetry_emit "bead.quarantined" "error" \
+        "bead_id=$bead_id" \
+        "reason=$reason" \
+        "session=$NEEDLE_SESSION" \
+        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+    _needle_warn "Bead quarantined: $bead_id (reason: $reason)"
+
+    # Run on_quarantine hook for alerting/escalation
+    _needle_run_hook "on_quarantine" "$bead_id"
+
+    return 0
+}
+
+# ============================================================================
 # Bead Release Function
 # ============================================================================
 

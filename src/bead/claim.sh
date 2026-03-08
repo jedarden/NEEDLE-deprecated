@@ -284,6 +284,25 @@ _needle_claim_bead() {
 
         _needle_debug "Attempting to claim bead $bead_id (attempt $attempt/$max_retries)"
 
+        # Run pre_claim hook before attempting claim
+        # exit 2 (abort) = return 1 from _needle_run_hook: stop claiming
+        # exit 3 (skip)  = return 2 from _needle_run_hook: skip this bead, try another
+        if declare -f _needle_run_hook &>/dev/null; then
+            local pre_claim_result
+            _needle_run_hook "pre_claim" "$bead_id" >&2
+            pre_claim_result=$?
+            if [[ $pre_claim_result -eq 1 ]]; then
+                # Hook aborted claiming entirely
+                _needle_debug "pre_claim hook aborted claim for bead $bead_id"
+                return 1
+            elif [[ $pre_claim_result -eq 2 ]]; then
+                # Hook requested skip - try a different bead
+                _needle_debug "pre_claim hook skipped bead $bead_id, retrying"
+                attempt=$((attempt + 1))
+                continue
+            fi
+        fi
+
         # Attempt atomic claim via br update --claim
         # br returns exit 0 on success, exit 4 on race condition (already claimed)
         # FIX: Run in workspace directory if provided (br operates on current directory)
@@ -317,6 +336,12 @@ _needle_claim_bead() {
 
             # NOTE: Redirect to stderr - stdout reserved for return value
             _needle_success "Claimed bead: $bead_id" >&2
+
+            # Run post_claim hook after successful claim
+            if declare -f _needle_run_hook &>/dev/null; then
+                _needle_run_hook "post_claim" "$bead_id" >&2 || true
+            fi
+
             echo "$bead_id"
             return 0
         fi
