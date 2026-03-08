@@ -15,11 +15,18 @@ if [[ -z "${_NEEDLE_OUTPUT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/output.sh"
 fi
 
+# Source FABRIC telemetry module (if available)
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/../telemetry/fabric.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/fabric.sh"
+fi
+
 # Module state
 _NEEDLE_DISPATCH_PID=""
 _NEEDLE_DISPATCH_OUTPUT_FILE=""
 _NEEDLE_DISPATCH_START_TIME=0
 _NEEDLE_HEARTBEAT_BG_PID=""
+_NEEDLE_FABRIC_PIPE=""
+_NEEDLE_FABRIC_PID=""
 
 # -----------------------------------------------------------------------------
 # Background Heartbeat Process
@@ -59,6 +66,84 @@ _needle_stop_heartbeat_background() {
             _needle_debug "Stopped background heartbeat process: PID $_NEEDLE_HEARTBEAT_BG_PID"
         fi
         _NEEDLE_HEARTBEAT_BG_PID=""
+    fi
+}
+
+# -----------------------------------------------------------------------------
+# FABRIC Event Forwarding
+# -----------------------------------------------------------------------------
+
+# Start FABRIC event forwarder for stream-json output
+# Creates a named pipe and background process to forward events
+# Usage: _needle_start_fabric_forwarder
+# Returns: 0 on success, 1 if not enabled or failed
+_needle_start_fabric_forwarder() {
+    # Check if FABRIC module is loaded and enabled
+    if ! declare -f _needle_fabric_is_enabled &>/dev/null; then
+        return 1
+    fi
+
+    if ! _needle_fabric_is_enabled; then
+        return 1
+    fi
+
+    # Create named pipe for event forwarding
+    local pipe_path
+    if declare -f _needle_fabric_create_pipe &>/dev/null; then
+        pipe_path=$(_needle_fabric_create_pipe)
+        if [[ -z "$pipe_path" ]]; then
+            _needle_warn "Failed to create FABRIC pipe, forwarding disabled"
+            return 1
+        fi
+    else
+        return 1
+    fi
+
+    _NEEDLE_FABRIC_PIPE="$pipe_path"
+
+    # Start forwarder process
+    if declare -f _needle_fabric_start_forwarder &>/dev/null; then
+        local forwarder_pid
+        forwarder_pid=$(_needle_fabric_start_forwarder "$pipe_path")
+        if [[ -n "$forwarder_pid" ]]; then
+            _NEEDLE_FABRIC_PID="$forwarder_pid"
+            _needle_debug "Started FABRIC forwarder: PID $forwarder_pid, pipe $pipe_path"
+            return 0
+        fi
+    fi
+
+    # Clean up pipe if forwarder failed to start
+    rm -f "$pipe_path" 2>/dev/null
+    _NEEDLE_FABRIC_PIPE=""
+    return 1
+}
+
+# Stop FABRIC event forwarder
+# Usage: _needle_stop_fabric_forwarder
+_needle_stop_fabric_forwarder() {
+    if declare -f _needle_fabric_stop_forwarder &>/dev/null; then
+        _needle_fabric_stop_forwarder "$_NEEDLE_FABRIC_PID" "$_NEEDLE_FABRIC_PIPE"
+        _needle_debug "Stopped FABRIC forwarder"
+    fi
+
+    _NEEDLE_FABRIC_PID=""
+    _NEEDLE_FABRIC_PIPE=""
+}
+
+# Get tee command for output redirection
+# If FABRIC is enabled, tee to both output file and FABRIC pipe
+# Otherwise, just tee to output file
+# Usage: _needle_get_tee_command <output_file>
+# Returns: tee command string
+_needle_get_tee_command() {
+    local output_file="$1"
+
+    if [[ -n "$_NEEDLE_FABRIC_PIPE" ]] && [[ -p "$_NEEDLE_FABRIC_PIPE" ]]; then
+        # Tee to both output file and FABRIC pipe
+        echo "tee \"$output_file\" \"$_NEEDLE_FABRIC_PIPE\""
+    else
+        # Just tee to output file
+        echo "tee \"$output_file\""
     fi
 }
 
@@ -161,8 +246,11 @@ _needle_dispatch_heredoc() {
 
     _needle_debug "Dispatching with heredoc method"
 
+    local tee_cmd
+    tee_cmd=$(_needle_get_tee_command "$output_file")
+
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | tee "$output_file"
+        timeout "$timeout" bash -c "$rendered" 2>&1 | eval "$tee_cmd"
         local exit_code=${PIPESTATUS[0]}
         # timeout returns 124 when timed out
         if [[ $exit_code -eq 124 ]]; then
@@ -170,7 +258,7 @@ _needle_dispatch_heredoc() {
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | tee "$output_file"
+        bash -c "$rendered" 2>&1 | eval "$tee_cmd"
         return ${PIPESTATUS[0]}
     fi
 }
@@ -188,15 +276,18 @@ _needle_dispatch_stdin() {
 
     _needle_debug "Dispatching with stdin method"
 
+    local tee_cmd
+    tee_cmd=$(_needle_get_tee_command "$output_file")
+
     if [[ "$timeout" -gt 0 ]]; then
-        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | tee "$output_file"
+        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | eval "$tee_cmd"
         local exit_code=${PIPESTATUS[1]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | tee "$output_file"
+        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | eval "$tee_cmd"
         return ${PIPESTATUS[1]}
     fi
 }
@@ -224,15 +315,18 @@ _needle_dispatch_file() {
     # Replace ${PROMPT_FILE} placeholder in command if present
     local resolved_cmd="${invoke_cmd//\$\{PROMPT_FILE\}/$file_path}"
 
+    local tee_cmd
+    tee_cmd=$(_needle_get_tee_command "$output_file")
+
     local exit_code
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | tee "$output_file"
+        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | eval "$tee_cmd"
         exit_code=${PIPESTATUS[0]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
     else
-        bash -c "$resolved_cmd" 2>&1 | tee "$output_file"
+        bash -c "$resolved_cmd" 2>&1 | eval "$tee_cmd"
         exit_code=${PIPESTATUS[0]}
     fi
 
@@ -254,15 +348,18 @@ _needle_dispatch_args() {
 
     _needle_debug "Dispatching with args method"
 
+    local tee_cmd
+    tee_cmd=$(_needle_get_tee_command "$output_file")
+
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | tee "$output_file"
+        timeout "$timeout" bash -c "$rendered" 2>&1 | eval "$tee_cmd"
         local exit_code=${PIPESTATUS[0]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | tee "$output_file"
+        bash -c "$rendered" 2>&1 | eval "$tee_cmd"
         return ${PIPESTATUS[0]}
     fi
 }
@@ -328,6 +425,12 @@ _needle_dispatch_agent() {
 
     # Start background heartbeat to keep worker alive during execution
     _needle_start_heartbeat_background "$bead_id"
+
+    # Start FABRIC event forwarder if enabled and agent uses stream-json
+    local output_format="${NEEDLE_AGENT[output_format]:-text}"
+    if [[ "$output_format" == "stream-json" ]] || [[ "$output_format" == "streaming" ]]; then
+        _needle_start_fabric_forwarder
+    fi
 
     # Render template and execute based on input method
     local exit_code
@@ -399,6 +502,9 @@ _needle_dispatch_agent() {
     # Stop background heartbeat now that agent has completed
     _needle_stop_heartbeat_background
 
+    # Stop FABRIC event forwarder if it was started
+    _needle_stop_fabric_forwarder
+
     # Record end time and calculate duration
     local end_time
     end_time=$(_needle_get_time_ms)
@@ -434,6 +540,9 @@ _needle_get_time_ms() {
 _needle_dispatch_cleanup() {
     # Stop background heartbeat process
     _needle_stop_heartbeat_background
+
+    # Stop FABRIC forwarder
+    _needle_stop_fabric_forwarder
 
     # Kill any running process
     if [[ -n "$_NEEDLE_DISPATCH_PID" ]] && kill -0 "$_NEEDLE_DISPATCH_PID" 2>/dev/null; then

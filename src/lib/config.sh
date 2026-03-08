@@ -119,6 +119,12 @@ _NEEDLE_CONFIG_DEFAULTS='{
   "file_locks": {
     "timeout": "30m",
     "stale_action": "warn"
+  },
+  "fabric": {
+    "enabled": false,
+    "endpoint": "",
+    "timeout": 2,
+    "batching": false
   }
 }'
 
@@ -383,6 +389,22 @@ file_locks:
   # stale_action: What to do when a stale lock is detected (default: warn)
   # Options: warn (log warning), release (remove lock), ignore (do nothing)
   stale_action: warn
+
+# FABRIC telemetry forwarding configuration
+# Forwards stream-json events to FABRIC dashboard for live visualization
+fabric:
+  # enabled: Enable/disable FABRIC event forwarding (default: false)
+  enabled: false
+
+  # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
+  # Example: http://localhost:3000/api/events
+  endpoint: ""
+
+  # timeout: HTTP request timeout in seconds (default: 2)
+  timeout: 2
+
+  # batching: Enable event batching to reduce HTTP overhead (default: false)
+  batching: false
 '
 
 # Check if yq is available
@@ -856,6 +878,22 @@ file_locks:
   # stale_action: What to do when a stale lock is detected (default: warn)
   # Options: warn (log warning), release (remove lock), ignore (do nothing)
   stale_action: warn
+
+# FABRIC telemetry forwarding configuration
+# Forwards stream-json events to FABRIC dashboard for live visualization
+fabric:
+  # enabled: Enable/disable FABRIC event forwarding (default: false)
+  enabled: false
+
+  # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
+  # Example: http://localhost:3000/api/events
+  endpoint: ""
+
+  # timeout: HTTP request timeout in seconds (default: 2)
+  timeout: 2
+
+  # batching: Enable event batching to reduce HTTP overhead (default: false)
+  batching: false
 EOF
 
     if [[ $? -eq 0 ]]; then
