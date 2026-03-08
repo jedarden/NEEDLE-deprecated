@@ -20,7 +20,7 @@ invoke: |
   ANTHROPIC_MODEL=claude-sonnet-4-5-20250929 \
   claude --print \
          --dangerously-skip-permissions \
-         --output-format json \
+         --output-format stream-json \
          --verbose \
   <<'NEEDLE_PROMPT'
   ${PROMPT}
@@ -36,9 +36,9 @@ input:
 
 # Output parsing
 output:
-  format: json         # json | text | structured
-  # Token extraction regex (if not JSON)
-  # token_pattern: "tokens_used: (\\d+)"
+  format: stream-json  # json | text | stream-json
+  streaming_enabled: true
+  # Token extraction: parsed from result event in stream-json
   # Exit code interpretation
   success_codes: [0]
   retry_codes: [1]
