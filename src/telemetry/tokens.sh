@@ -117,6 +117,107 @@ _needle_extract_tokens_json_fallback() {
 }
 
 # -----------------------------------------------------------------------------
+# Streaming JSON Token Extraction
+# -----------------------------------------------------------------------------
+
+# Extract tokens from stream-json output (Claude Code --output-format stream-json)
+# Parses JSONL output looking for "result" event with usage data
+#
+# Usage: _needle_extract_tokens_streaming <output_file>
+# Returns: input_tokens|output_tokens|cost_usd|duration_ms
+#
+# Expected result event format:
+# {
+#   "type": "result",
+#   "cost_usd": 0.0123,
+#   "usage": {
+#     "input_tokens": 1234,
+#     "output_tokens": 567
+#   },
+#   "duration_ms": 45000
+# }
+_needle_extract_tokens_streaming() {
+    local output_file="$1"
+
+    if [[ ! -f "$output_file" ]]; then
+        echo "0|0|0|0"
+        return 1
+    fi
+
+    local input_tokens=0
+    local output_tokens=0
+    local cost_usd="0"
+    local duration_ms=0
+
+    if command -v jq &>/dev/null; then
+        # Find the result event in the JSONL stream
+        local result_line
+        result_line=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$output_file" 2>/dev/null | tail -1)
+
+        if [[ -n "$result_line" ]]; then
+            # Extract values from result event
+            input_tokens=$(echo "$result_line" | jq -r '.usage.input_tokens // 0' 2>/dev/null)
+            output_tokens=$(echo "$result_line" | jq -r '.usage.output_tokens // 0' 2>/dev/null)
+            cost_usd=$(echo "$result_line" | jq -r '.cost_usd // 0' 2>/dev/null)
+            duration_ms=$(echo "$result_line" | jq -r '.duration_ms // 0' 2>/dev/null)
+
+            # Handle null values
+            [[ "$input_tokens" == "null" ]] && input_tokens=0
+            [[ "$output_tokens" == "null" ]] && output_tokens=0
+            [[ "$cost_usd" == "null" ]] && cost_usd="0"
+            [[ "$duration_ms" == "null" ]] && duration_ms=0
+        fi
+    else
+        # Fallback: grep-based extraction
+        local result_line
+        result_line=$(grep '"type"[[:space:]]*:[[:space:]]*"result"' "$output_file" 2>/dev/null | tail -1)
+
+        if [[ -n "$result_line" ]]; then
+            # Extract input_tokens
+            input_tokens=$(echo "$result_line" | grep -oE '"input_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)
+            # Extract output_tokens
+            output_tokens=$(echo "$result_line" | grep -oE '"output_tokens"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)
+            # Extract cost_usd
+            cost_usd=$(echo "$result_line" | grep -oE '"cost_usd"[[:space:]]*:[[:space:]]*[0-9.]+' | grep -oE '[0-9.]+' | head -1)
+            # Extract duration_ms
+            duration_ms=$(echo "$result_line" | grep -oE '"duration_ms"[[:space:]]*:[[:space:]]*[0-9]+' | grep -oE '[0-9]+' | head -1)
+        fi
+    fi
+
+    # Ensure valid numbers
+    [[ ! "$input_tokens" =~ ^[0-9]+$ ]] && input_tokens=0
+    [[ ! "$output_tokens" =~ ^[0-9]+$ ]] && output_tokens=0
+    [[ ! "$duration_ms" =~ ^[0-9]+$ ]] && duration_ms=0
+
+    echo "${input_tokens}|${output_tokens}|${cost_usd}|${duration_ms}"
+    return 0
+}
+
+# Parse streaming token result string
+# Usage: _needle_parse_streaming_result <result> <var_prefix>
+# Sets: <var_prefix>_input, <var_prefix>_output, <var_prefix>_cost, <var_prefix>_duration
+_needle_parse_streaming_result() {
+    local result="$1"
+    local prefix="$2"
+
+    if [[ -z "$result" ]]; then
+        eval "${prefix}_input=0"
+        eval "${prefix}_output=0"
+        eval "${prefix}_cost=0"
+        eval "${prefix}_duration=0"
+        return 1
+    fi
+
+    local input output cost duration
+    IFS='|' read -r input output cost duration <<< "$result"
+
+    eval "${prefix}_input=${input:-0}"
+    eval "${prefix}_output=${output:-0}"
+    eval "${prefix}_cost=${cost:-0}"
+    eval "${prefix}_duration=${duration:-0}"
+}
+
+# -----------------------------------------------------------------------------
 # Text/Regex Token Extraction
 # -----------------------------------------------------------------------------
 
@@ -324,6 +425,14 @@ _needle_extract_tokens() {
         json)
             _needle_extract_tokens_json "$output_file"
             ;;
+        stream-json|streaming)
+            # For streaming format, extract full result and return just tokens
+            local streaming_result
+            streaming_result=$(_needle_extract_tokens_streaming "$output_file")
+            # Return just input|output (first two fields)
+            echo "$streaming_result" | cut -d'|' -f1,2
+            return 0
+            ;;
         text|*)
             _needle_extract_tokens_text "$output_file" "$token_pattern"
             ;;
@@ -332,7 +441,7 @@ _needle_extract_tokens() {
 
 # Extract tokens from output file using explicit format
 # Usage: _needle_extract_tokens_with_format <output_file> <format> [pattern]
-# Returns: input_tokens|output_tokens
+# Returns: input_tokens|output_tokens (or input|output|cost|duration for streaming)
 _needle_extract_tokens_with_format() {
     local output_file="$1"
     local format="$2"
@@ -346,6 +455,9 @@ _needle_extract_tokens_with_format() {
     case "$format" in
         json)
             _needle_extract_tokens_json "$output_file"
+            ;;
+        stream-json|streaming)
+            _needle_extract_tokens_streaming "$output_file"
             ;;
         text|*)
             _needle_extract_tokens_text "$output_file" "$pattern"
@@ -456,6 +568,13 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             fi
             _needle_extract_tokens_text "$2" "${3:-}"
             ;;
+        streaming|stream-json)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 streaming <output_file>"
+                exit 1
+            fi
+            _needle_extract_tokens_streaming "$2"
+            ;;
         stats)
             if [[ -z "${2:-}" ]]; then
                 echo "Usage: $0 stats <output_file>"
@@ -477,8 +596,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "  extract <file> [format] [pattern]  Extract tokens from file"
             echo "  json <file>                        Extract from JSON format"
             echo "  text <file> [pattern]              Extract from text format"
+            echo "  streaming <file>                   Extract from stream-json JSONL"
             echo "  stats <file>                       Get token statistics as JSON"
             echo "  cost <in> <out> [in_rate] [out_rate]  Calculate cost"
+            echo ""
+            echo "Formats: json, text, stream-json"
+            echo "Streaming returns: input|output|cost_usd|duration_ms"
             ;;
         *)
             echo "Unknown command: ${1:-}"
