@@ -12,6 +12,16 @@ if ! declare -f _needle_command_exists &>/dev/null; then
     }
 fi
 
+# Source FABRIC module for event forwarding (if available)
+if [[ -z "${_NEEDLE_FABRIC_LOADED:-}" ]]; then
+    _needle_fabric_path="$(dirname "${BASH_SOURCE[0]}")/fabric.sh"
+    if [[ -f "$_needle_fabric_path" ]]; then
+        source "$_needle_fabric_path"
+        _NEEDLE_FABRIC_LOADED="true"
+    fi
+    unset _needle_fabric_path
+fi
+
 # Ensure _needle_json_escape is available (fallback if json.sh not loaded)
 if ! declare -f _needle_json_escape &>/dev/null; then
     _needle_json_escape() {
@@ -236,6 +246,12 @@ _needle_telemetry_emit() {
     # Print to stderr if verbose mode is enabled (stdout reserved for return values)
     if [[ "${NEEDLE_VERBOSE:-}" == "true" ]]; then
         echo "$json" >&2
+    fi
+
+    # Forward to FABRIC dashboard if enabled (non-blocking)
+    # This enables live visualization of NEEDLE worker activity
+    if declare -f _needle_fabric_forward_event &>/dev/null; then
+        _needle_fabric_forward_event "$json"
     fi
 
     return 0
