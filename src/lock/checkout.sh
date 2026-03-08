@@ -68,6 +68,11 @@ if ! declare -f _needle_telemetry_emit &>/dev/null; then
     }
 fi
 
+# Stub for metrics recording (real impl loaded from src/lock/metrics.sh)
+if ! declare -f _needle_metrics_record_event &>/dev/null; then
+    _needle_metrics_record_event() { return 0; }
+fi
+
 # ============================================================================
 # Utility Functions
 # ============================================================================
@@ -209,6 +214,9 @@ checkout_file() {
 
     _needle_debug "Checking out file: $filepath (uuid: $path_uuid)"
 
+    # Record checkout attempt metric
+    _needle_metrics_record_event "checkout.attempt" "$bead_id" "$filepath"
+
     # Check if file is already locked by another bead
     # Look for any lock files with this path UUID
     local existing_locks
@@ -233,6 +241,12 @@ checkout_file() {
                     "path=$filepath" \
                     "blocked_by=$existing_bead"
 
+                # Record blocked checkout metric (conflict prevented)
+                _needle_metrics_record_event "checkout.blocked" "$bead_id" "$filepath" \
+                    "blocked_by=$existing_bead"
+                _needle_metrics_record_event "conflict.prevented" "$bead_id" "$filepath" \
+                    "blocked_by=$existing_bead"
+
                 # Return blocking bead info to stdout
                 echo "$lock_info"
                 return 1
@@ -254,6 +268,9 @@ checkout_file() {
             "path=$filepath" \
             "status=acquired"
 
+        # Record acquired checkout metric
+        _needle_metrics_record_event "checkout.acquired" "$bead_id" "$filepath"
+
         return 0
     else
         # Race condition - another process created the lock
@@ -272,6 +289,12 @@ checkout_file() {
                 "path=$filepath" \
                 "blocked_by=$existing_bead"
 
+            # Record blocked checkout metric
+            _needle_metrics_record_event "checkout.blocked" "$bead_id" "$filepath" \
+                "blocked_by=$existing_bead"
+            _needle_metrics_record_event "conflict.prevented" "$bead_id" "$filepath" \
+                "blocked_by=$existing_bead"
+
             echo "$lock_info"
             return 1
         fi
@@ -279,6 +302,8 @@ checkout_file() {
         # We already have the lock, just update it
         _needle_lock_write_info "$lock_file" "$bead_id" "$worker_id" "$filepath" "$workspace"
         _needle_debug "Lock refreshed: $lock_file"
+        # Record acquired checkout metric (re-checkout by same bead)
+        _needle_metrics_record_event "checkout.acquired" "$bead_id" "$filepath"
         return 0
     fi
 }

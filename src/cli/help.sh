@@ -60,6 +60,15 @@ _needle_help() {
         pulse)
             _needle_pulse_help
             ;;
+        metrics)
+            _needle_metrics_help
+            ;;
+        analyze)
+            _needle_analyze_help
+            ;;
+        refactor)
+            _needle_refactor_help
+            ;;
         help)
             _needle_print "Display help for NEEDLE commands"
             _needle_print ""
@@ -106,6 +115,9 @@ COMMANDS:
     heartbeat   Manage worker heartbeat and recovery
     config      View or edit configuration
     pulse       Run codebase health scan manually
+    metrics     Analyze file collision effectiveness
+    analyze     Analyze codebase patterns and file contention
+    refactor    Suggest refactoring opportunities from metrics
 
 OPTIONS:
     -h, --help       Print help information

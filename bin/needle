@@ -79,6 +79,9 @@ source "$NEEDLE_ROOT_DIR/src/cli/restart.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/test-agent.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/setup.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/pulse.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/metrics.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/analyze.sh"
+source "$NEEDLE_ROOT_DIR/src/cli/refactor.sh"
 source "$NEEDLE_ROOT_DIR/src/cli/help.sh"
 
 # -----------------------------------------------------------------------------
@@ -96,7 +99,7 @@ NEEDLE_USE_COLOR="${NEEDLE_USE_COLOR:-true}"
 _needle_maybe_init() {
     # Commands that don't require initialization
     case "${1:-}" in
-        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop|test-agent|setup|pulse|completion|_run_worker)
+        init|version|help|--help|-h|--version|-V|-x|upgrade|rollback|agents|attach|stop|test-agent|setup|pulse|metrics|analyze|refactor|completion|_run_worker)
             return 0
             ;;
     esac
@@ -123,7 +126,7 @@ _needle_parse_global_options() {
     # Check if a subcommand is present (first non-option arg that's a known subcommand)
     for arg in "$@"; do
         case "$arg" in
-            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop|restart|test-agent|setup|pulse)
+            init|run|list|ls|status|config|logs|version|upgrade|rollback|help|completion|agents|heartbeat|attach|stop|restart|test-agent|setup|pulse|metrics|analyze|refactor)
                 has_subcommand=true
                 break
                 ;;
@@ -273,6 +276,15 @@ _needle_route_command() {
             ;;
         pulse)
             _needle_pulse "$@"
+            ;;
+        metrics)
+            _needle_metrics "$@"
+            ;;
+        analyze)
+            _needle_analyze "$@"
+            ;;
+        refactor)
+            _needle_refactor "$@"
             ;;
         _run_worker)
             # Internal command - not exposed to users
