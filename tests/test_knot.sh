@@ -528,6 +528,151 @@ else
 fi
 unset MOCK_BR_READY_COUNT
 
+# Test 30: DB health check returns healthy when no script exists (nd-1jv)
+_test_start "DB health check returns healthy when no script exists (nd-1jv)"
+if _needle_knot_check_db_health "/nonexistent/workspace"; then
+    _test_pass "DB health check correctly returned healthy when no script exists"
+else
+    _test_fail "DB health check should return healthy when script is missing"
+fi
+
+# Test 31: DB health check returns healthy when script exits 0 (nd-1jv)
+_test_start "DB health check returns healthy when script exits 0 (nd-1jv)"
+MOCK_HEALTH_DIR="$TEST_WORKSPACE_DIR/.beads/maintenance"
+mkdir -p "$MOCK_HEALTH_DIR"
+cat > "$MOCK_HEALTH_DIR/db-health-check.sh" << 'SCRIPT'
+#!/bin/bash
+echo "✅ Database healthy"
+exit 0
+SCRIPT
+chmod +x "$MOCK_HEALTH_DIR/db-health-check.sh"
+if _needle_knot_check_db_health "$TEST_WORKSPACE_DIR"; then
+    _test_pass "DB health check correctly returned healthy (exit 0)"
+else
+    _test_fail "DB health check should return healthy when script exits 0"
+fi
+
+# Test 32: DB health check returns corruption when script exits 1 (nd-1jv)
+_test_start "DB health check returns corruption when script exits 1 (nd-1jv)"
+cat > "$MOCK_HEALTH_DIR/db-health-check.sh" << 'SCRIPT'
+#!/bin/bash
+echo "🚨 CRITICAL: WAL file exceeds 10MB"
+echo "✅ Database rebuilt successfully from JSONL"
+exit 1
+SCRIPT
+chmod +x "$MOCK_HEALTH_DIR/db-health-check.sh"
+if ! _needle_knot_check_db_health "$TEST_WORKSPACE_DIR"; then
+    _test_pass "DB health check correctly returned corruption (exit 1)"
+else
+    _test_fail "DB health check should return corruption when script exits 1"
+fi
+
+# Test 33: DB health check treats exit 2 as healthy (error case) (nd-1jv)
+_test_start "DB health check treats exit 2 as healthy (error case) (nd-1jv)"
+cat > "$MOCK_HEALTH_DIR/db-health-check.sh" << 'SCRIPT'
+#!/bin/bash
+echo "❌ ERROR: rebuild failed"
+exit 2
+SCRIPT
+chmod +x "$MOCK_HEALTH_DIR/db-health-check.sh"
+if _needle_knot_check_db_health "$TEST_WORKSPACE_DIR"; then
+    _test_pass "DB health check correctly treated error as healthy (don't suppress alerts)"
+else
+    _test_fail "DB health check should treat exit 2 as healthy to avoid suppressing alerts"
+fi
+
+# Test 34: Strand skips alert after DB corruption fix reveals work (nd-1jv)
+_test_start "Strand skips alert after DB corruption fix reveals work (nd-1jv)"
+_needle_knot_clear_rate_limit "$TEST_WORKSPACE_DIR"
+MOCK_HEALTH_DIR="$TEST_WORKSPACE_DIR/.beads/maintenance"
+mkdir -p "$MOCK_HEALTH_DIR"
+# DB health check reports corruption (exit 1) AND creates a flag file
+# that the br mock uses to switch behavior (simulating rebuilt DB)
+DB_REBUILT_FLAG="/tmp/test_knot_db_rebuilt_$$"
+export DB_REBUILT_FLAG
+rm -f "$DB_REBUILT_FLAG"
+cat > "$MOCK_HEALTH_DIR/db-health-check.sh" << SCRIPT
+#!/bin/bash
+touch "$DB_REBUILT_FLAG"
+exit 1
+SCRIPT
+chmod +x "$MOCK_HEALTH_DIR/db-health-check.sh"
+
+# Override br: returns no work unless DB has been rebuilt
+br() {
+    case "\$1" in
+        ready)
+            if [[ -f "$DB_REBUILT_FLAG" ]]; then
+                echo '[{"id":"nd-recovered-1","title":"Recovered bead","priority":2}]'
+            else
+                echo '[]'
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        create)
+            echo "nd-knot-test-$$"
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+export -f br
+
+output=$(_needle_strand_knot "$TEST_WORKSPACE_DIR" "test-agent" 2>&1)
+result=$?
+
+# Should return 1 (no alert created) because work was found after DB rebuild
+if [[ $result -ne 0 ]]; then
+    _test_pass "Strand correctly skipped alert after DB corruption fix"
+else
+    _test_fail "Strand should not have created alert when DB corruption caused false starvation"
+fi
+rm -f "$DB_REBUILT_FLAG"
+unset DB_REBUILT_FLAG
+
+# Restore default br mock
+br() {
+    case "$1" in
+        ready)
+            if [[ -n "$MOCK_BR_READY_COUNT" ]]; then
+                local count="$MOCK_BR_READY_COUNT"
+                local result="["
+                for ((i=0; i<count; i++)); do
+                    [[ $i -gt 0 ]] && result+=","
+                    result+="{\"id\":\"nd-mock-$i\",\"title\":\"Mock bead $i\",\"priority\":2}"
+                done
+                result+="]"
+                echo "$result"
+            else
+                echo '[]'
+            fi
+            ;;
+        list)
+            if [[ -n "$MOCK_BR_LIST_DATA" ]]; then
+                echo "$MOCK_BR_LIST_DATA"
+            else
+                echo '[]'
+            fi
+            ;;
+        create)
+            echo "nd-knot-test-$$"
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+export -f br
+unset MOCK_BR_READY_COUNT MOCK_BR_LIST_DATA
+
+# Clean up mock health check
+rm -rf "$TEST_WORKSPACE_DIR/.beads/maintenance"
+
 # Summary
 echo ""
 echo "=========================================="

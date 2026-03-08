@@ -43,6 +43,24 @@ _needle_strand_knot() {
         return 1
     fi
 
+    # DB CORRUPTION CHECK (nd-1jv): Before creating starvation alert,
+    # verify database integrity. WAL corruption (>10MB) causes queries to
+    # return empty results, creating false "no work" starvation alerts.
+    # Known false alarms: nd-6hc, nd-6qd, nd-2hf, nd-2jp, nd-ytw
+    if ! _needle_knot_check_db_health "$workspace"; then
+        # DB was corrupted and has been rebuilt - re-verify work availability
+        _needle_debug "knot strand: DB corruption detected and repaired, re-checking work"
+        if _needle_knot_verify_work_available "$workspace"; then
+            _needle_debug "knot strand: work found after DB rebuild - false positive prevented"
+            _needle_emit_event "knot.db_corruption_false_positive_prevented" \
+                "DB corruption caused false starvation - rebuilt and found work" \
+                "workspace=$workspace"
+            return 1
+        fi
+        # DB was rebuilt but still no work - legitimate starvation, continue
+        _needle_debug "knot strand: DB rebuilt but still no work - proceeding with alert"
+    fi
+
     # Check rate limit - only alert once per hour per workspace
     if ! _needle_knot_check_rate_limit "$workspace"; then
         _needle_debug "knot strand: rate limited, skipping alert"
@@ -225,6 +243,57 @@ _needle_knot_emit_verification_diagnostics() {
         "Starvation verification completed - diagnostic info before alert creation" \
         "workspace=$workspace" \
         "$@"
+}
+
+# ============================================================================
+# Database Health Check (nd-1jv)
+# ============================================================================
+
+# Check database health before creating starvation alert.
+# WAL corruption (>10MB) causes queries to return empty results, leading to
+# false starvation alerts. This runs the maintenance health check script
+# which auto-rebuilds the DB from JSONL if corruption is detected.
+#
+# Returns: 0 if DB is healthy, 1 if corruption was detected and fixed
+_needle_knot_check_db_health() {
+    local workspace="$1"
+
+    _needle_debug "knot: running database health check for $workspace"
+
+    local health_script="$workspace/.beads/maintenance/db-health-check.sh"
+
+    if [[ ! -x "$health_script" ]]; then
+        _needle_debug "knot: db-health-check.sh not found or not executable at $health_script"
+        return 0  # No health check available, assume healthy
+    fi
+
+    local health_exit
+    (cd "$workspace" && "$health_script") 2>&1 | while IFS= read -r line; do
+        _needle_debug "knot: db-health: $line"
+    done
+    health_exit=${PIPESTATUS[0]}
+
+    case $health_exit in
+        0)
+            _needle_debug "knot: database healthy"
+            return 0
+            ;;
+        1)
+            _needle_warn "knot: database corruption detected and auto-repaired"
+            _needle_emit_event "knot.db_corruption_repaired" \
+                "Database corruption detected during starvation check - auto-rebuilt from JSONL" \
+                "workspace=$workspace"
+            return 1
+            ;;
+        *)
+            _needle_warn "knot: database health check failed with exit code $health_exit"
+            _needle_emit_event "knot.db_health_check_error" \
+                "Database health check returned error" \
+                "workspace=$workspace" \
+                "exit_code=$health_exit"
+            return 0  # On error, proceed as if healthy (don't suppress legitimate alerts)
+            ;;
+    esac
 }
 
 # ============================================================================
