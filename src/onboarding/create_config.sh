@@ -36,13 +36,16 @@ _needle_create_config_dirs() {
 
     _needle_verbose "Creating directory structure at: $home_path"
 
-    # Create main directories
+    # Create main directories and state subdirectories
     local dirs=(
         "$home_path"
         "$home_path/state"
+        "$home_path/state/heartbeats"
+        "$home_path/state/rate_limits"
         "$home_path/cache"
         "$home_path/logs"
         "$home_path/hooks"
+        "$home_path/agents"
     )
 
     for dir in "${dirs[@]}"; do
@@ -55,8 +58,123 @@ _needle_create_config_dirs() {
         fi
     done
 
+    # Initialize workers.json if it doesn't exist
+    local workers_file="$home_path/state/workers.json"
+    if [[ ! -f "$workers_file" ]]; then
+        echo "[]" > "$workers_file"
+        _needle_debug "Initialized: $workers_file"
+    fi
+
+    # Create hook template samples
+    _needle_create_hook_templates "$home_path/hooks"
+
     _needle_success "Created directory structure"
     return 0
+}
+
+# Create default hook template samples
+# Usage: _needle_create_hook_templates <hooks_dir>
+_needle_create_hook_templates() {
+    local hooks_dir="$1"
+
+    # Pre-execute hook template
+    local pre_execute="$hooks_dir/pre_execute.sample"
+    if [[ ! -f "$pre_execute" ]]; then
+        cat > "$pre_execute" << 'HOOK'
+#!/usr/bin/env bash
+# NEEDLE Pre-Execute Hook
+# Runs before agent starts working on a bead
+#
+# Environment variables available:
+#   NEEDLE_BEAD_ID     - The bead ID being worked on
+#   NEEDLE_BEAD_TITLE  - The bead title
+#   NEEDLE_WORKSPACE   - The workspace path
+#   NEEDLE_AGENT       - The agent name
+#   NEEDLE_SESSION     - The worker session name
+#
+# Exit 0 to continue, non-zero to abort execution
+
+echo "[pre_execute] Starting work on bead: $NEEDLE_BEAD_ID"
+
+# Example: Ensure we're on a clean git state
+# git status --porcelain | grep -q . && {
+#     echo "Warning: Workspace has uncommitted changes"
+# }
+
+exit 0
+HOOK
+        chmod +x "$pre_execute" 2>/dev/null
+        _needle_debug "Created: $pre_execute"
+    fi
+
+    # Post-execute hook template
+    local post_execute="$hooks_dir/post_execute.sample"
+    if [[ ! -f "$post_execute" ]]; then
+        cat > "$post_execute" << 'HOOK'
+#!/usr/bin/env bash
+# NEEDLE Post-Execute Hook
+# Runs after agent completes work on a bead
+#
+# Environment variables available:
+#   NEEDLE_BEAD_ID       - The bead ID that was worked on
+#   NEEDLE_BEAD_TITLE    - The bead title
+#   NEEDLE_WORKSPACE     - The workspace path
+#   NEEDLE_AGENT         - The agent name
+#   NEEDLE_SESSION       - The worker session name
+#   NEEDLE_EXIT_CODE     - The agent's exit code
+#   NEEDLE_DURATION_MS   - Execution duration in milliseconds
+#   NEEDLE_OUTPUT_FILE   - Path to agent output file
+#
+# Exit code is informational only (does not affect bead status)
+
+echo "[post_execute] Completed bead: $NEEDLE_BEAD_ID (exit: $NEEDLE_EXIT_CODE)"
+
+# Example: Send notification on completion
+# if [[ "$NEEDLE_EXIT_CODE" -eq 0 ]]; then
+#     notify-send "NEEDLE" "Bead $NEEDLE_BEAD_ID completed successfully"
+# fi
+
+exit 0
+HOOK
+        chmod +x "$post_execute" 2>/dev/null
+        _needle_debug "Created: $post_execute"
+    fi
+
+    # On-failure hook template
+    local on_failure="$hooks_dir/on_failure.sample"
+    if [[ ! -f "$on_failure" ]]; then
+        cat > "$on_failure" << 'HOOK'
+#!/usr/bin/env bash
+# NEEDLE On-Failure Hook
+# Runs when agent fails or crashes
+#
+# Environment variables available:
+#   NEEDLE_BEAD_ID       - The bead ID that failed
+#   NEEDLE_BEAD_TITLE    - The bead title
+#   NEEDLE_WORKSPACE     - The workspace path
+#   NEEDLE_AGENT         - The agent name
+#   NEEDLE_SESSION       - The worker session name
+#   NEEDLE_EXIT_CODE     - The agent's exit code
+#   NEEDLE_ERROR         - Error message (if available)
+#   NEEDLE_OUTPUT_FILE   - Path to agent output file
+#
+# Exit code is informational only
+
+echo "[on_failure] Bead $NEEDLE_BEAD_ID failed with exit code: $NEEDLE_EXIT_CODE"
+
+# Example: Log failure details
+# echo "$(date -Iseconds) | $NEEDLE_BEAD_ID | $NEEDLE_EXIT_CODE | $NEEDLE_ERROR" >> ~/.needle/logs/failures.log
+
+# Example: Rollback changes
+# if [[ -n "$NEEDLE_WORKSPACE" ]]; then
+#     cd "$NEEDLE_WORKSPACE" && git checkout -- .
+# fi
+
+exit 0
+HOOK
+        chmod +x "$on_failure" 2>/dev/null
+        _needle_debug "Created: $on_failure"
+    fi
 }
 
 # -----------------------------------------------------------------------------
