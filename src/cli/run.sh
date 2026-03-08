@@ -614,8 +614,14 @@ _needle_run() {
     # The watchdog monitors worker heartbeats and recovers stuck workers
     if [[ "$dry_run" != "true" ]]; then
         # Source watchdog monitor module
-        if [[ -f "${NEEDLE_LIB_DIR:-}/watchdog/monitor.sh" ]]; then
-            source "${NEEDLE_LIB_DIR:-}/watchdog/monitor.sh"
+        local watchdog_module="${NEEDLE_LIB_DIR:-}/watchdog/monitor.sh"
+        if [[ ! -f "$watchdog_module" ]]; then
+            # Try relative path from script directory
+            watchdog_module="${NEEDLE_ROOT_DIR:-}/src/watchdog/monitor.sh"
+        fi
+
+        if [[ -f "$watchdog_module" ]]; then
+            source "$watchdog_module"
             _needle_ensure_watchdog
         else
             _needle_warn "Watchdog module not found, skipping watchdog startup"
