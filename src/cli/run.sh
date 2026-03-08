@@ -300,6 +300,8 @@ _needle_run_parse_args() {
     local count=""
     local budget=""
     local session_name=""
+    local identifier=""
+    local strands=""
     local no_hooks=false
     local dry_run=false
     local force=false
@@ -357,6 +359,30 @@ _needle_run_parse_args() {
                 ;;
             --name=*)
                 session_name="${1#*=}"
+                shift
+                ;;
+            -i|--id)
+                if [[ -z "${2:-}" ]]; then
+                    _needle_error "Option $1 requires an argument"
+                    exit $NEEDLE_EXIT_USAGE
+                fi
+                identifier="$2"
+                shift 2
+                ;;
+            --id=*)
+                identifier="${1#*=}"
+                shift
+                ;;
+            --strands)
+                if [[ -z "${2:-}" ]]; then
+                    _needle_error "Option $1 requires an argument"
+                    exit $NEEDLE_EXIT_USAGE
+                fi
+                strands="$2"
+                shift 2
+                ;;
+            --strands=*)
+                strands="${1#*=}"
                 shift
                 ;;
             --budget)
@@ -431,6 +457,8 @@ _needle_run_parse_args() {
     NEEDLE_RAW_COUNT="$count"
     NEEDLE_RAW_BUDGET="$budget"
     NEEDLE_RAW_SESSION_NAME="$session_name"
+    NEEDLE_RAW_IDENTIFIER="$identifier"
+    NEEDLE_RAW_STRANDS="$strands"
     NEEDLE_RAW_NO_HOOKS="$no_hooks"
     NEEDLE_RAW_DRY_RUN="$dry_run"
     NEEDLE_RAW_FORCE="$force"
@@ -446,9 +474,11 @@ _needle_run_parse_args() {
     NEEDLE_VALIDATED_WAIT="$wait_for_slot"
     NEEDLE_VALIDATED_STATUS="$show_status"
     NEEDLE_VALIDATED_SESSION_NAME="$session_name"
+    NEEDLE_VALIDATED_IDENTIFIER="$identifier"
+    NEEDLE_VALIDATED_STRANDS="$strands"
     NEEDLE_VALIDATED_NO_TMUX="$no_tmux"
     NEEDLE_VALIDATED_FOREGROUND="$foreground"
-    export NEEDLE_VALIDATED_NO_HOOKS NEEDLE_VALIDATED_DRY_RUN NEEDLE_VALIDATED_FORCE NEEDLE_VALIDATED_WAIT NEEDLE_VALIDATED_STATUS NEEDLE_VALIDATED_SESSION_NAME NEEDLE_VALIDATED_NO_TMUX NEEDLE_VALIDATED_FOREGROUND
+    export NEEDLE_VALIDATED_NO_HOOKS NEEDLE_VALIDATED_DRY_RUN NEEDLE_VALIDATED_FORCE NEEDLE_VALIDATED_WAIT NEEDLE_VALIDATED_STATUS NEEDLE_VALIDATED_SESSION_NAME NEEDLE_VALIDATED_IDENTIFIER NEEDLE_VALIDATED_STRANDS NEEDLE_VALIDATED_NO_TMUX NEEDLE_VALIDATED_FOREGROUND
 
     # Validate workspace
     if ! _needle_validate_workspace "$workspace"; then
@@ -662,9 +692,13 @@ _needle_run() {
 
         # For single worker, run directly
         if [[ "$count" -eq 1 ]]; then
-            # Generate identifier
+            # Use provided identifier or generate one
             local identifier
-            identifier=$(get_next_identifier "$agent")
+            if [[ -n "${NEEDLE_VALIDATED_IDENTIFIER:-}" ]]; then
+                identifier="$NEEDLE_VALIDATED_IDENTIFIER"
+            else
+                identifier=$(get_next_identifier "$agent")
+            fi
 
             # Set up environment for worker
             export NEEDLE_WORKSPACE="$workspace"
@@ -714,7 +748,16 @@ _needle_run() {
     else
         # Multiple workers - spawn in parallel
         _needle_info "Spawning $count workers..."
-        spawned_sessions=$(_needle_spawn_multiple_workers "$workspace" "$agent" "$provider" "$count" "$budget" "$no_hooks")
+        local spawn_output
+        spawn_output=$(_needle_spawn_multiple_workers "$workspace" "$agent" "$provider" "$count" "$budget" "$no_hooks")
+        # Read newline-separated sessions into array
+        mapfile -t spawned_sessions <<< "$spawn_output"
+        # Remove empty elements
+        local temp_sessions=()
+        for s in "${spawned_sessions[@]}"; do
+            [[ -n "$s" ]] && temp_sessions+=("$s")
+        done
+        spawned_sessions=("${temp_sessions[@]}")
         failed_count=$((count - ${#spawned_sessions[@]}))
     fi
 
@@ -776,9 +819,13 @@ _needle_spawn_single_worker() {
     local runner model
     IFS='-' read -r runner _ model <<< "$agent"
 
-    # Get next available identifier
+    # Use provided identifier or get next available
     local identifier
-    identifier=$(get_next_identifier "$agent")
+    if [[ -n "${NEEDLE_VALIDATED_IDENTIFIER:-}" ]]; then
+        identifier="$NEEDLE_VALIDATED_IDENTIFIER"
+    else
+        identifier=$(get_next_identifier "$agent")
+    fi
 
     # Generate session name (use explicit name if provided)
     local session
