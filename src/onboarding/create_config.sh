@@ -479,11 +479,13 @@ EOF
 #   --force               Overwrite existing config
 #   --defaults            Use all default values (non-interactive)
 #   --path PATH           Custom config path
+#   --agent NAME          Preset agent (skips agent prompt)
 # Returns: 0 on success, 1 on failure
 _needle_create_default_config() {
     local force=false
     local use_defaults=false
     local config_path=""
+    local preset_agent=""
 
     # Parse options
     while [[ $# -gt 0 ]]; do
@@ -498,6 +500,10 @@ _needle_create_default_config() {
                 ;;
             --path)
                 config_path="$2"
+                shift 2
+                ;;
+            --agent)
+                preset_agent="$2"
                 shift 2
                 ;;
             *)
@@ -541,7 +547,7 @@ _needle_create_default_config() {
 
     # Gather settings (interactive or defaults)
     local max_workers="$NEEDLE_DEFAULT_MAX_CONCURRENT"
-    local default_agent="$NEEDLE_DEFAULT_AGENT"
+    local default_agent="${preset_agent:-$NEEDLE_DEFAULT_AGENT}"
     local telemetry="$NEEDLE_DEFAULT_TELEMETRY_ENABLED"
     local daily_limit="$NEEDLE_DEFAULT_DAILY_LIMIT"
 
@@ -549,6 +555,7 @@ _needle_create_default_config() {
         _needle_section "Configuration Settings"
 
         max_workers=$(_needle_prompt_max_workers "$max_workers")
+        # Pass preset_agent as default to skip prompt if already set
         default_agent=$(_needle_prompt_default_agent "$default_agent")
         telemetry=$(_needle_prompt_telemetry "$telemetry")
         daily_limit=$(_needle_prompt_daily_limit "$daily_limit")
@@ -669,6 +676,7 @@ _needle_validate_generated_config() {
 #   --force               Overwrite existing config
 #   --defaults            Use all default values (non-interactive)
 #   --path PATH           Custom config path
+#   --agent NAME          Preset agent name (skips agent prompt in interactive mode)
 # Returns: 0 on success, 1 on failure
 _needle_onboarding_create_config() {
     _needle_section "Creating Configuration"

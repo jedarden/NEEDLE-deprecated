@@ -86,6 +86,8 @@ OPTIONS:
 
     --workspace <PATH>       Preset workspace path (skips prompt)
     --agent <NAME>           Preset agent name (skips prompt)
+                             Valid: claude, opencode, codex, aider
+    --check                  Exit 0 if already initialized, 1 if not
 
     -h, --help               Print help information
 
@@ -97,10 +99,12 @@ EXAMPLES:
     needle init --force
 
     # Scripted setup for CI/CD
-    needle init --non-interactive --workspace=/app --agent=claude-anthropic-sonnet
+    needle init --non-interactive --workspace=/app --agent=claude
 
     # Check if setup is needed
     if needle init --check; then
+        echo 'NEEDLE already configured'
+    else
         needle init --non-interactive
     fi
 
@@ -115,6 +119,8 @@ _needle_init() {
     local force=false
     local use_defaults=false
     local workspace=""
+    local agent=""
+    local check_mode=false
     local editor="${EDITOR:-vim}"
     local timezone="UTC"
 
@@ -125,13 +131,21 @@ _needle_init() {
                 force=true
                 shift
                 ;;
-            -d|--defaults)
+            -n|--non-interactive|-d|--defaults)
                 use_defaults=true
                 shift
                 ;;
             -w|--workspace)
                 workspace="$2"
                 shift 2
+                ;;
+            --agent)
+                agent="$2"
+                shift 2
+                ;;
+            --check)
+                check_mode=true
+                shift
                 ;;
             -e|--editor)
                 editor="$2"
@@ -152,6 +166,29 @@ _needle_init() {
                 ;;
         esac
     done
+
+    # -------------------------------------------------------------------------
+    # Check mode: just verify initialization status
+    # -------------------------------------------------------------------------
+    if [[ "$check_mode" == "true" ]]; then
+        if _needle_is_initialized; then
+            exit $NEEDLE_EXIT_SUCCESS
+        else
+            exit 1
+        fi
+    fi
+
+    # Validate preset agent if provided
+    if [[ -n "$agent" ]]; then
+        case "$agent" in
+            claude|opencode|codex|aider)
+                ;;
+            *)
+                _needle_error "Unknown agent: $agent (valid: claude, opencode, codex, aider)"
+                exit $NEEDLE_EXIT_USAGE
+                ;;
+        esac
+    fi
 
     # Show welcome banner
     _needle_welcome_init
@@ -188,7 +225,16 @@ _needle_init() {
     _needle_create_config_dirs "$NEEDLE_HOME"
 
     # -------------------------------------------------------------------------
-    # Step 2: Workspace setup
+    # Step 2: Agent Detection
+    # -------------------------------------------------------------------------
+    if [[ "$use_defaults" != "true" ]]; then
+        _needle_scan_agents
+    else
+        _needle_verbose "Skipping agent detection in non-interactive mode"
+    fi
+
+    # -------------------------------------------------------------------------
+    # Step 3: Workspace setup
     # -------------------------------------------------------------------------
     _needle_section "Workspace Setup"
 
@@ -218,7 +264,7 @@ _needle_init() {
     export NEEDLE_CONFIG_WORKSPACE="$workspace_path"
 
     # -------------------------------------------------------------------------
-    # Step 3: Create configuration with interactive prompts
+    # Step 4: Create configuration with interactive prompts
     # -------------------------------------------------------------------------
     local config_args=()
 
@@ -228,6 +274,10 @@ _needle_init() {
 
     if [[ "$use_defaults" == "true" ]]; then
         config_args+=("--defaults")
+    fi
+
+    if [[ -n "$agent" ]]; then
+        config_args+=("--agent" "$agent")
     fi
 
     if ! _needle_onboarding_create_config "${config_args[@]}"; then
@@ -257,7 +307,7 @@ _needle_init() {
     fi
 
     # -------------------------------------------------------------------------
-    # Step 4: Create README
+    # Step 5: Create README
     # -------------------------------------------------------------------------
     local readme="$NEEDLE_HOME/README.md"
     if [[ ! -f "$readme" ]] || [[ "$force" == "true" ]]; then
@@ -286,7 +336,7 @@ EOF
     fi
 
     # -------------------------------------------------------------------------
-    # Step 5: Show completion message
+    # Step 6: Show completion message
     # -------------------------------------------------------------------------
     _needle_print ""
 
