@@ -8,17 +8,17 @@ NEEDLE (**N**avigates **E**very **E**nqueued **D**eliverable, **L**ogs **E**ffor
 
 | Metric | Count |
 |--------|-------|
-| **Open beads** | 5 |
-| **Closed beads** | 305 |
-| **Completion** | ~98% |
+| **Open beads** | 10 |
+| **Closed beads** | 309 |
+| **Completion** | ~97% |
 
 ### Completion by Priority
 | Priority | Open | Description |
 |----------|------|-------------|
 | P0 | 0 | Critical blockers |
 | P1 | 0 | Core features / bug fixes |
-| P2 | 4 | Test coverage for untested CLI commands |
-| P3 | 1 | Enhancements |
+| P2 | 1 | Test coverage (needle status) |
+| P3 | 9 | Plan gap features (locking, integration, config) |
 
 ## Completed Phases
 
@@ -52,17 +52,38 @@ NEEDLE (**N**avigates **E**very **E**nqueued **D**eliverable, **L**ogs **E**ffor
 
 ## Open Work
 
-### Phase 4: Test Coverage Gaps (In Progress)
+### Phase 4: Test Coverage Gaps (Nearly Complete)
 
-Several CLI commands are implemented but lack dedicated unit tests:
+| Bead | Command | Priority | Status |
+|------|---------|----------|--------|
+| nd-33cj | needle status | P2 | in_progress |
+| ~~nd-z9lg~~ | ~~needle stop~~ | ~~P2~~ | closed |
+| ~~nd-1j86~~ | ~~needle logs~~ | ~~P2~~ | closed |
+| ~~nd-p16c~~ | ~~needle analyze / needle refactor~~ | ~~P2~~ | closed |
+| ~~nd-1osl~~ | ~~needle attach / needle version~~ | ~~P3~~ | closed |
 
-| Bead | Command | Priority | Lines |
-|------|---------|----------|-------|
-| nd-33cj | needle status | P2 | 489 |
-| nd-z9lg | needle stop | P2 | 358 |
-| nd-1j86 | needle logs | P2 | 484 |
-| nd-p16c | needle analyze / needle refactor | P2 | 468 |
-| nd-1osl | needle attach / needle version | P3 | 452 |
+### Phase 5: Plan Gap Features
+
+Features specified in plan.md but not yet implemented:
+
+#### Advanced File Locking
+
+| Bead | Feature | Priority |
+|------|---------|----------|
+| nd-33ba | LD_PRELOAD file lock enforcement (libcheckout.c) | P3 |
+| nd-1ms2 | Optimistic locking with 3-way merge | P3 |
+| nd-3i8w | Priority-based lock queuing with bump signals | P3 |
+| nd-17hi | Lock lease renewal with heartbeat integration | P3 |
+| nd-15eo | Intent declaration for proactive file reservation | P3 |
+
+#### Integration & Configuration
+
+| Bead | Feature | Priority |
+|------|---------|----------|
+| nd-33pp | Integrate ultimate_bug_scanner as quality gate | P3 |
+| nd-2lfn | preferred_agents workspace config support | P3 |
+| nd-143m | Auto-scaling config (max_workers_per_agent, cooldown) | P3 |
+| nd-x395 | config/needle.yaml.example template file | P3 |
 
 ## Architecture
 
