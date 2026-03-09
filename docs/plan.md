@@ -4142,6 +4142,10 @@ NEEDLE/
 │   └── plan.md
 ├── bin/
 │   └── needle                  # Main CLI entry point (sources src/)
+├── bootstrap/
+│   ├── check.sh                # Check if dependencies installed
+│   ├── install.sh              # Install missing dependencies
+│   └── detect_os.sh            # Detect OS and package manager
 ├── src/
 │   ├── cli/
 │   │   ├── init.sh             # needle init (interactive onboarding)
@@ -4159,9 +4163,6 @@ NEEDLE/
 │   │   ├── workspace_setup.sh  # Prompt for workspace, validate beads
 │   │   └── create_config.sh    # Generate default config.yaml
 │   ├── bootstrap/
-│   │   ├── check.sh            # Check if dependencies installed
-│   │   ├── install.sh          # Install missing dependencies
-│   │   ├── detect_os.sh        # Detect OS and package manager
 │   │   └── paths.sh            # PATH management
 │   ├── runner/
 │   │   ├── loop.sh             # Main worker loop
