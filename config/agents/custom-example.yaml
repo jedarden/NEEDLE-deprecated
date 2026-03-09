@@ -1,0 +1,61 @@
+# NEEDLE Agent Configuration: Custom Agent Template
+# Copy and modify this file to add your own agent.
+#
+# Custom agents MUST support:
+# 1. Headless execution (no interactive prompts)
+# 2. Auto-approve all actions (no permission dialogs)
+# 3. Exit when complete (no REPL mode)
+# 4. Preferably JSON output for telemetry parsing
+
+# Agent metadata
+name: custom-example
+description: "Template for custom agents"
+version: "1.0"
+
+# CLI identification
+runner: custom          # CLI executable name
+provider: local         # Provider for rate limiting
+model: mymodel          # Model identifier
+
+# Invocation template
+# Variables available:
+#   ${WORKSPACE}  - Working directory path
+#   ${PROMPT}     - The full prompt text
+#   ${BEAD_ID}    - Current bead identifier
+#   ${BEAD_TITLE} - Current bead title
+#   ${AGENT_DIR}  - Directory containing this YAML file
+invoke: |
+  cd ${WORKSPACE} && \
+  CUSTOM_VAR=value \
+  /path/to/my-agent \
+    --headless \
+    --auto-approve \
+    --json-output \
+    --execute <<'NEEDLE_PROMPT'
+  ${PROMPT}
+  NEEDLE_PROMPT
+
+# Input method
+input:
+  method: heredoc      # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: text         # json | text | stream-json
+  streaming_enabled: false
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits
+limits:
+  requests_per_minute: 30
+  max_concurrent: 2
+
+# Cost configuration
+# type: pay_per_token | unlimited | use_or_lose
+cost:
+  type: unlimited
+
+# Timeout in seconds
+timeout: 300

@@ -4214,11 +4214,14 @@ NEEDLE/
 │   └── agents/                 # Built-in agent configurations
 │       ├── claude-anthropic-sonnet.yaml
 │       ├── claude-anthropic-opus.yaml
+│       ├── claude-code-glm-4.7.yaml  # GLM-4.7 free tier via zai-proxy
+│       ├── claude-code-glm-5.yaml    # ZhipuAI GLM-5 pay-per-token
 │       ├── opencode-alibaba-qwen.yaml
 │       ├── opencode-zai-glm5.yaml
 │       ├── opencode-ollama-deepseek.yaml
 │       ├── codex-openai-gpt4.yaml
 │       ├── aider-ollama-deepseek.yaml
+│       ├── stream-parser.sh          # Shared JSONL→terminal formatter (used by Claude Code agents)
 │       └── custom-example.yaml
 ├── scripts/
 │   └── bundle.sh               # Combine src/ into single release script
