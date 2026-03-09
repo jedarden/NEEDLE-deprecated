@@ -15,6 +15,11 @@ if [[ -z "${_NEEDLE_OUTPUT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../lib/output.sh"
 fi
 
+# Source bug scanner module for pre-flight checks (if available)
+if [[ -f "$(dirname "${BASH_SOURCE[0]}")/../quality/bug_scanner.sh" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../quality/bug_scanner.sh"
+fi
+
 # Source FABRIC telemetry module (if available)
 if [[ -f "$(dirname "${BASH_SOURCE[0]}")/../telemetry/fabric.sh" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/fabric.sh"
@@ -139,13 +144,11 @@ _needle_get_tee_command() {
     local output_file="$1"
 
     if [[ -n "$_NEEDLE_FABRIC_PIPE" ]] && [[ -p "$_NEEDLE_FABRIC_PIPE" ]]; then
-        # Tee to both output file and FABRIC pipe; suppress stdout so agent
-        # output does not leak into command substitution return values
-        echo "tee \"$output_file\" \"$_NEEDLE_FABRIC_PIPE\" >/dev/null"
+        # Tee to both output file and FABRIC pipe (output visible in terminal)
+        echo "tee \"$output_file\" \"$_NEEDLE_FABRIC_PIPE\""
     else
-        # Write to output file only; suppress stdout so agent output does not
-        # leak into command substitution return values
-        echo "tee \"$output_file\" >/dev/null"
+        # Tee to output file (output visible in terminal)
+        echo "tee \"$output_file\""
     fi
 }
 
@@ -423,6 +426,35 @@ _needle_dispatch_agent() {
     _needle_debug "Dispatching agent: ${NEEDLE_AGENT[name]} (${NEEDLE_AGENT[input_method]} method)"
     _needle_verbose "Bead: $bead_id - $bead_title"
     _needle_verbose "Workspace: $workspace"
+
+    # Optional pre-flight bug check (before agent execution)
+    # This catches critical issues before expensive agent execution
+    local bs_preflight
+    if declare -f get_config &>/dev/null; then
+        bs_preflight=$(get_config "bug_scanner.preflight_check" "false")
+    else
+        bs_preflight="${BUG_SCANNER_PREFLIGHT:-false}"
+    fi
+
+    if [[ "$bs_preflight" == "true" ]] && declare -f bug_scanner_quick_check &>/dev/null; then
+        _needle_info "Running pre-flight bug check on workspace"
+
+        # Load config for scanner
+        local bs_severity
+        if declare -f get_config &>/dev/null; then
+            bs_severity=$(get_config "bug_scanner.severity_threshold" "error")
+        else
+            bs_severity="${BUG_SCANNER_SEVERITY_THRESHOLD:-error}"
+        fi
+
+        export BUG_SCANNER_SEVERITY_THRESHOLD="$bs_severity"
+
+        if ! bug_scanner_quick_check "$workspace"; then
+            _needle_warn "Pre-flight check found critical issues in workspace"
+            # For pre-flight, we warn but don't abort - let the agent decide
+            # The post-execution scan will catch issues again at completion
+        fi
+    fi
 
     # Create output capture file
     local output_file
