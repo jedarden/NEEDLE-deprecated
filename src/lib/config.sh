@@ -935,6 +935,17 @@ validate_config() {
         return 1
     fi
 
+    # Use schema validation module when available (preferred)
+    if declare -f validate_config_schema &>/dev/null; then
+        if ! validate_config_schema "$config_file"; then
+            return 1
+        fi
+        _needle_debug "Configuration validated successfully (schema)"
+        return 0
+    fi
+
+    # Fallback: legacy field-by-field validation
+
     # If yq is available, validate YAML syntax
     if _needle_has_yq; then
         if ! yq eval '.' "$config_file" &>/dev/null; then
