@@ -4155,7 +4155,7 @@ NEEDLE/
 │   │   └── version.sh          # needle version
 │   ├── onboarding/
 │   │   ├── welcome.sh          # ASCII banner and welcome message
-│   │   ├── detect_agents.sh    # Scan PATH for coding CLIs
+│   │   ├── agents.sh           # Scan PATH for coding CLIs
 │   │   ├── workspace_setup.sh  # Prompt for workspace, validate beads
 │   │   └── create_config.sh    # Generate default config.yaml
 │   ├── bootstrap/
