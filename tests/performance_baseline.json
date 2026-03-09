@@ -1,0 +1,1 @@
+{"timestamp":"2026-03-09T01:39:38Z","results":{"worker_startup_ms":67,"json_emit_ms":713,"priority_weight_ms":259,"strand_fallthrough_avg_ms":365,"event_logging_ms":2607,"bead_claim_latency_ms":124,"weighted_selection_avg_ms":56,"strand_fallthrough_total_ms":2561,"weighted_selection_total_ms":1696,"json_emit_tps":140,"bead_select_latency_ms":64,"event_logging_tps":19}}
