@@ -27,6 +27,9 @@ _needle_help() {
         stop)
             _needle_stop_help
             ;;
+        restart)
+            _needle_restart_help
+            ;;
         logs)
             _needle_logs_help
             ;;
@@ -101,6 +104,7 @@ COMMANDS:
     list        List running workers
     attach      Attach to a worker's tmux session
     stop        Stop running worker(s)
+    restart     Restart workers gracefully or immediately
     logs        View or tail worker logs
     status      Show worker health and statistics
 
