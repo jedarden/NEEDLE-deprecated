@@ -8,16 +8,16 @@ NEEDLE (**N**avigates **E**very **E**nqueued **D**eliverable, **L**ogs **E**ffor
 
 | Metric | Count |
 |--------|-------|
-| **Open beads** | 9 |
-| **Closed beads** | 294 |
-| **Completion** | ~97% |
+| **Open beads** | 11 |
+| **Closed beads** | 296 |
+| **Completion** | ~96% |
 
 ### Completion by Priority
 | Priority | Open | Description |
 |----------|------|-------------|
 | P0 | 0 | Critical blockers |
-| P1 | 1 | Core features |
-| P2 | 5 | Important features |
+| P1 | 2 | Core features / bug fixes |
+| P2 | 6 | Important features |
 | P3 | 3 | Enhancements |
 
 ## Completed Phases
@@ -56,10 +56,12 @@ NEEDLE (**N**avigates **E**very **E**nqueued **D**eliverable, **L**ogs **E**ffor
 | Bead | Title |
 |------|-------|
 | nd-lohp | Fix malformed README.md |
+| nd-2gr1 | Fix bead selection priority weight bug (P2/P3 wrong values) |
 
 ### Priority 2 - Important
 | Bead | Title |
 |------|-------|
+| nd-2791 | Fix bead selection performance (exceeds 100ms threshold) |
 | nd-19jr | Add end-to-end integration tests for multi-worker scenarios |
 | nd-p7wn | Create CONTRIBUTING.md developer guide |
 | nd-2u1t | Add config validation schema and enforcement |

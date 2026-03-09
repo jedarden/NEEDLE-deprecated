@@ -50,14 +50,14 @@ _needle_info() {
     if [[ "${NEEDLE_QUIET:-}" == "true" ]]; then
         return
     fi
-    _needle_print_color "$NEEDLE_COLOR_BLUE" "ℹ $*"
+    _needle_print_color "$NEEDLE_COLOR_BLUE" "ℹ $*" >&2
 }
 
 _needle_success() {
     if [[ "${NEEDLE_QUIET:-}" == "true" ]]; then
         return
     fi
-    _needle_print_color "$NEEDLE_COLOR_GREEN" "✓ $*"
+    _needle_print_color "$NEEDLE_COLOR_GREEN" "✓ $*" >&2
 }
 
 _needle_warn() {

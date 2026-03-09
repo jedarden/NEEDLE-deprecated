@@ -37,6 +37,12 @@ _needle_strand_weave() {
         return 1
     fi
 
+    # Check if weave is enabled (opt-in only - default is false)
+    if ! _needle_weave_is_enabled; then
+        _needle_debug "weave: strand is disabled (opt-in, set strands.weave: true to enable)"
+        return 1
+    fi
+
     # Check frequency limit (don't run every loop)
     if ! _needle_weave_check_frequency "$workspace"; then
         _needle_debug "weave: frequency limit not reached, skipping"
@@ -269,50 +275,43 @@ _needle_weave_build_prompt() {
 
     # Build the prompt
     cat << PROMPT_EOF
-You are analyzing documentation files to identify gaps - features, tasks, or work items mentioned in documentation that are not yet tracked as beads.
+You are analyzing a codebase for gaps between documentation and implementation.
 
-## Workspace
-Path: $workspace
-
-## Documentation Files to Analyze
-The following documentation files should be analyzed for gaps:
-
+## Documentation Files
 $(_needle_weave_format_doc_list "$doc_files")
 
-## Current Open Beads (avoid duplicates)
-The following beads are already open - do not create duplicates:
+## Current Open Beads
 $open_beads
 
 ## Instructions
-1. Read each documentation file carefully
-2. Identify mentions of:
-   - Planned features not yet implemented
-   - TODOs that should be tracked as beads
-   - Roadmap items not yet started
-   - Documented requirements without corresponding work
-   - ADRs suggesting follow-up work
-   - Known issues or limitations that need addressing
-3. Filter out anything already tracked in the open beads list
-4. Prioritize gaps by importance (high/medium/low)
 
-## Output Format
-Return a JSON object with the identified gaps:
+1. Read the documentation files above (ADRs, TODOs, ROADMAPs, README)
+2. Identify features, tasks, or fixes mentioned in docs that:
+   - Are NOT already tracked as open beads
+   - Are NOT already implemented in the codebase
+   - Are actionable and well-defined enough to work on
 
-\`\`\`json
+3. For each gap found, output a JSON object:
 {
   "gaps": [
     {
-      "title": "Short descriptive title for the bead",
+      "title": "Brief title for the bead",
       "description": "Detailed description of what needs to be done",
+      "source_file": "path/to/doc/that/mentions/this",
+      "source_line": "relevant quote from documentation",
       "priority": 2,
-      "source_file": "relative/path/to/source.md",
-      "source_context": "Brief quote or context from the documentation",
-      "labels": ["label1", "label2"]
+      "type": "task|bug|feature",
+      "estimated_effort": "small|medium|large"
     }
-  ],
-  "summary": "Brief summary of analysis findings"
+  ]
 }
-\`\`\`
+
+4. Only output gaps that are:
+   - Clearly defined in documentation
+   - Not duplicates of existing beads
+   - Actually missing from implementation
+
+5. If no gaps found, output: {"gaps": []}
 
 ## Priority Values
 - 0 = critical (blocking issues, security concerns)
@@ -325,8 +324,6 @@ Return a JSON object with the identified gaps:
 - Only include actionable items that can become beads
 - Skip items that are vague or purely aspirational
 - Prefer concrete, well-defined tasks
-
-Analyze the documentation and return the JSON result.
 PROMPT_EOF
 }
 
@@ -409,18 +406,25 @@ _needle_weave_create_beads() {
         [[ -z "$gap" ]] && continue
 
         # Extract gap fields
-        local title description priority source_file source_context labels
+        local title description priority source_file source_line bead_type labels
 
         if _needle_command_exists jq; then
             title=$(echo "$gap" | jq -r '.title // empty' 2>/dev/null)
             description=$(echo "$gap" | jq -r '.description // empty' 2>/dev/null)
             priority=$(echo "$gap" | jq -r '.priority // 2' 2>/dev/null)
             source_file=$(echo "$gap" | jq -r '.source_file // empty' 2>/dev/null)
-            source_context=$(echo "$gap" | jq -r '.source_context // empty' 2>/dev/null)
+            source_line=$(echo "$gap" | jq -r '.source_line // empty' 2>/dev/null)
+            bead_type=$(echo "$gap" | jq -r '.type // "task"' 2>/dev/null)
             labels=$(echo "$gap" | jq -r '.labels // [] | join(",")' 2>/dev/null)
         else
             continue
         fi
+
+        # Validate bead_type (task|bug|feature)
+        case "$bead_type" in
+            task|bug|feature) ;;
+            *) bead_type="task" ;;
+        esac
 
         # Skip if no title
         if [[ -z "$title" ]]; then
@@ -430,10 +434,10 @@ _needle_weave_create_beads() {
 
         # Build full description with source context
         local full_description="$description"
-        if [[ -n "$source_file" ]] || [[ -n "$source_context" ]]; then
+        if [[ -n "$source_file" ]] || [[ -n "$source_line" ]]; then
             full_description+="\n\n---\n**Source:**"
             [[ -n "$source_file" ]] && full_description+=" $source_file"
-            [[ -n "$source_context" ]] && full_description+="\n> $source_context"
+            [[ -n "$source_line" ]] && full_description+="\n> $source_line"
         fi
 
         # Build label arguments
@@ -454,7 +458,7 @@ _needle_weave_create_beads() {
             --title "$title" \
             --description "$full_description" \
             --priority "$priority" \
-            --type task \
+            --type "$bead_type" \
             "${label_args[@]}" \
             --silent 2>/dev/null)
 
@@ -467,7 +471,7 @@ _needle_weave_create_beads() {
                 "bead_id=$bead_id" \
                 "title=$title" \
                 "source=$source_file" \
-                "workspace=$workspace"
+                "workspace=$workspace" >&2
 
             ((created++))
         else
@@ -481,6 +485,22 @@ _needle_weave_create_beads() {
 # ============================================================================
 # Utility Functions
 # ============================================================================
+
+# Check if weave strand is enabled (opt-in, false by default)
+# Returns: 0 if enabled, 1 if disabled
+_needle_weave_is_enabled() {
+    local enabled
+    enabled=$(get_config "strands.weave" "false" 2>/dev/null)
+
+    case "$enabled" in
+        true|True|TRUE|yes|Yes|YES|1)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # Get statistics about weave strand activity
 # Usage: _needle_weave_stats

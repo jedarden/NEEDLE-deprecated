@@ -385,7 +385,7 @@ _needle_explore_is_enabled() {
     enabled=$(get_config "strands.explore" "true" 2>/dev/null)
 
     case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1)
+        true|True|TRUE|yes|Yes|YES|1|auto|Auto|AUTO)
             return 0
             ;;
         *)
