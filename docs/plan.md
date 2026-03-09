@@ -4202,9 +4202,10 @@ NEEDLE/
 │   │   └── libcheckout.c       # (planned) C library for LD_PRELOAD enforcement
 │   ├── watchdog/
 │   │   ├── heartbeat.sh        # Emit heartbeat updates
-│   │   ├── monitor.sh          # Background watchdog process
-│   │   ├── stuck.sh            # Stuck detection logic
-│   │   └── recovery.sh         # Recovery actions (kill, respawn)
+│   │   └── monitor.sh          # Background watchdog process with integrated stuck detection and recovery
+│   │       # Note: stuck.sh and recovery.sh were planned but functionality was merged into monitor.sh
+│   │       # for better cohesion (stuck detection: _needle_watchdog_check_heartbeats,
+│   │       # recovery: _needle_watchdog_recover_worker, _needle_watchdog_respawn_worker)
 │   └── lib/
 │       ├── json.sh             # JSON/JSONL formatting utilities
 │       ├── config.sh           # Config loading
