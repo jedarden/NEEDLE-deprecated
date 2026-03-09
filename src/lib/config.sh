@@ -125,6 +125,15 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "endpoint": "",
     "timeout": 2,
     "batching": false
+  },
+  "bug_scanner": {
+    "enabled": true,
+    "severity_threshold": "error",
+    "fail_on_issues": true,
+    "create_follow_up": true,
+    "timeout": 300,
+    "output_format": "json",
+    "preflight_check": false
   }
 }'
 
@@ -1163,6 +1172,147 @@ get_workspace_config() {
     else
         echo "$value"
     fi
+}
+
+# ============================================================================
+# Preferred Agents Support
+# ============================================================================
+
+# Get list of preferred agents from workspace config
+# Returns newline-separated list of agent identifiers in preference order
+#
+# Usage: get_preferred_agents <workspace_dir>
+# Example:
+#   agents=$(get_preferred_agents /home/user/project)
+#   # Returns:
+#   # claude-anthropic-sonnet
+#   # opencode-alibaba-qwen
+get_preferred_agents() {
+    local workspace_dir="${1:-}"
+    local default="${2:-}"
+
+    # No workspace specified, return default
+    if [[ -z "$workspace_dir" ]]; then
+        [[ -n "$default" ]] && echo "$default"
+        return 0
+    fi
+
+    local ws_config_file="$workspace_dir/.needle.yaml"
+
+    # No workspace config file, return default
+    if [[ ! -f "$ws_config_file" ]]; then
+        [[ -n "$default" ]] && echo "$default"
+        return 0
+    fi
+
+    local agents_raw
+
+    # Try yq first (handles YAML arrays natively)
+    if _needle_has_yq; then
+        # Check if preferred_agents key exists and is an array
+        agents_raw=$(yq '.preferred_agents[]' "$ws_config_file" 2>/dev/null)
+        if [[ $? -eq 0 ]] && [[ -n "$agents_raw" ]] && [[ "$agents_raw" != "null" ]]; then
+            echo "$agents_raw"
+            return 0
+        fi
+    fi
+
+    # Fallback: use Python to parse YAML array
+    if python3 -c "import yaml" 2>/dev/null; then
+        agents_raw=$(python3 -c "
+import yaml
+import sys
+
+try:
+    with open('$ws_config_file', 'r') as f:
+        config = yaml.safe_load(f)
+    if config and 'preferred_agents' in config:
+        agents = config['preferred_agents']
+        if isinstance(agents, list):
+            for agent in agents:
+                print(agent)
+        elif isinstance(agents, str):
+            print(agents)
+except Exception:
+    pass
+" 2>/dev/null)
+        if [[ -n "$agents_raw" ]]; then
+            echo "$agents_raw"
+            return 0
+        fi
+    fi
+
+    # No preferred agents configured, return default
+    [[ -n "$default" ]] && echo "$default"
+    return 0
+}
+
+# Get first available preferred agent for a workspace
+# Iterates through preferred_agents list and returns first agent that:
+# 1. Has a valid agent configuration file
+# 2. Can be loaded successfully
+#
+# Usage: get_first_available_preferred_agent <workspace_dir> [default_agent]
+# Returns: Agent name string, or default if none available
+#
+# Example:
+#   agent=$(get_first_available_preferred_agent /home/user/project "claude-anthropic-sonnet")
+#   # Returns first available agent from preferred_agents, or falls back to default
+get_first_available_preferred_agent() {
+    local workspace_dir="${1:-}"
+    local default_agent="${2:-${NEEDLE_AGENT:-}}"
+
+    # Get preferred agents list
+    local preferred_agents
+    preferred_agents=$(get_preferred_agents "$workspace_dir")
+
+    # If no preferred agents configured, return default
+    if [[ -z "$preferred_agents" ]]; then
+        echo "$default_agent"
+        return 0
+    fi
+
+    # Check if _needle_is_agent_configured function is available
+    # If not, just return the first preferred agent
+    if ! declare -f _needle_is_agent_configured &>/dev/null; then
+        # Return first agent in the list
+        local first_agent
+        first_agent=$(echo "$preferred_agents" | head -1)
+        echo "${first_agent:-$default_agent}"
+        return 0
+    fi
+
+    # Iterate through preferred agents and find first available
+    local agent_name
+    while IFS= read -r agent_name; do
+        [[ -z "$agent_name" ]] && continue
+
+        # Check if this agent is configured and available
+        if _needle_is_agent_configured "$agent_name" 2>/dev/null; then
+            echo "$agent_name"
+            return 0
+        fi
+    done <<< "$preferred_agents"
+
+    # No preferred agents available, fall back to default
+    echo "$default_agent"
+    return 0
+}
+
+# Check if preferred_agents is configured for a workspace
+# Usage: has_preferred_agents <workspace_dir>
+# Returns: 0 if configured, 1 if not
+has_preferred_agents() {
+    local workspace_dir="${1:-}"
+
+    if [[ -z "$workspace_dir" ]]; then
+        return 1
+    fi
+
+    local preferred
+    preferred=$(get_preferred_agents "$workspace_dir")
+
+    [[ -n "$preferred" ]]
 }
 
 # Reload workspace configuration (clears cache and reloads)

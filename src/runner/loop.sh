@@ -96,6 +96,9 @@ source "$NEEDLE_SRC/hooks/runner.sh"
 source "$NEEDLE_SRC/telemetry/tokens.sh"
 source "$NEEDLE_SRC/telemetry/effort.sh"
 
+# Source quality modules for bug scanning
+source "$NEEDLE_SRC/quality/bug_scanner.sh"
+
 _NEEDLE_LOOP_LOADED=true
 _NEEDLE_LOOP_INIT=false
 _NEEDLE_LOOP_SHUTDOWN=false
@@ -737,6 +740,57 @@ _needle_apply_workspace_config_overrides() {
 }
 
 # ============================================================================
+# Preferred Agents Selection
+# ============================================================================
+
+# Current effective agent (may be overridden by preferred_agents)
+NEEDLE_LOOP_CURRENT_AGENT=""
+
+# Select the best agent for a workspace based on preferred_agents configuration
+# If preferred_agents is configured in .needle.yaml, uses first available agent
+# Otherwise, falls back to the provided default agent
+#
+# Usage: _needle_select_agent_for_workspace <workspace> <default_agent>
+# Returns: Selected agent name
+_needle_select_agent_for_workspace() {
+    local workspace="$1"
+    local default_agent="$2"
+
+    # Check if preferred_agents functions are available
+    if ! declare -f get_first_available_preferred_agent &>/dev/null; then
+        echo "$default_agent"
+        return 0
+    fi
+
+    # Check if preferred_agents is configured for this workspace
+    if ! declare -f has_preferred_agents &>/dev/null; then
+        echo "$default_agent"
+        return 0
+    fi
+
+    # Get first available preferred agent, or fall back to default
+    local selected_agent
+    selected_agent=$(get_first_available_preferred_agent "$workspace" "$default_agent")
+
+    if [[ -n "$selected_agent" ]] && [[ "$selected_agent" != "$default_agent" ]]; then
+        _needle_info "Using preferred agent: $selected_agent (default was: $default_agent)"
+    fi
+
+    echo "${selected_agent:-$default_agent}"
+}
+
+# Update the current agent based on preferred_agents configuration
+# Called on initial load and after hot-reload
+# Usage: _needle_update_preferred_agent <workspace> <default_agent>
+# Sets: NEEDLE_LOOP_CURRENT_AGENT
+_needle_update_preferred_agent() {
+    local workspace="$1"
+    local default_agent="$2"
+
+    NEEDLE_LOOP_CURRENT_AGENT=$(_needle_select_agent_for_workspace "$workspace" "$default_agent")
+}
+
+# ============================================================================
 # Strand Engine Integration
 # ============================================================================
 
@@ -818,13 +872,17 @@ _needle_worker_loop() {
     # These are updated on hot-reload via _needle_apply_workspace_config_overrides
     _needle_apply_workspace_config_overrides
 
+    # Initialize preferred agent selection (workspace-aware)
+    # This may override the agent based on preferred_agents config
+    _needle_update_preferred_agent "$workspace" "$agent"
+
     # Use mutable references to runtime config (updated on hot-reload)
     local polling_interval="$NEEDLE_LOOP_CURRENT_POLLING_INTERVAL"
     local idle_timeout="$NEEDLE_LOOP_CURRENT_IDLE_TIMEOUT"
     local max_consecutive_empty="$NEEDLE_LOOP_CURRENT_MAX_CONSECUTIVE_EMPTY"
 
     _needle_debug "Configuration: polling_interval=${polling_interval}s, idle_timeout=${idle_timeout}s"
-    _needle_debug "Starting worker loop for workspace: $workspace, agent: $agent"
+    _needle_debug "Starting worker loop for workspace: $workspace, agent: $NEEDLE_LOOP_CURRENT_AGENT"
 
     # Main processing loop
     while true; do
@@ -858,6 +916,8 @@ _needle_worker_loop() {
         # If config reloaded (returns 0), apply workspace overrides and update local vars
         if _needle_check_config_reload; then
             _needle_apply_workspace_config_overrides
+            # Also update preferred agent (may change if workspace config updated)
+            _needle_update_preferred_agent "$workspace" "$agent"
             polling_interval="$NEEDLE_LOOP_CURRENT_POLLING_INTERVAL"
             idle_timeout="$NEEDLE_LOOP_CURRENT_IDLE_TIMEOUT"
             max_consecutive_empty="$NEEDLE_LOOP_CURRENT_MAX_CONSECUTIVE_EMPTY"
@@ -868,7 +928,7 @@ _needle_worker_loop() {
         local strand_result
         # DIAGNOSTIC: Log strand engine call
         _needle_debug "DIAG: Calling strand engine - consecutive_empty=$consecutive_empty"
-        if _needle_strand_engine "$workspace" "$agent"; then
+        if _needle_strand_engine "$workspace" "$NEEDLE_LOOP_CURRENT_AGENT"; then
             strand_result=$?
         else
             strand_result=$?
@@ -895,7 +955,7 @@ _needle_worker_loop() {
                 "consecutive_empty=$consecutive_empty" \
                 "idle_seconds=$idle_seconds" \
                 "workspace=$workspace" \
-                "agent=$agent"
+                "agent=$NEEDLE_LOOP_CURRENT_AGENT"
 
             _needle_debug "Worker idle: consecutive_empty=$consecutive_empty, idle_seconds=${idle_seconds}s"
 
@@ -1129,14 +1189,44 @@ _needle_process_bead() {
 # Usage: _needle_complete_bead <bead_id> [output_file]
 # Return values:
 #   0 - Bead completed successfully
-#   1 - Completion failed (hook abort or br error)
+#   1 - Completion failed (quality gate, hook abort, or br error)
 _needle_complete_bead() {
     local bead_id="$1"
     local output_file="${2:-}"
 
     _needle_debug "Completing bead: $bead_id"
 
-    # Run pre-complete hook (quality gates)
+    # Load bug scanner configuration
+    local bs_enabled bs_severity bs_fail_on_issues bs_timeout
+    bs_enabled=$(get_config "bug_scanner.enabled" "true")
+    bs_severity=$(get_config "bug_scanner.severity_threshold" "error")
+    bs_fail_on_issues=$(get_config "bug_scanner.fail_on_issues" "true")
+    bs_timeout=$(get_config "bug_scanner.timeout" "300")
+
+    # Export config for bug_scanner module
+    export BUG_SCANNER_ENABLED="$bs_enabled"
+    export BUG_SCANNER_SEVERITY_THRESHOLD="$bs_severity"
+    export BUG_SCANNER_FAIL_ON_ISSUES="$bs_fail_on_issues"
+    export BUG_SCANNER_TIMEOUT="$bs_timeout"
+
+    # Run bug scanner quality gate (before hooks)
+    if [[ "$bs_enabled" == "true" ]] && declare -f bug_scanner_scan_bead &>/dev/null; then
+        local scan_dir="${NEEDLE_WORKSPACE:-$(pwd)}"
+        _needle_info "Running bug scanner quality gate on $scan_dir"
+
+        if ! bug_scanner_scan_bead "$bead_id" "$scan_dir"; then
+            _needle_warn "Bug scanner found issues exceeding threshold '$bs_severity'"
+            if [[ "$bs_fail_on_issues" == "true" ]]; then
+                _needle_error "Failing bead due to bug scan results"
+                _needle_fail_bead "$bead_id" "bug_scan_failed"
+                return 1
+            else
+                _needle_warn "Continuing despite bug scan issues (fail_on_issues=false)"
+            fi
+        fi
+    fi
+
+    # Run pre-complete hook (additional quality gates)
     if ! _needle_run_hook "pre_complete" "$bead_id"; then
         _needle_warn "Pre-complete hook aborted for bead $bead_id"
         _needle_fail_bead "$bead_id" "hook_failed"

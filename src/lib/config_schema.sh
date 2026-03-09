@@ -541,3 +541,148 @@ validate_config_on_load() {
 
     return 0
 }
+
+# ============================================================================
+# validate_preferred_agents
+# ============================================================================
+# Validate the preferred_agents field in a workspace config.
+# preferred_agents should be an array of non-empty strings (agent names).
+#
+# Usage: validate_preferred_agents <config_file>
+# Returns: 0 if valid or not present, 1 if invalid
+validate_preferred_agents() {
+    local config_file="${1:-}"
+
+    if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
+        return 0
+    fi
+
+    # Check if preferred_agents exists in the config using Python (most reliable)
+    if python3 -c "import yaml" 2>/dev/null; then
+        local validation_result
+        validation_result=$(python3 - "$config_file" <<'PYEOF' 2>&1
+import yaml, sys
+
+def validate_preferred_agents(filepath):
+    errors = []
+    try:
+        with open(filepath) as f:
+            data = yaml.safe_load(f) or {}
+
+        pa = data.get('preferred_agents')
+
+        # Not present is fine
+        if pa is None:
+            return []
+
+        # Must be a list
+        if not isinstance(pa, list):
+            errors.append(f"preferred_agents: expected array, got {type(pa).__name__}")
+            return errors
+
+        # Validate each item
+        import re
+        agent_pattern = re.compile(r'^[a-zA-Z0-9_-]+$')
+        for i, item in enumerate(pa):
+            if not isinstance(item, str):
+                errors.append(f"preferred_agents[{i}]: expected string, got {type(item).__name__}")
+            elif not item:
+                errors.append(f"preferred_agents[{i}]: empty string not allowed")
+            elif not agent_pattern.match(item):
+                errors.append(f"preferred_agents[{i}]: invalid agent name '{item}' (must be alphanumeric with hyphens/underscores)")
+
+        return errors
+    except Exception as e:
+        return [f"YAML parsing error: {e}"]
+
+errors = validate_preferred_agents(sys.argv[1])
+if errors:
+    for e in errors:
+        print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+sys.exit(0)
+PYEOF
+)
+        return $?
+    fi
+
+    # Fallback: check with yq if Python not available
+    if command -v yq &>/dev/null; then
+        local pa_type
+        pa_type=$(yq '.preferred_agents | tag' "$config_file" 2>/dev/null)
+
+        # Not present is fine
+        if [[ -z "$pa_type" ]] || [[ "$pa_type" == "!!null" ]]; then
+            return 0
+        fi
+
+        # Must be an array (!!seq in YAML)
+        if [[ "$pa_type" != "!!seq" ]]; then
+            _schema_error "preferred_agents: expected array, got $pa_type"
+            return 1
+        fi
+
+        # Validate array items are non-empty strings
+        local items
+        items=$(yq '.preferred_agents[]' "$config_file" 2>/dev/null)
+
+        while IFS= read -r item; do
+            [[ -z "$item" ]] && continue
+            # Check item is a valid agent name format (alphanumeric, hyphens, underscores)
+            # Also allow empty items (filtered out later)
+            if [[ "$item" =~ ^[[:space:]]*$ ]]; then
+                continue
+            fi
+            if [[ ! "$item" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+                _schema_error "preferred_agents: invalid agent name '$item' (must be alphanumeric with hyphens/underscores)"
+                return 1
+            fi
+        done <<< "$items"
+        return 0
+    fi
+    # No way to validate, assume ok
+    return 0
+}
+
+# ============================================================================
+# validate_workspace_config
+# ============================================================================
+# Validate a workspace config file (.needle.yaml).
+# This is a subset of full config validation for workspace-specific configs.
+#
+# Usage: validate_workspace_config <workspace_config_file>
+# Returns: 0 if valid, 1 if invalid
+validate_workspace_config() {
+    local config_file="${1:-}"
+
+    if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
+        return 0
+    fi
+
+    local errors=0
+
+    # Check YAML syntax
+    if command -v yq &>/dev/null; then
+        if ! yq eval '.' "$config_file" &>/dev/null; then
+            _schema_error "Invalid YAML syntax in workspace config: $config_file"
+            return 1
+        fi
+    elif python3 -c "import yaml" 2>/dev/null; then
+        if ! python3 -c "import yaml; yaml.safe_load(open('$config_file'))" 2>/dev/null; then
+            _schema_error "Invalid YAML syntax in workspace config: $config_file"
+            return 1
+        fi
+    fi
+
+    # Validate strand config if present
+    if ! validate_strand_config "$config_file"; then
+        ((errors++))
+    fi
+
+    # Validate preferred_agents if present
+    if ! validate_preferred_agents "$config_file"; then
+        ((errors++))
+    fi
+
+    [[ "$errors" -eq 0 ]]
+}
