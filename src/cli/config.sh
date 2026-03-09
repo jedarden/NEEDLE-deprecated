@@ -299,6 +299,55 @@ _needle_config_path() {
     _needle_table_row "Cache" "$NEEDLE_HOME/$NEEDLE_CACHE_DIR"
 }
 
+# Help for config get subcommand
+_needle_config_get_help() {
+    _needle_print "Get a configuration value
+
+Retrieve the value of a specific configuration key.
+
+USAGE:
+    needle config get <KEY> [OPTIONS]
+
+ARGUMENTS:
+    KEY            Configuration key to retrieve (e.g., 'editor', 'api.endpoint')
+
+OPTIONS:
+    -h, --help     Show this help message
+
+EXAMPLES:
+    # Get editor setting
+    needle config get editor
+
+    # Get nested value
+    needle config get api.endpoint
+"
+}
+
+# Help for config set subcommand
+_needle_config_set_help() {
+    _needle_print "Set a configuration value
+
+Update or add a configuration key-value pair.
+
+USAGE:
+    needle config set <KEY> <VALUE> [OPTIONS]
+
+ARGUMENTS:
+    KEY            Configuration key to set (e.g., 'editor', 'api.endpoint')
+    VALUE          Value to assign to the key
+
+OPTIONS:
+    -h, --help     Show this help message
+
+EXAMPLES:
+    # Set editor
+    needle config set editor nano
+
+    # Set nested value
+    needle config set api.endpoint https://api.example.com
+"
+}
+
 _needle_config() {
     local command="${1:-show}"
     shift || true
@@ -314,6 +363,11 @@ _needle_config() {
             ;;
 
         get)
+            # Check for help flag first
+            if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+                _needle_config_get_help
+                exit $NEEDLE_EXIT_SUCCESS
+            fi
             local key="${1:-}"
             if [[ -z "$key" ]]; then
                 _needle_error "No key specified"
@@ -331,6 +385,11 @@ _needle_config() {
             ;;
 
         set)
+            # Check for help flag first
+            if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+                _needle_config_set_help
+                exit $NEEDLE_EXIT_SUCCESS
+            fi
             local key="${1:-}"
             local value="${2:-}"
             if [[ -z "$key" ]]; then
