@@ -11,6 +11,7 @@ This document describes the internal design of NEEDLE's core subsystems: how the
 5. [File Locking Semantics and SLAs](#5-file-locking-semantics-and-slas)
 6. [Worker Coordination Protocol](#6-worker-coordination-protocol)
 7. [Telemetry Pipeline](#7-telemetry-pipeline)
+8. [Hook Error Handling Specification](#8-hook-error-handling-specification)
 
 ---
 
@@ -491,3 +492,143 @@ Config keys: `fabric.enabled`, `fabric.endpoint`, `fabric.timeout`.
 | **No loss on write failure** | Failed writes log to stderr but do not propagate errors |
 | **Non-blocking forwarding** | FABRIC pipe writes are non-blocking; slow endpoints don't stall workers |
 | **No PII** | Bead IDs and file paths are the only identifiers; no user data is recorded |
+
+---
+
+## 8. Hook Error Handling Specification
+
+**Source:** `src/hooks/runner.sh`, `src/hooks/validate.sh`
+
+### Overview
+
+NEEDLE exposes 11 lifecycle hook points where users can run custom scripts. This section specifies exactly how hook failures are handled, what timeout behavior means, and how hook outcomes propagate into the bead lifecycle.
+
+### Hook Points and When They Fire
+
+| Hook | Fires when | Blocking? |
+|------|-----------|-----------|
+| `pre_claim` | Before a bead is claimed | Yes — abort or skip affects claim |
+| `post_claim` | After a successful claim | No — failure only logs |
+| `pre_execute` | Before bead execution begins | Yes — abort stops execution |
+| `post_execute` | After execution completes (success or failure) | No — failure only logs |
+| `pre_complete` | Before a bead is marked completed | Yes — abort keeps bead open |
+| `post_complete` | After a bead is marked completed + locks released | No |
+| `on_failure` | When bead execution fails | Yes — abort skips retry, goes to quarantine |
+| `on_quarantine` | When a bead enters quarantine state | No — bead already quarantined |
+| `pre_commit` | Before a git commit is made | Yes — abort stops the commit |
+| `post_task` | After the full task cycle completes | No |
+| `error_recovery` | When an unhandled error is caught | No — advisory only |
+
+### Exit Code Contract
+
+All hook scripts communicate outcome via exit code:
+
+| Exit Code | Constant | Meaning | Effect |
+|-----------|----------|---------|--------|
+| `0` | `NEEDLE_HOOK_EXIT_SUCCESS` | Hook succeeded | Continue normally |
+| `1` | `NEEDLE_HOOK_EXIT_WARNING` | Non-fatal issue | Log warning, continue |
+| `2` | `NEEDLE_HOOK_EXIT_ABORT` | Hard stop | Abort current operation (see per-hook semantics) |
+| `3` | `NEEDLE_HOOK_EXIT_SKIP` | Skip signal | Runner returns `2`; caller skips to next bead |
+| `124` | `NEEDLE_HOOK_EXIT_TIMEOUT` | Timed out | Handled per `fail_action` config |
+| Other | — | Unexpected failure | Handled per `fail_action` config |
+
+Exit codes `2` (abort) and `3` (skip) are only meaningful for **blocking** hooks (see table above). Non-blocking hooks receive the same exit codes but the runner converts them to warnings rather than propagating the abort.
+
+### Timeout Behavior
+
+The `hooks.timeout` config key (default `30s`) caps how long any hook may run. The `timeout` command enforces this; if the hook process does not exit within the limit, it receives `SIGTERM` and exit code `124` is returned.
+
+What happens after a timeout depends on `hooks.fail_action`:
+
+| `fail_action` | Timeout outcome |
+|---------------|----------------|
+| `warn` (default) | Log warning, return success to caller — execution continues |
+| `abort` | Return failure to caller — current operation is aborted |
+| `ignore` | Silently continue — same as `warn` but without the log message |
+
+Timeout is **not retried**. The hook invocation is abandoned and the action proceeds according to `fail_action`.
+
+### `fail_action` — General Failure Policy
+
+`hooks.fail_action` also governs how **unexpected exit codes** (anything other than 0–3) are handled:
+
+| `fail_action` | Non-zero, non-abort exit code |
+|---------------|-------------------------------|
+| `warn` | Log warning, return success — caller continues |
+| `abort` | Emit `hook.failed` event, return failure — caller aborts |
+| `ignore` | Silently continue |
+
+This policy does **not** affect exit code `2` (abort): that always propagates as a failure regardless of `fail_action`.
+
+### Error Propagation to Bead Lifecycle
+
+#### `on_failure` hook
+
+Called when bead execution exits with a non-zero code or an unhandled error occurs.
+
+- **Exit `0` or `1`**: Standard failure handling proceeds — the bead is eligible for retry according to the worker's backoff schedule.
+- **Exit `2` (abort)**: Retry is skipped. The bead is moved directly to quarantine, triggering the `on_quarantine` hook.
+- **Exit `3` (skip)**: Treated the same as exit `0` — standard retry logic applies.
+- **Timeout**: Handled per `fail_action`; on `abort`, same effect as exit `2`.
+
+File locks held by the bead are released regardless of `on_failure` exit code (the lock-release call in `_needle_hook_on_failure` always runs).
+
+#### `on_quarantine` hook
+
+Called when a bead enters quarantine state (either from explicit quarantine action, repeated failures, or `on_failure` exit `2`).
+
+- **Exit `0` or `1`**: Quarantine proceeds normally — bead is left in quarantine awaiting human intervention.
+- **Exit `2` (abort)**: Ignored. The bead is already quarantined and the abort has no further effect.
+- **Exit `3` (skip)**: Remaining `on_quarantine` hooks for this event are skipped; quarantine state is preserved.
+
+#### Retry vs. Quarantine Decision Matrix
+
+| Condition | Result |
+|-----------|--------|
+| `on_failure` exits `0` or `1` | Bead retried per backoff schedule |
+| `on_failure` exits `2` | Bead quarantined immediately (no retry) |
+| `on_failure` exits `3` | Bead retried (skip treated as success) |
+| `on_failure` times out + `fail_action=abort` | Bead quarantined |
+| `on_failure` times out + `fail_action=warn` | Bead retried |
+| Worker consecutive failures ≥ 7 | Worker exits (see Section 6) |
+
+### Hook Invocation Guarantees
+
+1. **At-most-once per event**: A hook fires once per lifecycle event. There is no automatic retry of the hook itself.
+2. **Non-recursive**: Hooks cannot trigger additional lifecycle hooks.
+3. **Environment isolation**: Each hook runs in a subprocess. Variables exported by the hook do not affect the parent worker.
+4. **Lock release on close**: `post_complete` and `on_failure` both call `_needle_release_bead_locks_on_close`. File locks are always released when a bead terminal state is reached, even if the hook itself fails.
+5. **No hook chaining**: Each hook point supports exactly one script path. To run multiple actions, the single script must orchestrate them.
+
+### Configuration Reference
+
+```yaml
+hooks:
+  timeout: 30s            # Max runtime per hook invocation (default: 30s)
+  fail_action: warn       # What to do on unexpected failure: warn | abort | ignore
+  pre_claim:    ~/.needle/hooks/pre-claim.sh
+  post_claim:   ~/.needle/hooks/post-claim.sh
+  pre_execute:  ~/.needle/hooks/pre-execute.sh
+  post_execute: ~/.needle/hooks/post-execute.sh
+  pre_complete: ~/.needle/hooks/pre-complete.sh
+  post_complete: ~/.needle/hooks/post-complete.sh
+  on_failure:   ~/.needle/hooks/on-failure.sh
+  on_quarantine: ~/.needle/hooks/on-quarantine.sh
+  pre_commit:   ~/.needle/hooks/pre-commit.sh
+  post_task:    ~/.needle/hooks/post-task.sh
+  error_recovery: ~/.needle/hooks/error-recovery.sh
+```
+
+Workspace-level config (`.needle.yaml` in the workspace root) overrides global config for all hook settings. This allows per-project hook scripts without affecting other workspaces.
+
+### Telemetry Events
+
+The hook runner emits structured events for observability:
+
+| Event | When emitted |
+|-------|-------------|
+| `hook.started` | Before hook script is executed |
+| `hook.completed` | After hook exits `0`, `1`, or `3` |
+| `hook.failed` | After hook exits `2` or exceeds timeout with `fail_action=abort` |
+
+All events carry `hook_name`, `bead_id`, `exit_code`, and `duration_ms` fields.

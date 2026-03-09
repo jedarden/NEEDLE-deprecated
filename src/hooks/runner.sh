@@ -394,22 +394,27 @@ _needle_hook_pre_complete() {
 # Usage: _needle_hook_post_complete [bead_id]
 _needle_hook_post_complete() {
     local bead_id="${1:-}"
-    _needle_run_hook "post_complete" "$bead_id"
+    local hook_rc=0
+    _needle_run_hook "post_complete" "$bead_id" || hook_rc=$?
 
     # Release all file locks held by this bead
     # This ensures locks are always released when a bead completes
     _needle_release_bead_locks_on_close "$bead_id"
+    return "$hook_rc"
 }
 
 # Run on_failure hook
 # Usage: _needle_hook_on_failure [bead_id]
 _needle_hook_on_failure() {
     local bead_id="${1:-}"
-    _needle_run_hook "on_failure" "$bead_id"
+    local hook_rc=0
+    _needle_run_hook "on_failure" "$bead_id" || hook_rc=$?
 
     # Release all file locks held by this bead
-    # This ensures locks are always released when a bead fails
+    # This ensures locks are always released when a bead fails,
+    # regardless of the hook's own exit code.
     _needle_release_bead_locks_on_close "$bead_id"
+    return "$hook_rc"
 }
 
 # Internal function to release locks when a bead is closed (success or failure)
