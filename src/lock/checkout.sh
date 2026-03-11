@@ -173,6 +173,49 @@ _needle_lock_extract_bead_id() {
     echo "$filename" | rev | cut -d'-' -f2- | rev
 }
 
+# Extract worker ID from a lock file's JSON contents
+# Usage: _needle_lock_extract_worker_id <lock_file>
+# Returns: worker name string, or "unknown"
+_needle_lock_extract_worker_id() {
+    local lock_file="$1"
+    local lock_info
+    lock_info=$(_needle_lock_read_info "$lock_file")
+
+    if _needle_command_exists jq; then
+        echo "$lock_info" | jq -r '.worker // "unknown"'
+    else
+        echo "$lock_info" | grep -o '"worker":"[^"]*"' | cut -d'"' -f4 || echo "unknown"
+    fi
+}
+
+# Check whether a worker's tmux session is still alive
+# Usage: _needle_lock_worker_alive <worker_id>
+# Returns: 0 if alive, 1 if dead/unverifiable via tmux
+#
+# Workers are identified by their tmux session name (e.g. needle-claude-zai-glm-5-alpha).
+# If tmux is unavailable the check is skipped and the lock is treated as valid.
+_needle_lock_worker_alive() {
+    local worker_id="$1"
+
+    if [[ -z "$worker_id" || "$worker_id" == "unknown" ]]; then
+        _needle_debug "worker_alive: no worker ID, assuming alive"
+        return 0
+    fi
+
+    if ! _needle_command_exists tmux; then
+        _needle_debug "worker_alive: tmux not available, assuming $worker_id alive"
+        return 0
+    fi
+
+    if tmux has-session -t "$worker_id" 2>/dev/null; then
+        _needle_debug "worker_alive: session '$worker_id' is alive"
+        return 0
+    else
+        _needle_debug "worker_alive: session '$worker_id' not found — worker is dead"
+        return 1
+    fi
+}
+
 # ============================================================================
 # Core Lock API Functions
 # ============================================================================
@@ -229,11 +272,30 @@ checkout_file() {
             existing_bead=$(_needle_lock_extract_bead_id "$existing_lock")
 
             if [[ "$existing_bead" != "$bead_id" ]]; then
-                # File is locked by another bead
-                local lock_info
+                # File is locked by another bead — check if that worker is still alive
+                local lock_info existing_worker
                 lock_info=$(_needle_lock_read_info "$existing_lock")
+                existing_worker=$(_needle_lock_extract_worker_id "$existing_lock")
 
-                _needle_warn "File conflict: $filepath is locked by bead $existing_bead"
+                if ! _needle_lock_worker_alive "$existing_worker"; then
+                    # Holding worker's tmux session is gone — auto-release orphaned lock
+                    _needle_warn "Auto-releasing orphaned lock: $filepath (held by dead worker $existing_worker / bead $existing_bead)"
+                    rm -f "$existing_lock" 2>/dev/null || true
+
+                    _needle_telemetry_emit "file.orphan_release" "warn" \
+                        "bead=$bead_id" \
+                        "path=$filepath" \
+                        "orphaned_bead=$existing_bead" \
+                        "dead_worker=$existing_worker"
+
+                    _needle_metrics_record_event "checkout.orphan_released" "$bead_id" "$filepath" \
+                        "orphaned_bead=$existing_bead"
+
+                    # Continue the loop — lock is gone, we can proceed to acquire
+                    continue
+                fi
+
+                _needle_warn "File conflict: $filepath is locked by bead $existing_bead (worker: $existing_worker)"
 
                 # Emit conflict telemetry event
                 _needle_telemetry_emit "file.conflict" "warn" \
@@ -281,8 +343,26 @@ checkout_file() {
         existing_bead=$(_needle_lock_extract_bead_id "$lock_file")
 
         if [[ "$existing_bead" != "$bead_id" ]]; then
-            local lock_info
+            local lock_info race_worker
             lock_info=$(_needle_lock_read_info "$lock_file")
+            race_worker=$(_needle_lock_extract_worker_id "$lock_file")
+
+            if ! _needle_lock_worker_alive "$race_worker"; then
+                # Holding worker is dead — steal the lock
+                _needle_warn "Race: stealing orphaned lock from dead worker $race_worker / bead $existing_bead for $filepath"
+                _needle_lock_write_info "$lock_file" "$bead_id" "$worker_id" "$filepath" "$workspace"
+
+                _needle_telemetry_emit "file.orphan_release" "warn" \
+                    "bead=$bead_id" \
+                    "path=$filepath" \
+                    "orphaned_bead=$existing_bead" \
+                    "dead_worker=$race_worker"
+
+                _needle_metrics_record_event "checkout.orphan_released" "$bead_id" "$filepath" \
+                    "orphaned_bead=$existing_bead"
+
+                return 0
+            fi
 
             _needle_telemetry_emit "file.conflict" "warn" \
                 "bead=$bead_id" \
@@ -687,23 +767,52 @@ cleanup_reaped_locks() {
         return 0
     fi
 
-    _needle_debug "Checking for locks belonging to reaped beads..."
+    _needle_debug "Checking for locks belonging to reaped beads or dead workers..."
 
-    # Track which beads we've already checked
+    # Track which beads/workers we've already checked
     declare -A checked_beads
+    declare -A checked_workers
 
     for lock_file in $lock_files; do
         [[ -f "$lock_file" ]] || continue
 
-        local bead_id
+        local bead_id worker_id
         bead_id=$(_needle_lock_extract_bead_id "$lock_file")
+        worker_id=$(_needle_lock_extract_worker_id "$lock_file")
+
+        # Check worker liveness first (fast tmux check, no br call needed)
+        if [[ -z "${checked_workers[$worker_id]:-}" ]]; then
+            checked_workers[$worker_id]=1
+            if ! _needle_lock_worker_alive "$worker_id"; then
+                _needle_info "Worker '$worker_id' is dead — releasing all its locks"
+                # Release every lock file owned by this worker directly
+                local w_pattern="${NEEDLE_LOCK_DIR}/*"
+                local w_files
+                w_files=$(ls $w_pattern 2>/dev/null || true)
+                for w_lock in $w_files; do
+                    [[ -f "$w_lock" ]] || continue
+                    local w_owner
+                    w_owner=$(_needle_lock_extract_worker_id "$w_lock")
+                    if [[ "$w_owner" == "$worker_id" ]]; then
+                        rm -f "$w_lock" 2>/dev/null || true
+                        cleaned_count=$((cleaned_count + 1))
+                        _needle_telemetry_emit "file.orphan_release" "warn" \
+                            "worker=$worker_id" \
+                            "lock=$w_lock"
+                    fi
+                done
+                # Mark bead as already handled to skip br query below
+                checked_beads[$bead_id]=1
+                continue
+            fi
+        fi
 
         # Skip if we already checked this bead
         if [[ -n "${checked_beads[$bead_id]:-}" ]]; then
             continue
         fi
 
-        # Check if bead is still active
+        # Worker is alive — check if the bead itself is still active
         if ! _needle_lock_bead_active "$bead_id"; then
             _needle_info "Bead $bead_id is no longer active, releasing its locks"
 
