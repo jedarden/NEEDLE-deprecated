@@ -159,6 +159,23 @@ _needle_knot_verify_work_available() {
         return 0  # Work available - DON'T create alert
     fi
 
+    # FIX (nd-0n2k): Check for in_progress beads before alerting.
+    # When all beads are claimed by active workers (status: in_progress),
+    # the system is busy, not stuck. Only alert when there are truly zero
+    # beads being worked on or when workers are stale/dead.
+    local in_progress_count
+    in_progress_count=$(cd "$workspace" 2>/dev/null && br list --status in_progress --json 2>/dev/null | \
+        jq 'length' 2>/dev/null || echo "0")
+
+    if [[ "$in_progress_count" -gt 0 ]]; then
+        _needle_debug "knot: found $in_progress_count in_progress beads - system is busy, not stuck"
+        _needle_emit_event "knot.busy_not_stuck" \
+            "All work is in_progress - system is busy, not stuck" \
+            "workspace=$workspace" \
+            "in_progress_count=$in_progress_count"
+        return 0  # Work is being done - DON'T create alert
+    fi
+
     # Method 4: Check for any open beads at all (diagnostic only)
     diag_any_open=$(cd "$workspace" 2>/dev/null && br list --status open --priority 0,1,2,3 --json 2>/dev/null | \
         jq 'length' 2>/dev/null || echo "0")
@@ -409,10 +426,12 @@ _needle_knot_has_existing_alert() {
     local workspace="$1"
 
     # Look for open human beads with needle-stuck label in the workspace
+    # FIX (nd-crbt): br list does not support --workspace flag. Must cd to workspace.
+    # The invalid flag caused br list to fail silently, so existing alerts were
+    # never detected, allowing unlimited duplicate alerts.
     local existing
-    existing=$(br list --workspace="$workspace" --status open --priority 0,1,2,3 --type human --json 2>/dev/null | \
-               jq -r '.[] | select(.labels // [] | contains(["needle-stuck"])) | .id' 2>/dev/null | \
-               head -1)
+    existing=$(cd "$workspace" 2>/dev/null && br list --status open --type human --label needle-stuck --json 2>/dev/null | \
+               jq -r '.[0].id // empty' 2>/dev/null)
 
     if [[ -n "$existing" ]]; then
         _needle_debug "knot: found existing needle-stuck alert: $existing"

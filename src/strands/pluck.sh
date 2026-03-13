@@ -114,6 +114,27 @@ _needle_pluck_get_workspaces() {
         fi
     done <<< "$workspaces"
 
+    # FIX (nd-oipi): Always include the primary workspace (fallback) in the list.
+    # When config has other workspaces but not the primary one, the primary was
+    # silently dropped, causing pluck to never claim beads from it.
+    # Insert it at the front so the primary workspace is checked first.
+    if [[ -n "$fallback" ]]; then
+        local fallback_expanded="${fallback/#\~/$HOME}"
+        if [[ -d "$fallback_expanded" ]]; then
+            local already_included=false
+            for ws in "${valid_workspaces[@]}"; do
+                if [[ "$ws" == "$fallback_expanded" ]]; then
+                    already_included=true
+                    break
+                fi
+            done
+            if [[ "$already_included" != "true" ]]; then
+                valid_workspaces=("$fallback_expanded" "${valid_workspaces[@]}")
+                _needle_debug "Added primary workspace to front: $fallback_expanded"
+            fi
+        fi
+    fi
+
     printf '%s\n' "${valid_workspaces[@]}"
 }
 
