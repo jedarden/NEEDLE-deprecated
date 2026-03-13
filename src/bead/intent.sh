@@ -38,7 +38,7 @@ _NEEDLE_INTENT_LOADED=true
 NEEDLE_INTENT_FILES_LABEL="${NEEDLE_INTENT_FILES_LABEL:-files}"
 
 # Config for enabling/disabling intent-based file reservation
-NEEDLE_INTENT_ENABLED="${NEEDLE_INTENT_ENABLED:-true}"
+NEEDLE_INTENT_ENABLED="${NEEDLE_INTENT_ENABLED:-false}"
 
 # ============================================================================
 # File Extraction Functions
