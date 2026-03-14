@@ -10,6 +10,19 @@
 # Example: 30s, 5m, 2h, 1d
 
 # ============================================================================
+# Effort Tracking and Budgets
+# ============================================================================
+# Controls cost tracking and budget enforcement for all bead execution.
+effort:
+  log_dir: ~/.needle/logs       # Directory where effort logs and metrics are stored
+
+  # Budget enforcement - prevents overspending on API calls
+  budget:
+    daily_limit_usd: 50.0       # Stop spawning new workers when daily spend exceeds this (0 = unlimited)
+    warning_threshold: 0.8      # Warn when daily spend reaches this percentage of limit (0.0-1.0)
+    per_bead_limit_usd: 5.0     # Maximum spend allowed for a single bead execution
+
+# ============================================================================
 # Billing
 # ============================================================================
 # Controls how NEEDLE optimizes work relative to API cost.
@@ -22,8 +35,6 @@
 # Per-provider overrides allow mixed billing environments (e.g., subscription
 # Alibaba + pay-as-you-go Anthropic on the same NEEDLE instance).
 billing:
-  daily_budget_usd: 50.0        # Stop spawning new workers when daily spend exceeds this (0 = unlimited)
-
   # Per-provider billing model (overrides default behavior per provider)
   providers:
     anthropic: pay_per_token    # Anthropic API — pay per token
