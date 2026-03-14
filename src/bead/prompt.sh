@@ -272,6 +272,115 @@ _needle_get_file_lang() {
     esac
 }
 
+# Generate type-specific workflow instructions
+# Usage: _needle_get_type_instructions <type> <bead_id>
+# Returns: Type-specific instruction block string
+_needle_get_type_instructions() {
+    local type="$1"
+    local bead_id="$2"
+
+    # Common footer for all types
+    local common_footer
+    common_footer="
+Use \`~/.local/bin/br --help\` and \`br <command> --help\` to understand available commands and options.
+
+If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a comment explaining why.
+
+Exit with code 0 on success, non-zero on failure."
+
+    case "$type" in
+        bug)
+            cat <<INSTRUCTIONS
+You are working on a **bug fix** task in the context of the workspace above.
+
+### Workflow
+1. Reproduce the issue described
+2. Identify root cause
+3. Fix the bug
+4. Add a regression test covering the fix
+5. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
+6. Validate that your changes fully satisfy the bead requirements
+7. If validated: \`br close ${bead_id}\`
+${common_footer}
+INSTRUCTIONS
+            ;;
+
+        feature)
+            cat <<INSTRUCTIONS
+You are working on a **feature implementation** task in the context of the workspace above.
+
+### Workflow
+1. Review the project plan (if available from context section) for scope
+2. Implement the feature as described
+3. Add tests for new functionality
+4. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
+5. Validate that your changes fully satisfy the bead requirements
+6. If validated: \`br close ${bead_id}\`
+${common_footer}
+INSTRUCTIONS
+            ;;
+
+        refactor)
+            cat <<INSTRUCTIONS
+You are working on a **refactor** task in the context of the workspace above.
+
+### Workflow
+1. Understand current behavior — run existing tests first
+2. Refactor as described without changing external behavior
+3. Verify all existing tests still pass
+4. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
+5. Validate that your changes fully satisfy the bead requirements
+6. If validated: \`br close ${bead_id}\`
+${common_footer}
+INSTRUCTIONS
+            ;;
+
+        docs)
+            cat <<INSTRUCTIONS
+You are working on a **documentation** task in the context of the workspace above.
+
+### Workflow
+1. Review project plan (if available) for documentation conventions
+2. Update or create documentation as described
+3. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
+4. Validate that your changes fully satisfy the bead requirements
+5. If validated: \`br close ${bead_id}\`
+${common_footer}
+INSTRUCTIONS
+            ;;
+
+        genesis)
+            cat <<INSTRUCTIONS
+You are working on a **genesis bead** — this is an orchestration task, not a coding task.
+
+### Workflow
+1. This is an orchestration bead — do not write code directly
+2. Review the linked plan and assess phase completion status
+3. Update the progress checklist in the genesis bead body
+4. Create child beads for the next incomplete phase if none exist
+5. If all phases complete: \`br close ${bead_id}\`
+${common_footer}
+INSTRUCTIONS
+            ;;
+
+        *)  # task, chore, or unknown types
+            cat <<INSTRUCTIONS
+You are working on this task in the context of the workspace above.
+
+Complete the task as described. Use the \`br\` CLI (\`~/.local/bin/br\`) to manage bead lifecycle:
+
+### Workflow
+1. Do the work described above
+2. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
+3. Validate that your changes fully satisfy the bead requirements
+4. If validated: \`br close ${bead_id}\`
+5. If the bead requires creating sub-beads, create them and add as blockers
+${common_footer}
+INSTRUCTIONS
+            ;;
+    esac
+}
+
 # Format the final prompt
 # Usage: _needle_format_prompt --bead-id <id> --title <title> ... --context <context>
 # Returns: Formatted prompt string
@@ -327,6 +436,10 @@ $labels"
 $context"
     fi
 
+    # Get type-specific instructions
+    local instructions
+    instructions=$(_needle_get_type_instructions "$type" "$bead_id")
+
     # Build and output the prompt
     cat <<PROMPT
 # Task: ${title}
@@ -345,21 +458,7 @@ ${labels_section}
 ${priority_label}
 
 ## Instructions
-You are working on this task in the context of the workspace above.
-
-Complete the task as described. Use the \`br\` CLI (\`~/.local/bin/br\`) to manage bead lifecycle:
-
-### Workflow
-1. Do the work described above
-2. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
-3. Validate that your changes fully satisfy the bead requirements
-4. If validated: \`br close ${bead_id}\`
-5. If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a comment explaining why
-6. If the bead requires creating sub-beads, create them and add as blockers
-
-Use \`~/.local/bin/br --help\` and \`br <command> --help\` to understand available commands and options.
-
-Exit with code 0 on success, non-zero on failure.
+${instructions}
 ${context_section}
 PROMPT
 }
