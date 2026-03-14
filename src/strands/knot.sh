@@ -595,7 +595,8 @@ _needle_knot_collect_diagnostics() {
     echo "### Workspace Bead Summary"
     echo ""
     local bead_summary
-    bead_summary=$(br list --workspace="$workspace" --json 2>/dev/null)
+    # FIX (nd-mme0): br list does not support --workspace flag. Must cd to workspace.
+    bead_summary=$(cd "$workspace" 2>/dev/null && br list --json 2>/dev/null)
     if [[ -n "$bead_summary" ]] && [[ "$bead_summary" != "[]" ]] && [[ "$bead_summary" != "null" ]]; then
         if _needle_command_exists jq; then
             echo '```'

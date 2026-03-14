@@ -98,7 +98,8 @@ _needle_strand_unravel() {
 
     # Find HUMAN-type beads that are blocked (waiting for input)
     local human_beads
-    human_beads=$(br list --workspace="$workspace" --status blocked --type human --json 2>/dev/null)
+    # FIX (nd-mme0): br list does not support --workspace flag. Must cd to workspace.
+    human_beads=$(cd "$workspace" 2>/dev/null && br list --status blocked --type human --json 2>/dev/null)
 
     if [[ -z "$human_beads" ]] || [[ "$human_beads" == "[]" ]] || [[ "$human_beads" == "null" ]]; then
         _needle_debug "unravel: no blocked HUMAN beads found"
@@ -269,7 +270,8 @@ _needle_unravel_count_alternatives() {
     local parent_id="$2"
 
     local count
-    count=$(br list --workspace="$workspace" --label "for-$parent_id" --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+    # FIX (nd-mme0): br list does not support --workspace flag. Must cd to workspace.
+    count=$(cd "$workspace" 2>/dev/null && br list --label "for-$parent_id" --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
 
     echo "$count"
 }
