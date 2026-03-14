@@ -232,6 +232,25 @@ mitosis:
   skip_labels: no-mitosis,atomic # Never split beads with these labels
 
 # ============================================================================
+# Bug Scanner
+# ============================================================================
+# Integrates ultimate_bug_scanner (UBS) as a quality gate before beads are
+# marked complete. UBS catches 1000+ bug patterns across popular languages
+# and is designed for AI agent integration.
+#
+# Severity levels (lowest to highest): info, warning, error, critical
+#
+# Install UBS: needle bootstrap --dep ubs
+bug_scanner:
+  enabled: true                 # Enable/disable bug scanning (default: true)
+  severity_threshold: error     # Minimum severity that triggers a failure (default: error)
+  fail_on_issues: true          # Fail the bead if issues exceed threshold (default: true)
+  create_follow_up: true        # Create a follow-up bugfix bead when issues are found
+  timeout: 300                  # Seconds before scan is aborted (default: 300)
+  output_format: json           # Scan output format: json (default)
+  preflight_check: false        # Run a quick critical-only check before agent dispatch
+
+# ============================================================================
 # Updates
 # ============================================================================
 # Automatic NEEDLE binary update checking and installation.
