@@ -78,20 +78,21 @@ _needle_explore_count_unassigned() {
         return 0
     fi
 
-    local db_path="$workspace/.beads/beads.db"
     local count
 
-    # Use br ready with --db flag to target the workspace database
-    count=$(br ready --db="$db_path" --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
+    # Use br ready by cd-ing into the workspace (same as _needle_get_claimable_beads).
+    # This correctly handles dependency-blocked beads and reads the WAL for the latest
+    # state — unlike br ready --db which can miss WAL updates and fall back to a broken
+    # br list filter that counts blocked beads as claimable.
+    count=$(cd "$workspace" && br ready --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
 
     if [[ "$count" =~ ^[0-9]+$ ]]; then
         echo "$count"
         return 0
     fi
 
-    # Fallback: use br list with client-side filtering
-    count=$(br list --db="$db_path" --status open --priority 0,1,2,3 --json 2>/dev/null | \
-        jq '[.[] | select(.assignee == null and .blocked_by == null and (.deferred_until == null or .deferred_until == ""))] | length' 2>/dev/null)
+    # Fallback: JSONL-only mode — still respects dependency blocks
+    count=$(cd "$workspace" && br ready --no-db --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
 
     if [[ ! "$count" =~ ^[0-9]+$ ]]; then
         echo "0"

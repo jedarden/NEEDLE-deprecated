@@ -354,6 +354,64 @@ else
     _test_fail "Stats missing cooldown_seconds field: $stats"
 fi
 
+# Test 20: count_unassigned excludes dependency-blocked beads (regression for nd-g2cd)
+# The old implementation fell back to `br list --status open` with a client-side filter
+# that checked `.blocked_by == null` — but blocked_by is always null (blocking is a
+# relationship, not a field). This caused explore to return 2 (workspace switch) for
+# workspaces that only had dependency-blocked beads, wasting an engine cycle every loop.
+_test_start "count_unassigned excludes dependency-blocked open beads (nd-g2cd regression)"
+
+# Override br to simulate a workspace with one truly-ready bead and one blocked bead.
+# br ready (correctly) returns only the unblocked one; br list returns both.
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--json"* ]]; then
+                # Simulate br ready: only returns the actually-ready bead
+                echo '[{"id":"ws-ready","status":"open","assignee":null}]'
+            fi
+            return 0
+            ;;
+        list)
+            if [[ "$*" == *"--json"* ]]; then
+                # Simulate br list: returns both ready AND blocked beads
+                echo '[{"id":"ws-ready","status":"open","assignee":null,"blocked_by":null},{"id":"ws-blocked","status":"open","assignee":null,"blocked_by":null}]'
+            fi
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Create a workspace with a .beads directory so the check doesn't short-circuit
+mkdir -p "/tmp/test-explore-workspace-$$/regression-nd-g2cd/.beads"
+count=$(_needle_explore_count_unassigned "/tmp/test-explore-workspace-$$/regression-nd-g2cd")
+if [[ "$count" == "1" ]]; then
+    _test_pass "count_unassigned correctly returns 1 (only truly-ready bead) not 2 (including blocked)"
+else
+    _test_fail "count_unassigned should return 1 (from br ready), got $count (old fallback would return 2)"
+fi
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 # Summary
 echo ""
 echo "=========================================="
