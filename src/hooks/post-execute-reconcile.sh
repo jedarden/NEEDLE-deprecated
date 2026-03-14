@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # NEEDLE Post-Execute File Conflict Reconciliation
-# Strategy 2: Post-Execution Reconciliation (Reactive)
+# Strategies: Pessimistic (rollback) and Optimistic (3-way merge)
 #
-# Detects file conflicts AFTER agent execution by comparing changed files
-# against the file lock registry. If a changed file is locked by a different
-# bead, the change is rolled back and a dependency is added.
+# This module handles file conflict resolution after agent execution.
 #
-# This is the reactive complement to the proactive file-checkout hook
-# (src/hooks/file-checkout.sh). It catches conflicts that slipped through
-# (e.g., when hooks were not active or bypassed).
+# PESSIMISTIC MODE (default):
+#   Detects file conflicts AFTER agent execution by comparing changed files
+#   against the file lock registry. If a changed file is locked by a different
+#   bead, the change is rolled back and a dependency is added.
+#
+# OPTIMISTIC MODE (file_locks.strategy: optimistic):
+#   Uses 3-way merge to reconcile concurrent edits. If merge fails,
+#   the file is restored, a dependency is added, and the bead is re-queued.
 #
 # Usage (from post-execute hook):
 #   source "${NEEDLE_SRC_DIR:-...}/hooks/post-execute-reconcile.sh"
@@ -31,6 +34,7 @@
 _POST_EXEC_RECONCILE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEEDLE_LOCK_MODULE="${NEEDLE_LOCK_MODULE:-${_POST_EXEC_RECONCILE_DIR%/hooks}/lock/checkout.sh}"
 NEEDLE_METRICS_MODULE="${NEEDLE_METRICS_MODULE:-${_POST_EXEC_RECONCILE_DIR%/hooks}/lock/metrics.sh}"
+NEEDLE_OPTIMISTIC_MODULE="${NEEDLE_OPTIMISTIC_MODULE:-${_POST_EXEC_RECONCILE_DIR%/hooks}/lock/optimistic.sh}"
 
 # Load lock module if not already loaded
 if ! declare -f check_file &>/dev/null; then
@@ -45,6 +49,14 @@ if ! declare -f _needle_metrics_record_event &>/dev/null; then
     if [[ -f "$NEEDLE_METRICS_MODULE" ]]; then
         # shellcheck source=../lock/metrics.sh
         source "$NEEDLE_METRICS_MODULE"
+    fi
+fi
+
+# Load optimistic locking module if not already loaded
+if ! declare -f reconcile_optimistic_edits &>/dev/null; then
+    if [[ -f "$NEEDLE_OPTIMISTIC_MODULE" ]]; then
+        # shellcheck source=../lock/optimistic.sh
+        source "$NEEDLE_OPTIMISTIC_MODULE"
     fi
 fi
 
@@ -66,9 +78,15 @@ fi
 # Core: detect_file_conflicts
 # ============================================================================
 
-# Detect and roll back file conflicts after agent execution.
+# Detect and handle file conflicts after agent execution.
 #
-# For each file changed since HEAD:
+# Strategy selection:
+#   - Optimistic (file_locks.strategy: optimistic):
+#       Uses 3-way merge to reconcile concurrent edits
+#   - Pessimistic (default):
+#       Rolls back conflicting changes and re-queues
+#
+# For pessimistic mode, for each file changed since HEAD:
 #   1. Check if the file is locked by a different bead
 #   2. If so, roll back the file to HEAD
 #   3. Add a dependency on the locking bead
@@ -91,6 +109,34 @@ detect_file_conflicts() {
         return 0
     fi
 
+    # Check locking strategy
+    local strategy
+    if declare -f get_config &>/dev/null; then
+        strategy=$(get_config "file_locks.strategy" "pessimistic")
+    else
+        strategy="${NEEDLE_FILE_LOCK_STRATEGY:-pessimistic}"
+    fi
+
+    # Optimistic strategy: use 3-way merge reconciliation
+    if [[ "$strategy" == "optimistic" ]]; then
+        log_info "detect_file_conflicts: using optimistic reconciliation for bead $bead_id"
+
+        # Check if optimistic module is loaded
+        if declare -f reconcile_optimistic_edits &>/dev/null; then
+            if reconcile_optimistic_edits "$bead_id" "$workspace"; then
+                log_info "detect_file_conflicts: optimistic reconciliation succeeded"
+                return 0
+            else
+                log_warn "detect_file_conflicts: optimistic reconciliation found conflicts"
+                return 1
+            fi
+        else
+            log_warn "detect_file_conflicts: optimistic strategy configured but module not loaded"
+            log_warn "Falling back to pessimistic reconciliation"
+        fi
+    fi
+
+    # Pessimistic strategy: rollback on conflicts
     # Must be in a git repository
     if ! git -C "$workspace" rev-parse --git-dir &>/dev/null; then
         log_warn "detect_file_conflicts: workspace is not a git repository: $workspace"

@@ -6,6 +6,10 @@
 # It ensures that only one worker can edit a file at a time by using
 # the /dev/shm-based file locking system.
 #
+# Strategies:
+#   pessimistic (default): Block on conflict, add dependency, re-queue
+#   optimistic: Allow concurrent edits, snapshot file, merge at completion
+#
 # Exit Codes:
 #   0 - File checkout successful (or not a file-editing tool)
 #   1 - File locked by another bead (tool execution should be blocked)
@@ -18,7 +22,7 @@
 # Tool Input (from stdin):
 #   JSON object with file_path or path field
 #
-# On Conflict:
+# On Conflict (pessimistic mode):
 #   - Adds dependency to blocking bead via 'br dep add'
 #   - Returns exit code 1 to signal NEEDLE to re-queue this bead
 
@@ -30,6 +34,7 @@ set -euo pipefail
 
 # Path to NEEDLE lock module
 NEEDLE_LOCK_MODULE="${NEEDLE_SRC_DIR:-${BASH_SOURCE[0]%/*/*}}/lock/checkout.sh"
+NEEDLE_OPTIMISTIC_MODULE="${NEEDLE_SRC_DIR:-${BASH_SOURCE[0]%/*/*}}/lock/optimistic.sh"
 
 # ============================================================================
 # Logging Functions
@@ -63,6 +68,30 @@ else
     _log_error "Lock module not found: $NEEDLE_LOCK_MODULE"
     exit 1
 fi
+
+# Source the optimistic locking module (optional - for optimistic strategy)
+if [[ -f "$NEEDLE_OPTIMISTIC_MODULE" ]]; then
+    # shellcheck source=../lock/optimistic.sh
+    source "$NEEDLE_OPTIMISTIC_MODULE"
+fi
+
+# ============================================================================
+# Get Locking Strategy
+# ============================================================================
+
+# Get the configured file locking strategy
+_get_lock_strategy() {
+    # Try to get from config
+    if declare -f get_config &>/dev/null; then
+        get_config "file_locks.strategy" "pessimistic"
+    elif [[ -n "${NEEDLE_FILE_LOCK_STRATEGY:-}" ]]; then
+        echo "$NEEDLE_FILE_LOCK_STRATEGY"
+    else
+        echo "pessimistic"
+    fi
+}
+
+NEEDLE_LOCK_STRATEGY=$(_get_lock_strategy)
 
 # ============================================================================
 # Main Hook Logic
@@ -158,6 +187,27 @@ fi
 
 _log_warn "FILE_CONFLICT: $FILE_PATH locked by $BLOCKING_BEAD"
 
+# Check locking strategy
+if [[ "$NEEDLE_LOCK_STRATEGY" == "optimistic" ]]; then
+    # OPTIMISTIC STRATEGY: Allow concurrent edit, create snapshot, proceed
+    _log_info "OPTIMISTIC: Allowing concurrent edit of $FILE_PATH (locked by $BLOCKING_BEAD)"
+
+    # Create snapshot for 3-way merge at reconciliation
+    if declare -f prepare_optimistic_edit &>/dev/null; then
+        if prepare_optimistic_edit "$FILE_PATH" "$BEAD_ID"; then
+            _log_debug "Created optimistic snapshot for $FILE_PATH"
+        else
+            _log_warn "Failed to create optimistic snapshot for $FILE_PATH, proceeding anyway"
+        fi
+    else
+        _log_debug "prepare_optimistic_edit not available, snapshot creation skipped"
+    fi
+
+    # Allow the edit to proceed
+    exit 0
+fi
+
+# PESSIMISTIC STRATEGY: Block and re-queue
 # Add dependency to blocking bead so this bead will be re-queued when the other completes
 if command -v br &>/dev/null; then
     _log_info "Adding dependency: $BEAD_ID depends on $BLOCKING_BEAD"
