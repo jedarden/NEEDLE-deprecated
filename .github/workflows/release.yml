@@ -17,6 +17,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Verify version matches tag
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          FILE_VERSION=$(cat VERSION | tr -d '\n')
+          CONST_VERSION=$(grep '^NEEDLE_VERSION=' src/lib/constants.sh | head -1 | sed 's/NEEDLE_VERSION="//;s/"//')
+          echo "Tag version:       $TAG_VERSION"
+          echo "VERSION file:      $FILE_VERSION"
+          echo "constants.sh:      $CONST_VERSION"
+          if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+            echo "::error::VERSION file ($FILE_VERSION) does not match tag ($TAG_VERSION). Bump VERSION before tagging."
+            exit 1
+          fi
+          if [ "$TAG_VERSION" != "$CONST_VERSION" ]; then
+            echo "::error::src/lib/constants.sh ($CONST_VERSION) does not match tag ($TAG_VERSION). Bump constants.sh before tagging."
+            exit 1
+          fi
+          echo "All versions match: $TAG_VERSION"
+
       - name: Build dist/needle
         run: |
           bash scripts/build.sh
