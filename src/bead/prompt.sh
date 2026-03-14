@@ -101,6 +101,99 @@ _needle_build_prompt() {
         --context "$context"
 }
 
+# Walk the blocker/dependency chain upward to find a genesis bead and resolve its plan path
+# Usage: _needle_find_genesis_plan <bead_id> <workspace>
+# Returns: "<genesis_title>|<plan_path>" on stdout (plan_path may be empty)
+# Exit codes:
+#   0 - Genesis bead found (check stdout for title and plan path)
+#   1 - No genesis bead found in chain
+#
+# The function only extracts what is explicitly in the genesis bead body.
+# If the plan path is absent, the caller must handle discovery themselves.
+#
+# Example:
+#   result=$(_needle_find_genesis_plan "nd-100" "/home/user/project")
+#   genesis_title="${result%%|*}"
+#   plan_path="${result#*|}"
+_needle_find_genesis_plan() {
+    local bead_id="$1"
+    local workspace="$2"
+    local max_depth=10
+    local depth=0
+    local current_id="$bead_id"
+    # Track visited IDs to prevent cycles
+    local visited=()
+
+    while [[ $depth -lt $max_depth ]]; do
+        # Cycle detection
+        local already_visited=false
+        for v in "${visited[@]:-}"; do
+            if [[ "$v" == "$current_id" ]]; then
+                already_visited=true
+                break
+            fi
+        done
+        if [[ "$already_visited" == "true" ]]; then
+            _needle_debug "Cycle detected at bead: $current_id"
+            break
+        fi
+        visited+=("$current_id")
+
+        # Fetch the current bead
+        local bead_json
+        bead_json=$(cd "$workspace" && br show "$current_id" --json 2>/dev/null)
+
+        if [[ -z "$bead_json" ]] || [[ "$bead_json" == "[]" ]] || [[ "$bead_json" == "null" ]]; then
+            _needle_debug "Could not fetch bead: $current_id"
+            break
+        fi
+
+        # Handle array or single object
+        local bead_object
+        if echo "$bead_json" | jq -e 'type == "array"' &>/dev/null; then
+            bead_object=$(echo "$bead_json" | jq -c '.[0]')
+        else
+            bead_object="$bead_json"
+        fi
+
+        local issue_type
+        issue_type=$(echo "$bead_object" | jq -r '.issue_type // ""')
+
+        if [[ "$issue_type" == "genesis" ]]; then
+            local genesis_title description plan_path=""
+            genesis_title=$(echo "$bead_object" | jq -r '.title // ""')
+            description=$(echo "$bead_object" | jq -r '.description // ""')
+
+            # Look for explicit "Tied to plan: <path>" reference in the description
+            local tied_line
+            tied_line=$(echo "$description" | grep -m1 -i "Tied to plan:" | sed 's/.*[Tt]ied to plan:[[:space:]]*//')
+            if [[ -n "$tied_line" ]]; then
+                plan_path="${tied_line%$'\r'}"  # strip trailing carriage return if any
+                plan_path="${plan_path%%[[:space:]]*([[:space:]])}"  # strip trailing whitespace
+            fi
+
+            _needle_debug "Found genesis bead: $current_id (plan_path='$plan_path')"
+            printf '%s|%s\n' "$genesis_title" "$plan_path"
+            return 0
+        fi
+
+        # Walk up: take the first dependency (blocked_by bead)
+        local next_id
+        next_id=$(echo "$bead_object" | jq -r '(.dependencies // []) | .[0].id // ""')
+
+        if [[ -z "$next_id" ]]; then
+            _needle_debug "No more dependencies from bead: $current_id"
+            break
+        fi
+
+        current_id="$next_id"
+        (( depth++ ))
+    done
+
+    _needle_debug "No genesis bead found in chain from: $bead_id"
+    return 1
+}
+
 # Extract file context from description
 # Finds files mentioned in the description and includes their content
 # Usage: _needle_extract_file_context <description> <workspace>
