@@ -653,6 +653,13 @@ _needle_event_error_timeout() {
     _needle_telemetry_emit "error.timeout" "error" "operation=$operation" "$@"
 }
 
+# Usage: _needle_event_error_release_failed <bead_id> [reason=...] [key=value ...]
+_needle_event_error_release_failed() {
+    local bead_id="$1"
+    shift
+    _needle_telemetry_emit "error.release_failed" "error" "bead_id=$bead_id" "$@"
+}
+
 # ============================================================================
 # Effort Events (Cost Tracking)
 # ============================================================================
