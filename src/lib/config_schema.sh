@@ -13,15 +13,10 @@
 _NEEDLE_CONFIG_SCHEMA_LOADED=1
 
 # ============================================================================
-# Implemented Strands (must match src/strands/engine.sh)
+# Strand Config
 # ============================================================================
-
-# The canonical list of implemented strand names.
-# Any key under `strands:` not in this list is invalid.
-readonly NEEDLE_IMPLEMENTED_STRANDS=(pluck explore mend weave unravel pulse knot)
-
-# Valid values for strand enable/disable flags
-readonly NEEDLE_STRAND_VALID_VALUES=(true false auto)
+# Strands are configured as an ordered YAML list of script paths.
+# No hardcoded strand names — the config list is the source of truth.
 
 # ============================================================================
 # Deprecated Keys
@@ -35,6 +30,13 @@ declare -A NEEDLE_DEPRECATED_KEYS
 NEEDLE_DEPRECATED_KEYS=(
     ["effort.budget.daily_limit_usd"]="Deprecated: use 'billing.daily_budget_usd' instead"
     ["effort.budget.warning_threshold"]="Deprecated: 'effort.budget.warning_threshold' is no longer used"
+    ["strands.pluck"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.explore"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.mend"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.weave"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.unravel"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.pulse"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
+    ["strands.knot"]="Deprecated: strands is now an ordered list of script paths, not a map of name:enabled"
     ["strands.weave.frequency"]="Deprecated flat key: use 'weave.frequency' instead"
     ["strands.weave.max_doc_files"]="Deprecated flat key: use 'weave.max_doc_files' instead"
     ["strands.weave.max_beads_per_run"]="Deprecated flat key: use 'weave.max_beads_per_run' instead"
@@ -305,9 +307,7 @@ check_deprecated_keys() {
 # ============================================================================
 # validate_strand_config
 # ============================================================================
-# Validate that:
-#   1. All keys under strands: match implemented strand names
-#   2. All strand values are one of: true | false | auto
+# Validate that strands: is a YAML list of script path strings.
 #
 # Usage: validate_strand_config <config_file>
 # Returns: 0 if valid, 1 if invalid
@@ -319,54 +319,59 @@ validate_strand_config() {
         return 0
     fi
 
-    # Build lookup set of implemented strands
-    local strand_keys
-    strand_keys=$(_schema_get_strand_keys "$config_file")
+    # Check if strands key exists
+    local strands_raw
+    strands_raw=$(_schema_get_value "$config_file" "strands")
 
-    if [[ -z "$strand_keys" ]]; then
-        # No strands section - that's fine
+    if [[ -z "$strands_raw" ]]; then
+        # No strands section — defaults will be used
         return 0
     fi
 
-    while IFS= read -r strand_key; do
-        [[ -z "$strand_key" ]] && continue
+    # Validate strands is a list (not a map or scalar)
+    if command -v yq &>/dev/null; then
+        local strands_type
+        strands_type=$(yq '.strands | tag' "$config_file" 2>/dev/null)
+        if [[ "$strands_type" != "!!seq" ]]; then
+            _schema_error "strands: expected a list of script paths, got $strands_type"
+            return 1
+        fi
 
-        # 1. Check that the key is a known implemented strand
-        local is_known=0
-        for s in "${NEEDLE_IMPLEMENTED_STRANDS[@]}"; do
-            if [[ "$strand_key" == "$s" ]]; then
-                is_known=1
-                break
+        # Validate each entry is a non-empty string
+        local entries
+        entries=$(yq '.strands[]' "$config_file" 2>/dev/null)
+        local idx=0
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            if [[ "$entry" == "null" ]]; then
+                _schema_error "strands[$idx]: null entry not allowed"
+                ((errors++))
             fi
-        done
-
-        if [[ "$is_known" -eq 0 ]]; then
-            _schema_error "strands.$strand_key: unknown strand '$strand_key'. Implemented strands: ${NEEDLE_IMPLEMENTED_STRANDS[*]}"
-            ((errors++))
-            continue
-        fi
-
-        # 2. Check that the value is a valid flag
-        local strand_val
-        strand_val=$(_schema_get_value "$config_file" "strands.$strand_key")
-
-        if [[ -z "$strand_val" ]]; then
-            continue
-        fi
-
-        local is_valid_val=0
-        for v in "${NEEDLE_STRAND_VALID_VALUES[@]}"; do
-            if [[ "$strand_val" == "$v" ]]; then
-                is_valid_val=1
-                break
-            fi
-        done
-
-        if [[ "$is_valid_val" -eq 0 ]]; then
-            _schema_error "strands.$strand_key: invalid value '$strand_val'. Must be one of: ${NEEDLE_STRAND_VALID_VALUES[*]}"
+            ((idx++))
+        done <<< "$entries"
+    elif python3 -c "import yaml" 2>/dev/null; then
+        local result
+        result=$(python3 - "$config_file" <<'PYEOF' 2>&1
+import yaml, sys
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f) or {}
+strands = data.get('strands')
+if strands is None:
+    sys.exit(0)
+if not isinstance(strands, list):
+    print(f"ERROR: strands: expected a list, got {type(strands).__name__}", file=sys.stderr)
+    sys.exit(1)
+for i, entry in enumerate(strands):
+    if not isinstance(entry, str) or not entry.strip():
+        print(f"ERROR: strands[{i}]: expected non-empty string, got {type(entry).__name__}: {entry!r}", file=sys.stderr)
+        sys.exit(1)
+sys.exit(0)
+PYEOF
+)
+        if [[ $? -ne 0 ]]; then
             ((errors++))
         fi
-    done <<< "$strand_keys"
+    fi
 
     [[ "$errors" -eq 0 ]]
 }
@@ -676,9 +681,11 @@ validate_workspace_config() {
         fi
     fi
 
-    # Validate strand config if present
-    if ! validate_strand_config "$config_file"; then
-        ((errors++))
+    # Warn if workspace tries to set strand list (strands are global only)
+    local has_strands
+    has_strands=$(_schema_get_value "$config_file" "strands")
+    if [[ -n "$has_strands" ]]; then
+        _schema_warn "strands: strand list is global only (set in ~/.needle/config.yaml, not workspace config)"
     fi
 
     # Validate preferred_agents if present

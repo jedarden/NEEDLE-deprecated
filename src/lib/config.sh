@@ -27,15 +27,15 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "polling_interval": "2s",
     "idle_timeout": "300s"
   },
-  "strands": {
-    "pluck": "auto",
-    "explore": "auto",
-    "mend": "auto",
-    "weave": "auto",
-    "unravel": "auto",
-    "pulse": "auto",
-    "knot": "auto"
-  },
+  "strands": [
+    "strands/pluck.sh",
+    "strands/explore.sh",
+    "strands/mend.sh",
+    "strands/weave.sh",
+    "strands/unravel.sh",
+    "strands/pulse.sh",
+    "strands/knot.sh"
+  ],
   "mend": {
     "heartbeat_max_age": 3600,
     "max_log_files": 100,
@@ -164,15 +164,16 @@ runner:
   idle_timeout: 300s
 
 # Strand configuration
-# Values: true (always enabled), false (always disabled), auto (follows billing model)
+# Ordered list of strand scripts. Position = priority. Presence = enabled.
+# Relative paths resolve against the NEEDLE installation directory.
 strands:
-  pluck: auto    # Primary work from configured workspaces
-  explore: auto  # Look for work in other workspaces
-  mend: auto     # Maintenance and cleanup
-  weave: auto    # Create beads from documentation gaps
-  unravel: auto  # Create alternatives for blocked beads
-  pulse: auto    # Codebase health monitoring
-  knot: auto     # Alert human when stuck
+  - strands/pluck.sh     # Primary work from configured workspaces
+  - strands/explore.sh   # Look for work in other workspaces
+  - strands/mend.sh      # Maintenance and cleanup
+  - strands/weave.sh     # Create beads from documentation gaps
+  - strands/unravel.sh   # Create alternatives for blocked beads
+  - strands/pulse.sh     # Codebase health monitoring
+  - strands/knot.sh      # Alert human when stuck
 
 # Maintenance strand configuration
 mend:
@@ -750,15 +751,16 @@ runner:
   idle_timeout: 300s
 
 # Strand configuration
-# Values: true (always enabled), false (always disabled), auto (follows billing model)
+# Ordered list of strand scripts. Position = priority. Presence = enabled.
+# Relative paths resolve against the NEEDLE installation directory.
 strands:
-  pluck: auto    # Primary work from configured workspaces
-  explore: auto  # Look for work in other workspaces
-  mend: auto     # Maintenance and cleanup
-  weave: auto    # Create beads from documentation gaps
-  unravel: auto  # Create alternatives for blocked beads
-  pulse: auto    # Codebase health monitoring
-  knot: auto     # Alert human when stuck
+  - strands/pluck.sh     # Primary work from configured workspaces
+  - strands/explore.sh   # Look for work in other workspaces
+  - strands/mend.sh      # Maintenance and cleanup
+  - strands/weave.sh     # Create beads from documentation gaps
+  - strands/unravel.sh   # Create alternatives for blocked beads
+  - strands/pulse.sh     # Codebase health monitoring
+  - strands/knot.sh      # Alert human when stuck
 
 # Maintenance strand configuration
 mend:

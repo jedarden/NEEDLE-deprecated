@@ -37,11 +37,7 @@ _needle_strand_weave() {
         return 1
     fi
 
-    # Check if weave is enabled (opt-in only - default is false)
-    if ! _needle_weave_is_enabled; then
-        _needle_debug "weave: strand is disabled (opt-in, set strands.weave: true to enable)"
-        return 1
-    fi
+    # NOTE: enablement check removed — presence in the strand list means enabled
 
     # Check frequency limit (don't run every loop)
     if ! _needle_weave_check_frequency "$workspace"; then
@@ -488,21 +484,8 @@ _needle_weave_create_beads() {
 # Utility Functions
 # ============================================================================
 
-# Check if weave strand is enabled (opt-in, false by default)
-# Returns: 0 if enabled, 1 if disabled
-_needle_weave_is_enabled() {
-    local enabled
-    enabled=$(get_config "strands.weave" "false" 2>/dev/null)
-
-    case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
+# NOTE: _needle_weave_is_enabled removed — strand enablement is now
+# controlled by presence in the config strand list
 
 # Get statistics about weave strand activity
 # Usage: _needle_weave_stats

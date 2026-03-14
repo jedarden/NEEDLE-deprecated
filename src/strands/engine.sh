@@ -1,18 +1,14 @@
 #!/usr/bin/env bash
-# NEEDLE Strand Engine - Dispatcher for the 7-strand priority waterfall
+# NEEDLE Strand Engine - Configurable strand dispatcher
 #
-# The strand engine implements the priority waterfall, dispatching work
-# through the 7-strand system in order. It SOURCES strand implementations
-# but does NOT implement the strands themselves.
+# The strand engine iterates through a configured list of strand scripts
+# in order. Each strand follows a simple contract:
+#   - Function: _needle_strand_<name>(workspace, agent)
+#   - Returns 0 if work was found (engine exits, worker loop restarts)
+#   - Returns 1 if no work found (engine continues to next strand)
 #
-# Strand order (priority waterfall):
-#   1. pluck   - Primary work from configured workspaces (nd-2gc)
-#   2. explore - Look for work in other workspaces (nd-hq2)
-#   3. mend    - Maintenance and cleanup (nd-1sk)
-#   4. weave   - Create beads from documentation gaps (nd-27u)
-#   5. unravel - Create alternatives for blocked beads (nd-20p)
-#   6. pulse   - Codebase health monitoring (nd-qpj)
-#   7. knot    - Alert human when stuck (nd-d2a)
+# Strand list is configured in ~/.needle/config.yaml as an ordered YAML list.
+# Position in the list determines priority. Presence in the list means enabled.
 #
 # Usage:
 #   source "$NEEDLE_SRC/strands/engine.sh"
@@ -44,63 +40,81 @@ if [[ -z "${_NEEDLE_DIAGNOSTIC_LOADED:-}" ]]; then
     source "$NEEDLE_SRC/lib/diagnostic.sh"
 fi
 
-# Source billing models module for strand enablement
-if [[ -z "${_NEEDLE_BILLING_MODELS_LOADED:-}" ]]; then
-    source "$NEEDLE_SRC/lib/billing_models.sh"
-fi
-
-# Source individual strand implementations
-# Each strand file defines _needle_strand_<name>() function
-source "$NEEDLE_SRC/strands/pluck.sh"
-source "$NEEDLE_SRC/strands/explore.sh"
-source "$NEEDLE_SRC/strands/mend.sh"
-source "$NEEDLE_SRC/strands/weave.sh"
-source "$NEEDLE_SRC/strands/unravel.sh"
-source "$NEEDLE_SRC/strands/pulse.sh"
-source "$NEEDLE_SRC/strands/knot.sh"
-
 # ============================================================================
-# Strand Enable/Disable Check
+# Strand Loading
 # ============================================================================
 
-# Check if a strand is enabled in configuration
-# Usage: _needle_is_strand_enabled <strand_name>
-# Returns: 0 if enabled, 1 if disabled
-# Example: _needle_is_strand_enabled "pluck"
-_needle_is_strand_enabled() {
-    local strand="$1"
+# Resolve a strand path entry to an absolute path.
+# Relative paths resolve against NEEDLE_SRC.
+# Returns: absolute path on stdout, or empty string if not found
+_needle_resolve_strand_path() {
+    local entry="$1"
 
-    # Use billing model module if available (respects auto, true, false settings)
-    if declare -f _needle_billing_is_strand_enabled &>/dev/null; then
-        _needle_billing_is_strand_enabled "$strand"
-        return $?
+    # Absolute path — use as-is
+    if [[ "$entry" == /* ]]; then
+        echo "$entry"
+        return
     fi
 
-    # Fallback: use config directly
-    # Default to true if not configured (changed from false to prevent worker starvation)
-    local enabled
-    enabled="$(get_config "strands.$strand" "true" 2>/dev/null)"
+    # Relative path — resolve against NEEDLE_SRC
+    echo "$NEEDLE_SRC/$entry"
+}
 
-    # Handle various true representations
-    case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1)
-            return 0
-            ;;
-        auto|Auto|AUTO)
-            # If auto but billing models not loaded, default to enabled for essential strands
-            case "$strand" in
-                pluck|explore|mend|knot)
-                    return 0
-                    ;;
-                *)
-                    return 1
-                    ;;
-            esac
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+# Derive the strand function name from a script path.
+# strands/pluck.sh → _needle_strand_pluck
+# /home/user/custom_strand.sh → _needle_strand_custom_strand
+_needle_strand_func_name() {
+    local path="$1"
+    local base
+    base="$(basename "$path" .sh)"
+    echo "_needle_strand_${base}"
+}
+
+# Read the strand list from config.
+# Returns one strand path per line on stdout.
+_needle_get_strand_list() {
+    local config
+    config=$(load_config 2>/dev/null)
+
+    if [[ -z "$config" ]]; then
+        return 1
+    fi
+
+    # Extract strands array entries
+    if command -v jq &>/dev/null; then
+        echo "$config" | jq -r '.strands[]? // empty' 2>/dev/null
+    elif command -v yq &>/dev/null; then
+        echo "$config" | yq '.strands[]' 2>/dev/null
+    fi
+}
+
+# Source a strand script if its function is not already defined.
+# This handles both dev mode (source from file) and bundled builds
+# (function already exists from the single-file bundle).
+_needle_load_strand() {
+    local path="$1"
+    local func_name="$2"
+
+    # Already loaded (bundled build or previously sourced)
+    if declare -f "$func_name" &>/dev/null; then
+        return 0
+    fi
+
+    # Source the script
+    if [[ -f "$path" ]]; then
+        source "$path"
+    else
+        _needle_warn "Strand script not found: $path"
+        return 1
+    fi
+
+    # Verify the function is now defined
+    if ! declare -f "$func_name" &>/dev/null; then
+        _needle_warn "Strand script $path does not define $func_name"
+        return 1
+    fi
+
+    return 0
 }
 
 # ============================================================================
@@ -129,10 +143,6 @@ _needle_strand_engine() {
     local workspace="$1"
     local agent="$2"
 
-    # Strand order array (priority waterfall)
-    local strands=(pluck explore mend weave unravel pulse knot)
-    local strand_num=1
-
     # DIAGNOSTIC: Log strand engine invocation with full context
     _needle_diag_engine "Strand engine started" \
         "workspace=$workspace" \
@@ -145,60 +155,68 @@ _needle_strand_engine() {
     _needle_debug "DIAG: Strand engine started - workspace=$workspace, agent=$agent, NEEDLE_VERBOSE=${NEEDLE_VERBOSE:-false}"
     _needle_debug "Starting strand engine for workspace: $workspace, agent: $agent"
 
+    # Read strand list from config
+    local strand_entries=()
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        strand_entries+=("$entry")
+    done < <(_needle_get_strand_list)
+
+    if [[ ${#strand_entries[@]} -eq 0 ]]; then
+        _needle_warn "No strands configured — check strands list in config"
+        return 1
+    fi
+
     # Track strand results for final diagnostic
     local strand_results=()
-    local disabled_count=0
-    local enabled_count=0
+    local strand_num=0
+    local strand_count=${#strand_entries[@]}
 
-    for strand in "${strands[@]}"; do
-        _needle_verbose "Checking strand $strand_num: $strand"
+    for entry in "${strand_entries[@]}"; do
+        ((strand_num++))
 
-        # Check if strand is enabled
-        if ! _needle_is_strand_enabled "$strand"; then
+        local resolved_path func_name strand_name
+        resolved_path=$(_needle_resolve_strand_path "$entry")
+        func_name=$(_needle_strand_func_name "$entry")
+        strand_name="$(basename "$entry" .sh)"
+
+        _needle_verbose "Checking strand $strand_num/$strand_count: $strand_name"
+
+        # Load strand (source if not already defined)
+        if ! _needle_load_strand "$resolved_path" "$func_name"; then
             _needle_emit_event "strand.skipped" \
-                "Strand $strand ($strand_num) is disabled" \
+                "Strand $strand_name ($strand_num) failed to load" \
                 "strand=$strand_num" \
-                "name=$strand" \
-                "reason=disabled"
+                "name=$strand_name" \
+                "reason=load_failed" \
+                "path=$entry"
 
-            _needle_diag_engine "Strand disabled, skipping" \
-                "strand=$strand" \
-                "strand_num=$strand_num"
-
-            _needle_debug "Strand $strand ($strand_num) is disabled, skipping"
-            strand_results+=("$strand:disabled")
-            ((disabled_count++))
-            ((strand_num++))
+            strand_results+=("$strand_name:load_failed")
             continue
         fi
 
-        ((enabled_count++))
-
         # Emit strand started event
         _needle_emit_event "strand.started" \
-            "Starting strand $strand ($strand_num)" \
+            "Starting strand $strand_name ($strand_num)" \
             "strand=$strand_num" \
-            "name=$strand" \
+            "name=$strand_name" \
             "workspace=$workspace" \
             "agent=$agent"
 
         _needle_diag_engine "Dispatching to strand" \
-            "strand=$strand" \
+            "strand=$strand_name" \
             "strand_num=$strand_num" \
             "workspace=$workspace"
 
-        _needle_verbose "Dispatching to strand: $strand"
+        _needle_verbose "Dispatching to strand: $strand_name"
 
-        # Dispatch to strand implementation (defined in separate files)
-        # Each strand function returns:
-        #   0 - Work was found and processed
-        #   1 - No work found (fallthrough to next strand)
+        # Dispatch to strand
         local result
-        "_needle_strand_$strand" "$workspace" "$agent"
+        "$func_name" "$workspace" "$agent"
         result=$?
 
         _needle_diag_engine "Strand returned result" \
-            "strand=$strand" \
+            "strand=$strand_name" \
             "strand_num=$strand_num" \
             "result=$result" \
             "result_meaning=$([[ $result -eq 0 ]] && echo 'work_found' || echo 'no_work')"
@@ -206,48 +224,44 @@ _needle_strand_engine() {
         if [[ $result -eq 0 ]]; then
             # Work found and processed
             _needle_emit_event "strand.completed" \
-                "Strand $strand ($strand_num) found work" \
+                "Strand $strand_name ($strand_num) found work" \
                 "strand=$strand_num" \
-                "name=$strand" \
+                "name=$strand_name" \
                 "result=work_found"
 
             _needle_diag_engine "Work found and completed" \
-                "strand=$strand" \
+                "strand=$strand_name" \
                 "strand_num=$strand_num" \
                 "strands_checked=$strand_num" \
-                "enabled_strands=$enabled_count" \
-                "disabled_strands=$disabled_count"
+                "total_strands=$strand_count"
 
-            _needle_success "Strand $strand ($strand_num): work completed"
+            _needle_success "Strand $strand_name ($strand_num): work completed"
             return 0  # Work done, exit engine
         fi
 
         # Fallthrough to next strand
         _needle_emit_event "strand.fallthrough" \
-            "Strand $strand ($strand_num) found no work, continuing" \
+            "Strand $strand_name ($strand_num) found no work, continuing" \
             "from=$strand_num" \
-            "from_name=$strand" \
+            "from_name=$strand_name" \
             "reason=no_work" \
             "to=$((strand_num + 1))"
 
-        _needle_verbose "Strand $strand ($strand_num): no work found, continuing"
+        _needle_verbose "Strand $strand_name ($strand_num): no work found, continuing"
 
-        strand_results+=("$strand:no_work")
-        ((strand_num++))
+        strand_results+=("$strand_name:no_work")
     done
 
     # All strands exhausted, no work found
-    _needle_diag_no_work "$((strand_num - 1))" \
+    _needle_diag_no_work "$strand_count" \
         "workspace=$workspace" \
         "agent=$agent" \
-        "enabled_strands=$enabled_count" \
-        "disabled_strands=$disabled_count" \
+        "total_strands=$strand_count" \
         "results=${strand_results[*]}"
 
     _needle_diag_starvation "all_strands_exhausted" \
         "workspace=$workspace" \
-        "enabled_strands=$enabled_count" \
-        "disabled_strands=$disabled_count" \
+        "total_strands=$strand_count" \
         "check_database=true"
 
     _needle_debug "All strands exhausted, no work found"
@@ -258,43 +272,14 @@ _needle_strand_engine() {
 # Utility Functions
 # ============================================================================
 
-# Get list of all strand names in order
+# Get list of configured strand names in order
 # Usage: _needle_strand_list
-# Returns: Space-separated list of strand names
+# Returns: Space-separated list of strand names (derived from config paths)
 _needle_strand_list() {
-    echo "pluck explore mend weave unravel pulse knot"
-}
-
-# Get strand number by name
-# Usage: _needle_strand_number <strand_name>
-# Returns: Strand number (1-7) or 0 if not found
-_needle_strand_number() {
-    local strand="$1"
-    case "$strand" in
-        pluck)   echo 1 ;;
-        explore) echo 2 ;;
-        mend)    echo 3 ;;
-        weave)   echo 4 ;;
-        unravel) echo 5 ;;
-        pulse)   echo 6 ;;
-        knot)    echo 7 ;;
-        *)       echo 0 ;;
-    esac
-}
-
-# Get strand name by number
-# Usage: _needle_strand_name <strand_number>
-# Returns: Strand name or empty string if not found
-_needle_strand_name() {
-    local num="$1"
-    case "$num" in
-        1) echo "pluck"   ;;
-        2) echo "explore" ;;
-        3) echo "mend"    ;;
-        4) echo "weave"   ;;
-        5) echo "unravel" ;;
-        6) echo "pulse"   ;;
-        7) echo "knot"    ;;
-        *) echo ""        ;;
-    esac
+    local names=()
+    while IFS= read -r entry; do
+        [[ -z "$entry" ]] && continue
+        names+=("$(basename "$entry" .sh)")
+    done < <(_needle_get_strand_list)
+    echo "${names[*]}"
 }

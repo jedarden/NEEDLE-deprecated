@@ -478,22 +478,8 @@ _needle_strand_pluck() {
 # Utility Functions
 # ============================================================================
 
-# Check if pluck strand is enabled
-# Usage: _needle_pluck_is_enabled
-# Returns: 0 if enabled, 1 if disabled
-_needle_pluck_is_enabled() {
-    local enabled
-    enabled=$(get_config "strands.pluck" "true" 2>/dev/null)
-
-    case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1|auto|Auto|AUTO)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
+# NOTE: _needle_pluck_is_enabled removed — strand enablement is now
+# controlled by presence in the config strand list
 
 # Get statistics about the pluck strand
 # Usage: _needle_pluck_stats

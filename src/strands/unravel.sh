@@ -86,11 +86,7 @@ _needle_strand_unravel() {
         return 1
     fi
 
-    # Check if unravel is enabled (opt-in only - default is false)
-    if ! _needle_unravel_is_enabled; then
-        _needle_debug "unravel: strand is disabled (opt-in)"
-        return 1
-    fi
+    # NOTE: enablement check removed — presence in the strand list means enabled
 
     # Get configuration
     local min_wait_hours
@@ -241,21 +237,8 @@ _needle_strand_unravel() {
 # Configuration Accessors
 # ============================================================================
 
-# Check if unravel strand is enabled
-# Returns: 0 if enabled, 1 if disabled
-_needle_unravel_is_enabled() {
-    local enabled
-    enabled=$(get_config "strands.unravel" "false" 2>/dev/null)
-
-    case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
+# NOTE: _needle_unravel_is_enabled removed — strand enablement is now
+# controlled by presence in the config strand list
 
 # Get minimum wait hours before considering alternatives
 # Returns: Number of hours (default: 24)
@@ -583,10 +566,8 @@ fi
 # Usage: _needle_unravel_stats
 # Returns: JSON object with stats
 _needle_unravel_stats() {
-    local enabled="false"
-    if _needle_unravel_is_enabled; then
-        enabled="true"
-    fi
+    # Strand is enabled if it's in the config list (always true when this runs)
+    local enabled="true"
 
     local min_wait
     min_wait=$(_needle_unravel_get_min_wait_hours)

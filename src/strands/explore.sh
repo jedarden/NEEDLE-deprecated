@@ -377,22 +377,8 @@ _needle_strand_explore() {
 # Utility Functions
 # ============================================================================
 
-# Check if explore strand is enabled
-# Usage: _needle_explore_is_enabled
-# Returns: 0 if enabled, 1 if disabled
-_needle_explore_is_enabled() {
-    local enabled
-    enabled=$(get_config "strands.explore" "true" 2>/dev/null)
-
-    case "$enabled" in
-        true|True|TRUE|yes|Yes|YES|1|auto|Auto|AUTO)
-            return 0
-            ;;
-        *)
-            return 1
-            ;;
-    esac
-}
+# NOTE: _needle_explore_is_enabled removed — strand enablement is now
+# controlled by presence in the config strand list
 
 # Get statistics about the explore strand
 # Usage: _needle_explore_stats

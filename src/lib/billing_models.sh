@@ -145,77 +145,10 @@ _needle_billing_get_min_priority() {
     esac
 }
 
-# Check if a strand should be enabled for billing model
-# Usage: _needle_billing_is_strand_enabled <strand_name> [model]
-# Returns: 0 if enabled, 1 if disabled
-_needle_billing_is_strand_enabled() {
-    local strand="$1"
-    local model="${2:-$(get_billing_model)}"
-
-    # Get explicit config value (auto means follow billing model)
-    local config_value
-    config_value=$(get_config "strands.$strand" "auto")
-
-    # If explicitly set (not auto), respect that setting
-    case "$config_value" in
-        true|True|TRUE|yes|Yes|YES|1)
-            return 0
-            ;;
-        false|False|FALSE|no|No|NO|0)
-            return 1
-            ;;
-        auto|Auto|AUTO)
-            # Follow billing model profile
-            ;;
-        *)
-            # Unknown value, treat as auto
-            ;;
-    esac
-
-    # Apply billing model defaults
-    case "$model" in
-        pay_per_token)
-            # Conservative: only essential strands (pluck, explore, mend, knot)
-            case "$strand" in
-                pluck|explore|mend|knot)
-                    return 0
-                    ;;
-                weave|unravel|pulse)
-                    return 1  # Opt-in strands disabled
-                    ;;
-                *)
-                    return 0  # Unknown strands default to enabled
-                    ;;
-            esac
-            ;;
-        use_or_lose)
-            # Aggressive: enable all strands including opt-in
-            return 0
-            ;;
-        unlimited)
-            # Balanced: enable everything except weave (still opt-in)
-            case "$strand" in
-                weave)
-                    return 1  # Weave is opt-in even for unlimited
-                    ;;
-                *)
-                    return 0  # All other strands enabled
-                    ;;
-            esac
-            ;;
-        *)
-            # Default: conservative profile
-            case "$strand" in
-                pluck|explore|mend|knot)
-                    return 0
-                    ;;
-                *)
-                    return 1
-                    ;;
-            esac
-            ;;
-    esac
-}
+# NOTE: _needle_billing_is_strand_enabled has been removed.
+# Strand enablement is now controlled by the strand list in config.
+# If a strand is in the list, it runs. Billing models control budget
+# and concurrency only, not strand selection.
 
 # Get budget enforcement strategy for billing model
 # Usage: _needle_billing_get_enforcement_strategy [model]
@@ -364,19 +297,6 @@ get_billing_model_profile() {
     min_priority=$(_needle_billing_get_min_priority "$model")
     concurrency=$(_needle_billing_get_concurrency "$model")
 
-    # Get strand enablement
-    local strands=(pluck explore mend weave unravel pulse knot)
-    local enabled_strands=()
-    local disabled_strands=()
-
-    for strand in "${strands[@]}"; do
-        if _needle_billing_is_strand_enabled "$strand" "$model"; then
-            enabled_strands+=("$strand")
-        else
-            disabled_strands+=("$strand")
-        fi
-    done
-
     # Build JSON
     if command -v jq &>/dev/null; then
         jq -nc \
@@ -385,16 +305,12 @@ get_billing_model_profile() {
             --arg strategy "$strategy" \
             --arg min_priority "$min_priority" \
             --arg concurrency "$concurrency" \
-            --argjson enabled_strands "$(printf '%s\n' "${enabled_strands[@]}" | jq -R . | jq -s .)" \
-            --argjson disabled_strands "$(printf '%s\n' "${disabled_strands[@]}" | jq -R . | jq -s .)" \
             '{
                 model: $model,
                 daily_budget_usd: ($daily_budget | tonumber),
                 enforcement_strategy: $strategy,
                 min_priority: ($min_priority | tonumber),
-                default_concurrency: ($concurrency | tonumber),
-                enabled_strands: $enabled_strands,
-                disabled_strands: $disabled_strands
+                default_concurrency: ($concurrency | tonumber)
             }'
     else
         # Fallback: manual JSON
@@ -422,16 +338,28 @@ show_billing_model_profile() {
     _needle_table_row "Min Priority" "P$min_priority and above"
     _needle_table_row "Concurrency" "$concurrency workers"
 
-    _needle_section "Strand Configuration"
+    _needle_section "Configured Strands"
 
-    local strands=(pluck explore mend weave unravel pulse knot)
-    for strand in "${strands[@]}"; do
-        if _needle_billing_is_strand_enabled "$strand" "$model"; then
-            _needle_print_color "$NEEDLE_COLOR_GREEN" "  ✓ $strand (enabled)"
-        else
-            _needle_print_color "$NEEDLE_COLOR_DIM" "  ✗ $strand (disabled)"
-        fi
-    done
+    # Read strand list from config
+    local config
+    config=$(load_config 2>/dev/null || echo '{}')
+    local strand_list
+    if command -v jq &>/dev/null; then
+        strand_list=$(echo "$config" | jq -r '.strands[]? // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$strand_list" ]]; then
+        _needle_print_color "$NEEDLE_COLOR_DIM" "  (no strands configured)"
+    else
+        local idx=1
+        while IFS= read -r entry; do
+            [[ -z "$entry" ]] && continue
+            local name
+            name="$(basename "$entry" .sh)"
+            _needle_print_color "$NEEDLE_COLOR_GREEN" "  $idx. $name ($entry)"
+            ((idx++))
+        done <<< "$strand_list"
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -468,15 +396,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             _needle_billing_get_concurrency "${2:-}"
             ;;
         strand-enabled)
-            if [[ $# -lt 2 ]]; then
-                echo "Usage: $0 strand-enabled <strand_name> [model]"
-                exit 1
-            fi
-            if _needle_billing_is_strand_enabled "$2" "${3:-}"; then
-                echo "enabled"
-            else
-                echo "disabled"
-            fi
+            echo "Strand enablement is now controlled by the strand list in config."
+            echo "If a strand is in the list, it runs. Use 'needle status' to see configured strands."
             ;;
         should-stop)
             if [[ $# -lt 3 ]]; then
