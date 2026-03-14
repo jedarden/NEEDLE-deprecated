@@ -35,7 +35,7 @@ _needle_strand_mend() {
         "agent=$agent" \
         "session=${NEEDLE_SESSION:-unknown}"
 
-    _needle_debug "mend strand: checking for maintenance tasks in $workspace"
+    _needle_debug "mend strand: checking for maintenance tasks across all workspaces"
 
     local work_done=false
     local orphaned_count=0
@@ -43,19 +43,47 @@ _needle_strand_mend() {
     local heartbeat_count=0
     local log_count=0
 
-    # 1. Clean orphaned claims (beads assigned to dead workers)
-    _needle_diag_strand "mend" "Checking for orphaned claims" "workspace=$workspace"
-    if _needle_mend_orphaned_claims "$workspace"; then
-        work_done=true
-        orphaned_count=1
+    # Collect all configured workspaces to check for orphaned/stale claims
+    local workspaces=()
+    workspaces+=("$workspace")
+
+    # Add all configured workspaces from config
+    local config
+    config=$(load_config 2>/dev/null)
+    if [[ -n "$config" ]]; then
+        while IFS= read -r ws; do
+            [[ -z "$ws" ]] && continue
+            # Deduplicate — skip if already in list
+            local already=false
+            for existing in "${workspaces[@]}"; do
+                if [[ "$existing" == "$ws" ]]; then
+                    already=true
+                    break
+                fi
+            done
+            if ! $already && [[ -d "$ws/.beads" ]]; then
+                workspaces+=("$ws")
+            fi
+        done < <(echo "$config" | jq -r '.workspaces[]? // empty' 2>/dev/null)
     fi
 
-    # 2. Release stale claims (claims held longer than threshold)
-    _needle_diag_strand "mend" "Checking for stale claims" "workspace=$workspace"
-    if _needle_mend_stale_claims "$workspace"; then
-        work_done=true
-        stale_count=1
-    fi
+    # 1. Clean orphaned claims across all workspaces
+    for ws in "${workspaces[@]}"; do
+        _needle_diag_strand "mend" "Checking for orphaned claims" "workspace=$ws"
+        if _needle_mend_orphaned_claims "$ws"; then
+            work_done=true
+            ((orphaned_count++))
+        fi
+    done
+
+    # 2. Release stale claims across all workspaces
+    for ws in "${workspaces[@]}"; do
+        _needle_diag_strand "mend" "Checking for stale claims" "workspace=$ws"
+        if _needle_mend_stale_claims "$ws"; then
+            work_done=true
+            ((stale_count++))
+        fi
+    done
 
     # 3. Prune old heartbeat files from dead workers
     _needle_diag_strand "mend" "Checking for old heartbeats"
@@ -116,9 +144,27 @@ _needle_mend_orphaned_claims() {
         return 1
     fi
 
+    # Resolve the workspace database path
+    local db_path=""
+    if [[ -f "$workspace/.beads/beads.db" ]]; then
+        db_path="$workspace/.beads/beads.db"
+    else
+        # Try to find .beads in subdirectories (workspace may be a parent)
+        local found_db
+        found_db=$(find "$workspace" -maxdepth 2 -path '*/.beads/beads.db' -type f 2>/dev/null | head -1)
+        if [[ -n "$found_db" ]]; then
+            db_path="$found_db"
+        fi
+    fi
+
+    if [[ -z "$db_path" ]]; then
+        _needle_debug "mend: no beads database found in $workspace"
+        return 1
+    fi
+
     # Get all in-progress beads from the workspace
     local in_progress
-    in_progress=$(br list --workspace="$workspace" --status in_progress --json 2>/dev/null)
+    in_progress=$(br list --db="$db_path" --status in_progress --json 2>/dev/null)
 
     # Handle empty or null results
     if [[ -z "$in_progress" ]] || [[ "$in_progress" == "[]" ]] || [[ "$in_progress" == "null" ]]; then
@@ -157,8 +203,8 @@ _needle_mend_orphaned_claims() {
             # No heartbeat file - worker is dead, this is an orphaned claim
             _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - no heartbeat)"
 
-            # Release the claim
-            if br update "$bead_id" --release --reason "orphaned_claim" &>/dev/null; then
+            # Release the claim via SQL (br update --release doesn't exist)
+            if NEEDLE_WORKSPACE="$workspace" _needle_release_bead "$bead_id" --reason "orphaned_claim" --actor "mend_strand"; then
                 _needle_info "Released orphaned claim: $bead_id"
 
                 # Emit event for monitoring
@@ -183,8 +229,8 @@ _needle_mend_orphaned_claims() {
                     # Process is dead but heartbeat file remains - orphaned claim
                     _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - process $pid dead)"
 
-                    # Release the claim
-                    if br update "$bead_id" --release --reason "orphaned_claim" &>/dev/null; then
+                    # Release the claim via SQL
+                    if NEEDLE_WORKSPACE="$workspace" _needle_release_bead "$bead_id" --reason "orphaned_claim" --actor "mend_strand"; then
                         _needle_info "Released orphaned claim: $bead_id"
 
                         # Emit event for monitoring
@@ -236,9 +282,26 @@ _needle_mend_stale_claims() {
 
     _needle_debug "mend: checking for stale claims (threshold: ${stale_threshold}s)"
 
+    # Resolve the workspace database path
+    local db_path=""
+    if [[ -f "$workspace/.beads/beads.db" ]]; then
+        db_path="$workspace/.beads/beads.db"
+    else
+        local found_db
+        found_db=$(find "$workspace" -maxdepth 2 -path '*/.beads/beads.db' -type f 2>/dev/null | head -1)
+        if [[ -n "$found_db" ]]; then
+            db_path="$found_db"
+        fi
+    fi
+
+    if [[ -z "$db_path" ]]; then
+        _needle_debug "mend: no beads database found in $workspace"
+        return 1
+    fi
+
     # Get all in-progress beads from the workspace
     local in_progress
-    in_progress=$(br list --workspace="$workspace" --status in_progress --json 2>/dev/null)
+    in_progress=$(br list --db="$db_path" --status in_progress --json 2>/dev/null)
 
     # Handle empty or null results
     if [[ -z "$in_progress" ]] || [[ "$in_progress" == "[]" ]] || [[ "$in_progress" == "null" ]]; then
