@@ -206,11 +206,11 @@ _needle_select_bead() {
 # Returns: bead ID on success
 # Exit codes:
 #   0 - Success, bead claimed
-#   1 - No beads available or all retries exhausted
+#   1 - No beads available or all candidates exhausted
 #
-# The retry logic handles race conditions where multiple workers attempt
-# to claim the same bead simultaneously. SQLite's transaction isolation
-# in `br` ensures only one worker succeeds - others get exit code 4.
+# The function iterates through ALL claimable beads in priority order,
+# attempting to claim each one until one succeeds or all are exhausted.
+# This ensures we don't report "no work" when other unclaimed beads exist.
 #
 # Example:
 #   bead_id=$(_needle_claim_bead --workspace /home/coder/NEEDLE --actor worker-alpha)
@@ -253,147 +253,204 @@ _needle_claim_bead() {
         return 1
     fi
 
-    # Attempt to claim with retries
+    # Get ALL claimable beads upfront (with fallback for br ready bug)
+    local candidates
+    candidates=$(_needle_get_claimable_beads ${workspace:+--workspace "$workspace"})
+
+    # Handle empty or invalid response
+    if [[ -z "$candidates" ]] || [[ "$candidates" == "[]" ]] || [[ "$candidates" == "null" ]]; then
+        _needle_debug "No beads available to claim"
+        _needle_diag_claim "No beads available" \
+            "workspace=$workspace"
+        return 1
+    fi
+
+    # Validate JSON structure
+    if ! echo "$candidates" | jq -e '.[0]' &>/dev/null; then
+        _needle_warn "Invalid response from br ready: expected JSON array"
+        return 1
+    fi
+
+    # Count candidates
+    local candidate_count
+    candidate_count=$(echo "$candidates" | jq 'length')
+
+    if [[ $candidate_count -eq 0 ]]; then
+        _needle_debug "Empty bead queue"
+        return 1
+    fi
+
+    _needle_debug "Found $candidate_count claimable bead(s)"
+
+    # DIAGNOSTIC: Log candidate count
+    _needle_diag_claim "Claim candidates found" \
+        "candidate_count=$candidate_count" \
+        "workspace=$workspace"
+
+    # Sort candidates by priority (P0 first, then P1, P2, P3+)
+    # Use jq to sort: lower priority number = higher priority
+    local sorted_candidates
+    sorted_candidates=$(echo "$candidates" | jq -c 'sort_by(.priority // 2)')
+
+    # Track beads we've already tried to avoid infinite loops
+    local tried_beads=()
+
+    # Outer loop: allow multiple passes through candidates if retry is needed
     local attempt=1
     while [[ $attempt -le $max_retries ]]; do
-        # Select a bead using weighted random selection
-        local bead_id
-        bead_id=$(_needle_select_bead --workspace "$workspace")
+        _needle_debug "Claim attempt $attempt/$max_retries with $candidate_count candidates"
 
-        # DIAGNOSTIC: Log selection result
-        _needle_diag_claim "Bead selection result" \
-            "attempt=$attempt" \
-            "bead_id=${bead_id:-<none>}" \
-            "workspace=$workspace"
+        # Inner loop: try each candidate in priority order
+        while IFS= read -r bead_json; do
+            [[ -z "$bead_json" ]] && continue
 
-        if [[ -z "$bead_id" ]]; then
-            # No beads available - this is normal, not an error
-            _needle_debug "No beads available to claim"
-            _needle_diag_claim "No beads available" \
-                "attempt=$attempt" \
-                "max_retries=$max_retries" \
-                "workspace=$workspace"
-            return 1
-        fi
+            # Extract bead ID from JSON
+            local bead_id
+            bead_id=$(echo "$bead_json" | jq -r '.id // empty')
 
-        _needle_debug "Attempting to claim bead $bead_id (attempt $attempt/$max_retries)"
-
-        # Run pre_claim hook before attempting claim
-        # exit 2 (abort) = return 1 from _needle_run_hook: stop claiming
-        # exit 3 (skip)  = return 2 from _needle_run_hook: skip this bead, try another
-        if declare -f _needle_run_hook &>/dev/null; then
-            local pre_claim_result
-            _needle_run_hook "pre_claim" "$bead_id" >&2
-            pre_claim_result=$?
-            if [[ $pre_claim_result -eq 1 ]]; then
-                # Hook aborted claiming entirely
-                _needle_debug "pre_claim hook aborted claim for bead $bead_id"
-                return 1
-            elif [[ $pre_claim_result -eq 2 ]]; then
-                # Hook requested skip - try a different bead
-                _needle_debug "pre_claim hook skipped bead $bead_id, retrying"
-                attempt=$((attempt + 1))
+            if [[ -z "$bead_id" ]]; then
                 continue
             fi
-        fi
 
-        # Attempt atomic claim via br update --claim
-        # br returns exit 0 on success, exit 4 on race condition (already claimed)
-        # FIX: Run in workspace directory if provided (br operates on current directory)
-        local claim_result
-        if [[ -n "$workspace" && -d "$workspace" ]]; then
-            claim_result=$(cd "$workspace" && br update "$bead_id" --claim --actor "$actor" 2>&1)
-        else
-            claim_result=$(br update "$bead_id" --claim --actor "$actor" 2>&1)
-        fi
-        local claim_exit=$?
+            # Skip beads we've already tried in this pass
+            if [[ " ${tried_beads[*]} " =~ " ${bead_id} " ]]; then
+                _needle_debug "Skipping $bead_id (already tried this pass)"
+                continue
+            fi
 
-        # DIAGNOSTIC: Log br call result
-        _needle_diag_claim "br claim call completed" \
-            "bead_id=$bead_id" \
-            "attempt=$attempt" \
-            "exit_code=$claim_exit" \
-            "result_preview=${claim_result:0:100}"
+            # Mark this bead as tried
+            tried_beads+=("$bead_id")
 
-        if [[ $claim_exit -eq 0 ]]; then
-            # Success! Emit telemetry
-            _needle_event_bead_claimed "$bead_id" \
-                "actor=$actor" \
-                "attempt=$attempt" \
-                "workspace=$workspace"
+            _needle_debug "Attempting to claim bead $bead_id (priority: $(echo "$bead_json" | jq -r '.priority // 2'))"
 
-            _needle_diag_claim "Bead claimed successfully" \
-                "bead_id=$bead_id" \
-                "actor=$actor" \
-                "attempt=$attempt" \
-                "workspace=$workspace"
-
-            # NOTE: Redirect to stderr - stdout reserved for return value
-            _needle_success "Claimed bead: $bead_id" >&2
-
-            # Run post_claim hook after successful claim
+            # Run pre_claim hook before attempting claim
+            # exit 2 (abort) = return 1 from _needle_run_hook: stop claiming
+            # exit 3 (skip)  = return 2 from _needle_run_hook: skip this bead, try another
             if declare -f _needle_run_hook &>/dev/null; then
-                _needle_run_hook "post_claim" "$bead_id" >&2 || true
-            fi
-
-            # Attempt intent-based file reservation
-            # This returns:
-            #   0 - All files reserved successfully
-            #   1 - Conflict detected (bead already released, dependency added)
-            #   2 - No files declared (proceed normally)
-            if declare -f _needle_claim_with_intent &>/dev/null; then
-                local intent_result
-                _needle_claim_with_intent "$bead_id" ${workspace:+--workspace "$workspace"} --actor "$actor"
-                intent_result=$?
-
-                if [[ $intent_result -eq 1 ]]; then
-                    # Conflict detected - bead was released and dependency added
-                    # Return special code to trigger retry with different bead
-                    _needle_warn "File conflict detected for $bead_id, dependency added, trying another bead"
-                    attempt=$((attempt + 1))
+                local pre_claim_result
+                _needle_run_hook "pre_claim" "$bead_id" >&2
+                pre_claim_result=$?
+                if [[ $pre_claim_result -eq 1 ]]; then
+                    # Hook aborted claiming entirely
+                    _needle_debug "pre_claim hook aborted claim for bead $bead_id"
+                    return 1
+                elif [[ $pre_claim_result -eq 2 ]]; then
+                    # Hook requested skip - try a different bead
+                    _needle_debug "pre_claim hook skipped bead $bead_id, trying next"
                     continue
-                elif [[ $intent_result -eq 0 ]]; then
-                    _needle_success "Intent-based reservation successful for $bead_id" >&2
                 fi
-                # intent_result == 2: no files to reserve, continue normally
             fi
 
-            echo "$bead_id"
-            return 0
+            # Attempt atomic claim via br update --claim
+            # br returns exit 0 on success, exit 4 on race condition (already claimed)
+            local claim_result
+            if [[ -n "$workspace" && -d "$workspace" ]]; then
+                claim_result=$(cd "$workspace" && br update "$bead_id" --claim --actor "$actor" 2>&1)
+            else
+                claim_result=$(br update "$bead_id" --claim --actor "$actor" 2>&1)
+            fi
+            local claim_exit=$?
+
+            # DIAGNOSTIC: Log br call result
+            _needle_diag_claim "br claim call completed" \
+                "bead_id=$bead_id" \
+                "attempt=$attempt" \
+                "exit_code=$claim_exit" \
+                "result_preview=${claim_result:0:100}"
+
+            if [[ $claim_exit -eq 0 ]]; then
+                # Success! Emit telemetry
+                _needle_event_bead_claimed "$bead_id" \
+                    "actor=$actor" \
+                    "attempt=$attempt" \
+                    "candidates_tried=${#tried_beads[@]}" \
+                    "workspace=$workspace"
+
+                _needle_diag_claim "Bead claimed successfully" \
+                    "bead_id=$bead_id" \
+                    "actor=$actor" \
+                    "attempt=$attempt" \
+                    "candidates_tried=${#tried_beads[@]}" \
+                    "workspace=$workspace"
+
+                # NOTE: Redirect to stderr - stdout reserved for return value
+                _needle_success "Claimed bead: $bead_id" >&2
+
+                # Run post_claim hook after successful claim
+                if declare -f _needle_run_hook &>/dev/null; then
+                    _needle_run_hook "post_claim" "$bead_id" >&2 || true
+                fi
+
+                # Attempt intent-based file reservation
+                # This returns:
+                #   0 - All files reserved successfully
+                #   1 - Conflict detected (bead already released, dependency added)
+                #   2 - No files declared (proceed normally)
+                if declare -f _needle_claim_with_intent &>/dev/null; then
+                    local intent_result
+                    _needle_claim_with_intent "$bead_id" ${workspace:+--workspace "$workspace"} --actor "$actor"
+                    intent_result=$?
+
+                    if [[ $intent_result -eq 1 ]]; then
+                        # Conflict detected - bead was released and dependency added
+                        # This is a soft failure - remove from tried list and continue trying other beads
+                        _needle_warn "File conflict detected for $bead_id, dependency added, trying another bead"
+                        # Remove from tried_beads so we don't try it again in this pass
+                        tried_beads=("${tried_beads[@]/$bead_id}")
+                        continue
+                    elif [[ $intent_result -eq 0 ]]; then
+                        _needle_success "Intent-based reservation successful for $bead_id" >&2
+                    fi
+                    # intent_result == 2: no files to reserve, continue normally
+                fi
+
+                echo "$bead_id"
+                return 0
+            fi
+
+            # Claim failed (race condition - another worker got it first)
+            _needle_telemetry_emit "bead.claim_retry" "warn" \
+                "bead_id=$bead_id" \
+                "attempt=$attempt" \
+                "candidates_tried=${#tried_beads[@]}" \
+                "actor=$actor"
+
+            _needle_diag_claim "Claim race condition, trying next candidate" \
+                "bead_id=$bead_id" \
+                "attempt=$attempt" \
+                "exit_code=$claim_exit"
+
+            _needle_verbose "Claim race condition for bead $bead_id, trying next candidate..."
+        done < <(echo "$sorted_candidates" | jq -c '.[]')
+
+        # All candidates tried in this pass
+        _needle_debug "Attempt $attempt complete: tried ${#tried_beads[@]} candidates"
+
+        # If we've exhausted all candidates without success, break
+        if [[ ${#tried_beads[@]} -ge $candidate_count ]]; then
+            _needle_debug "All $candidate_count candidates exhausted"
+            break
         fi
 
-        # Claim failed (race condition - another worker got it first)
-        # Emit retry event and try again with a different bead
-        _needle_telemetry_emit "bead.claim_retry" "warn" \
-            "bead_id=$bead_id" \
-            "attempt=$attempt" \
-            "max_retries=$max_retries" \
-            "actor=$actor"
-
-        _needle_diag_claim "Claim race condition, retrying" \
-            "bead_id=$bead_id" \
-            "attempt=$attempt" \
-            "exit_code=$claim_exit"
-
-        _needle_verbose "Claim race condition for bead $bead_id, retrying..."
-
+        # Reset tried_beads for next pass and increment attempt
+        tried_beads=()
         attempt=$((attempt + 1))
     done
 
-    # All retries exhausted
-    _needle_warn "Failed to claim bead after $max_retries attempts"
+    # All candidates exhausted
+    _needle_warn "Failed to claim bead after trying $candidate_count candidates"
 
-    _needle_diag_claim "All claim retries exhausted" \
-        "max_retries=$max_retries" \
+    _needle_diag_claim "All claim candidates exhausted" \
+        "candidate_count=$candidate_count" \
         "actor=$actor" \
         "workspace=$workspace"
 
-    _needle_diag_starvation "claim_retries_exhausted" \
-        "max_retries=$max_retries" \
+    _needle_diag_starvation "claim_candidates_exhausted" \
+        "candidate_count=$candidate_count" \
         "workspace=$workspace"
 
     _needle_telemetry_emit "bead.claim_exhausted" "error" \
-        "max_retries=$max_retries" \
+        "candidate_count=$candidate_count" \
         "actor=$actor" \
         "workspace=$workspace"
 
