@@ -137,20 +137,19 @@ _needle_stop_fabric_forwarder() {
     _NEEDLE_FABRIC_PIPE=""
 }
 
-# Get tee command for output redirection
+# Run tee for output redirection
 # If FABRIC is enabled, tee to both output file and FABRIC pipe
 # Otherwise, just tee to output file
-# Usage: _needle_get_tee_command <output_file>
-# Returns: tee command string
-_needle_get_tee_command() {
+# Usage: _needle_run_tee <output_file>
+_needle_run_tee() {
     local output_file="$1"
 
     if [[ -n "$_NEEDLE_FABRIC_PIPE" ]] && [[ -p "$_NEEDLE_FABRIC_PIPE" ]]; then
         # Tee to both output file and FABRIC pipe (output visible in terminal)
-        echo "tee \"$output_file\" \"$_NEEDLE_FABRIC_PIPE\""
+        tee "$output_file" "$_NEEDLE_FABRIC_PIPE"
     else
         # Tee to output file (output visible in terminal)
-        echo "tee \"$output_file\""
+        tee "$output_file"
     fi
 }
 
@@ -262,11 +261,8 @@ _needle_dispatch_heredoc() {
 
     _needle_debug "Dispatching with heredoc method"
 
-    local tee_cmd
-    tee_cmd=$(_needle_get_tee_command "$output_file")
-
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | eval "$tee_cmd"
+        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
         local exit_code=${PIPESTATUS[0]}
         # timeout returns 124 when timed out
         if [[ $exit_code -eq 124 ]]; then
@@ -274,7 +270,7 @@ _needle_dispatch_heredoc() {
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | eval "$tee_cmd"
+        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
         return ${PIPESTATUS[0]}
     fi
 }
@@ -292,18 +288,15 @@ _needle_dispatch_stdin() {
 
     _needle_debug "Dispatching with stdin method"
 
-    local tee_cmd
-    tee_cmd=$(_needle_get_tee_command "$output_file")
-
     if [[ "$timeout" -gt 0 ]]; then
-        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | eval "$tee_cmd"
+        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
         local exit_code=${PIPESTATUS[1]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | eval "$tee_cmd"
+        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
         return ${PIPESTATUS[1]}
     fi
 }
@@ -331,18 +324,15 @@ _needle_dispatch_file() {
     # Replace ${PROMPT_FILE} placeholder in command if present
     local resolved_cmd="${invoke_cmd//\$\{PROMPT_FILE\}/$file_path}"
 
-    local tee_cmd
-    tee_cmd=$(_needle_get_tee_command "$output_file")
-
     local exit_code
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | eval "$tee_cmd"
+        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
         exit_code=${PIPESTATUS[0]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
     else
-        bash -c "$resolved_cmd" 2>&1 | eval "$tee_cmd"
+        bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
         exit_code=${PIPESTATUS[0]}
     fi
 
@@ -364,18 +354,15 @@ _needle_dispatch_args() {
 
     _needle_debug "Dispatching with args method"
 
-    local tee_cmd
-    tee_cmd=$(_needle_get_tee_command "$output_file")
-
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | eval "$tee_cmd"
+        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
         local exit_code=${PIPESTATUS[0]}
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | eval "$tee_cmd"
+        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
         return ${PIPESTATUS[0]}
     fi
 }
