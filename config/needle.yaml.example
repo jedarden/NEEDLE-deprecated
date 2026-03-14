@@ -35,6 +35,8 @@ effort:
 # Per-provider overrides allow mixed billing environments (e.g., subscription
 # Alibaba + pay-as-you-go Anthropic on the same NEEDLE instance).
 billing:
+  default_model: pay_per_token  # Default billing model for providers not listed below
+
   # Per-provider billing model (overrides default behavior per provider)
   providers:
     anthropic: pay_per_token    # Anthropic API — pay per token
@@ -99,28 +101,25 @@ naming:
 # ============================================================================
 # Strands
 # ============================================================================
-# Strands are an ordered list of script paths that workers execute in sequence.
-# Each strand has a chance to claim work before the next one is tried.
+# Strands are an ordered list of work-finding strategies. Each strand has
+# a chance to claim work before the next one is tried. Set to false to disable.
 #
-# Built-in strands (in src/strands/):
-#   pluck.sh    — Strand 1: Claim OPEN beads from configured workspaces (always on)
-#   explore.sh  — Strand 2: Discover work in adjacent workspaces (low overhead)
-#   mend.sh     — Strand 3: Maintenance: clean logs, recover stale heartbeats
-#   weave.sh    — Strand 4: Create beads from documentation gaps (opt-in)
-#   unravel.sh  — Strand 5: Generate alternative approaches for blocked beads (opt-in)
-#   pulse.sh    — Strand 6: Codebase health monitoring, auto-generate fix beads (opt-in)
-#   knot.sh     — Strand 7: Alert the human when workers are stuck
-#
-# To disable a strand, remove it from the list.
-# Custom strands can be added by listing the script path.
+# Built-in strands:
+#   pluck    — Strand 1: Claim OPEN beads from configured workspaces (always on)
+#   explore  — Strand 2: Discover work in adjacent workspaces (low overhead)
+#   mend     — Strand 3: Maintenance: clean logs, recover stale heartbeats
+#   weave    — Strand 4: Create beads from documentation gaps (opt-in)
+#   unravel  — Strand 5: Generate alternative approaches for blocked beads (opt-in)
+#   pulse    — Strand 6: Codebase health monitoring, auto-generate fix beads (opt-in)
+#   knot     — Strand 7: Alert the human when workers are stuck
 strands:
-  - src/strands/pluck.sh        # Claim beads from workspaces
-  - src/strands/explore.sh      # Discover adjacent workspace work
-  - src/strands/mend.sh         # Maintenance and cleanup
-  # - src/strands/weave.sh      # Uncomment to enable doc-gap bead creation
-  # - src/strands/unravel.sh    # Uncomment to enable alternative generation
-  # - src/strands/pulse.sh      # Uncomment to enable health monitoring
-  - src/strands/knot.sh         # Alert human when stuck
+  pluck: true                  # Claim beads from workspaces
+  explore: true                # Discover adjacent workspace work
+  mend: true                   # Maintenance and cleanup
+  weave: false                 # Create doc-gap beads (opt-in)
+  unravel: false               # Generate alternative approaches (opt-in)
+  pulse: false                 # Health monitoring and fix beads (opt-in)
+  knot: true                   # Alert human when stuck
 
 # ============================================================================
 # Scaling
