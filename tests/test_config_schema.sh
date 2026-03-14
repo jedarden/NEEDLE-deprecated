@@ -680,6 +680,82 @@ _assert_ok "mitosis.min_complexity=0 is valid (min boundary)" \
     validate_config_schema "$NEEDLE_CONFIG_FILE"
 
 # ============================================================================
+# Tests: Scaling config validation
+# ============================================================================
+
+echo ""
+echo "========================================"
+echo "Scaling config validation tests"
+echo "========================================"
+
+_write_config <<'EOF'
+scaling:
+  spawn_threshold: 3
+  max_workers_per_agent: 10
+  cooldown_seconds: 30
+EOF
+_assert_ok "valid scaling config passes" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  spawn_threshold: -1
+EOF
+_assert_fail "scaling.spawn_threshold=-1 is rejected (min=1)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  spawn_threshold: many
+EOF
+_assert_fail "scaling.spawn_threshold=many is rejected (not an integer)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  max_workers_per_agent: 0
+EOF
+_assert_fail "scaling.max_workers_per_agent=0 is rejected (min=1)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  max_workers_per_agent: five
+EOF
+_assert_fail "scaling.max_workers_per_agent=five is rejected (not an integer)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  cooldown_seconds: -1
+EOF
+_assert_fail "scaling.cooldown_seconds=-1 is rejected (min=0)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  cooldown_seconds: forever
+EOF
+_assert_fail "scaling.cooldown_seconds=forever is rejected (not an integer)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  cooldown_seconds: 0
+EOF
+_assert_ok "scaling.cooldown_seconds=0 is valid (min boundary)" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+_write_config <<'EOF'
+scaling:
+  spawn_threshold: 1
+  max_workers_per_agent: 1
+  cooldown_seconds: 0
+EOF
+_assert_ok "scaling with minimum valid values passes" \
+    validate_config_schema "$NEEDLE_CONFIG_FILE"
+
+# ============================================================================
 # Summary
 # ============================================================================
 echo ""
