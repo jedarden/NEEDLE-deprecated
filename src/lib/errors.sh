@@ -385,23 +385,42 @@ _needle_error_auto_bead() {
         return 0
     fi
 
-    # Get configured auto bead types
-    local auto_types
-    auto_types=$(get_config "debug.auto_bead_types" "quarantine,unregistered" 2>/dev/null)
+    # Get configured auto bead types (array from config, or comma-separated default)
+    local auto_types_raw
+    auto_types_raw=$(get_config "debug.auto_bead_types" "quarantine,unregistered" 2>/dev/null)
 
     # Check if this error type should trigger auto bead creation
     local should_create=false
 
+    # Helper: check if a value is in the auto_types list
+    _needle_auto_bead_type_enabled() {
+        local check_type="$1"
+        local types="$auto_types_raw"
+
+        # If yq is available and types looks like a YAML array, use yq to check
+        if command -v yq &>/dev/null && [[ "$types" == *"-"* ]]; then
+            # Parse as YAML array using yq
+            echo "$types" | yq '.[]' 2>/dev/null | grep -q "^${check_type}$"
+            return $?
+        fi
+
+        # Fallback: treat as comma-separated string (for default or simple config)
+        if [[ ",$types," == *,${check_type},* ]]; then
+            return 0
+        fi
+        return 1
+    }
+
     # Check for quarantine escalation
     if [[ "$escalation" == "quarantine" ]]; then
-        if [[ ",$auto_types," == *,quarantine,* ]]; then
+        if _needle_auto_bead_type_enabled "quarantine"; then
             should_create=true
         fi
     fi
 
     # Check for unregistered error type
     if ! _needle_error_is_registered "$event_type"; then
-        if [[ ",$auto_types," == *,unregistered,* ]]; then
+        if _needle_auto_bead_type_enabled "unregistered"; then
             should_create=true
         fi
     fi
