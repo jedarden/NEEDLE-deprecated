@@ -951,6 +951,542 @@ _needle_cli_lock_status() {
 }
 
 # ============================================================================
+# Priority-Based Lock Queuing
+# ============================================================================
+# When a high-priority bead needs a file locked by a lower-priority bead,
+# the request is queued and the holder is signaled to expedite.
+#
+# Queue Structure (stored in lock file):
+# {
+#   "path": "/src/cli/run.sh",
+#   "holder": {"bead": "nd-low", "priority": 2, "worker": "alpha"},
+#   "queue": [
+#     {"bead": "nd-high", "priority": 0, "worker": "bravo", "ts": 1709337700}
+#   ]
+# }
+#
+# Priority levels: P0=critical, P1=high, P2=normal, P3=low
+# Lower number = higher priority
+
+# Queue directory for priority bump signals
+NEEDLE_QUEUE_DIR="${NEEDLE_QUEUE_DIR:-${NEEDLE_LOCK_DIR}/queue}"
+
+# Ensure queue directory exists
+_needle_queue_ensure_dir() {
+    if [[ ! -d "$NEEDLE_QUEUE_DIR" ]]; then
+        mkdir -p "$NEEDLE_QUEUE_DIR" 2>/dev/null || {
+            _needle_error "Failed to create queue directory: $NEEDLE_QUEUE_DIR"
+            return 1
+        }
+    fi
+}
+
+# Get the queue file path for a specific bead
+# This is where other workers can send priority bump signals to this bead
+# Usage: _needle_queue_file_path <bead_id>
+# Returns: Full path to queue file
+_needle_queue_file_path() {
+    local bead_id="$1"
+    echo "${NEEDLE_QUEUE_DIR}/${bead_id}.queue"
+}
+
+# Write a lock with queue support (holder + queue structure)
+# Usage: _needle_lock_write_with_queue <lock_file> <bead_id> <worker_id> <filepath> <workspace> [priority]
+_needle_lock_write_with_queue() {
+    local lock_file="$1"
+    local bead_id="$2"
+    local worker_id="$3"
+    local filepath="$4"
+    local workspace="$5"
+    local priority="${6:-2}"  # Default to P2 (normal)
+    local ts
+    ts=$(date +%s)
+
+    if _needle_command_exists jq; then
+        # Use jq for proper JSON generation with queue structure
+        jq -n \
+            --arg bead "$bead_id" \
+            --arg worker "$worker_id" \
+            --arg path "$filepath" \
+            --arg type "write" \
+            --argjson ts "$ts" \
+            --arg workspace "$workspace" \
+            --argjson priority "$priority" \
+            '{
+                path: $path,
+                holder: {bead: $bead, priority: $priority, worker: $worker},
+                queue: []
+            }' > "$lock_file"
+    else
+        # Fallback: manual JSON construction
+        cat > "$lock_file" << EOF
+{"path":"$(_needle_json_escape "$filepath")","holder":{"bead":"$(_needle_json_escape "$bead_id")","priority":$priority,"worker":"$(_needle_json_escape "$worker_id")"},"queue":[]}
+EOF
+    fi
+}
+
+# Add a request to the lock queue
+# Usage: _needle_lock_add_to_queue <filepath> <bead_id> <worker_id> <priority>
+# Returns: 0 if added successfully, 1 on error
+_needle_lock_add_to_queue() {
+    local filepath="$1"
+    local bead_id="$2"
+    local worker_id="$3"
+    local priority="$4"
+    local path_uuid lock_file
+
+    path_uuid=$(_needle_lock_path_uuid "$filepath")
+
+    # Find the lock file (owned by another bead)
+    local existing_locks
+    existing_locks=$(ls "${NEEDLE_LOCK_DIR}"/*-"${path_uuid}" 2>/dev/null || true)
+
+    if [[ -z "$existing_locks" ]]; then
+        _needle_error "No lock found for queue addition: $filepath"
+        return 1
+    fi
+
+    # Get the first lock file (there should only be one holder)
+    local lock_file
+    lock_file=$(echo "$existing_locks" | head -1)
+
+    local lock_info ts
+    lock_info=$(_needle_lock_read_info "$lock_file")
+    ts=$(date +%s)
+
+    if _needle_command_exists jq; then
+        # Add request to queue using jq
+        local new_request
+        new_request=$(jq -n \
+            --arg bead "$bead_id" \
+            --arg worker "$worker_id" \
+            --argjson priority "$priority" \
+            --argjson ts "$ts" \
+            '{bead: $bead, priority: $priority, worker: $worker, ts: $ts}')
+
+        # Update the lock file with new queue entry
+        local updated_lock
+        updated_lock=$(echo "$lock_info" | jq --argjson req "$new_request" '.queue += [$req]')
+        echo "$updated_lock" > "$lock_file"
+    else
+        # Fallback: append to queue array manually (less robust)
+        _needle_warn "jq required for priority queue operations"
+        return 1
+    fi
+
+    _needle_debug "Added $bead_id (P$priority) to queue for $filepath"
+    return 0
+}
+
+# Get the current holder priority from a lock
+# Usage: _needle_lock_get_holder_priority <lock_info_json>
+# Returns: Priority number (0-3), defaults to 2 if not found
+_needle_lock_get_holder_priority() {
+    local lock_info="$1"
+
+    if _needle_command_exists jq; then
+        local priority
+        priority=$(echo "$lock_info" | jq -r '.holder.priority // 2')
+        echo "$priority"
+    else
+        # Fallback: grep for priority
+        echo "$lock_info" | grep -o '"priority":[0-9]*' | cut -d: -f2 || echo "2"
+    fi
+}
+
+# Request a lock with priority-based queuing
+# When a high-priority bead needs a file locked by a lower-priority bead:
+# 1. If file is free, acquire lock immediately
+# 2. If held by lower priority, add to queue and signal holder
+# 3. If held by same/higher priority, just add dependency
+#
+# Usage: request_lock_with_priority <filepath> <bead_id> <priority> [worker_id]
+# Arguments:
+#   filepath  - Absolute path to file
+#   bead_id   - Bead ID requesting the lock
+#   priority  - Priority level (0=critical, 1=high, 2=normal, 3=low)
+#   worker_id - Optional worker ID (defaults to NEEDLE_WORKER)
+# Returns:
+#   0 = Lock acquired immediately
+#   1 = Queued behind another bead (dependency added)
+#   2 = Added to queue with priority bump signal sent
+# Example:
+#   request_lock_with_priority "/src/cli/run.sh" "nd-high" 0 "worker-alpha"
+request_lock_with_priority() {
+    local filepath="$1"
+    local bead_id="$2"
+    local priority="$3"
+    local worker_id="${4:-${NEEDLE_WORKER:-${NEEDLE_SESSION:-unknown}}}"
+    local workspace="${NEEDLE_WORKSPACE:-$(pwd)}"
+
+    # Validate inputs
+    if [[ -z "$filepath" ]]; then
+        _needle_error "request_lock_with_priority: filepath is required"
+        return 1
+    fi
+
+    if [[ -z "$bead_id" ]]; then
+        _needle_error "request_lock_with_priority: bead_id is required"
+        return 1
+    fi
+
+    # Validate priority (0-3, default to 2)
+    if ! [[ "$priority" =~ ^[0-3]$ ]]; then
+        _needle_warn "Invalid priority '$priority', defaulting to 2 (normal)"
+        priority=2
+    fi
+
+    # Ensure directories exist
+    _needle_lock_ensure_dir || return 1
+
+    local path_uuid
+    path_uuid=$(_needle_lock_path_uuid "$filepath")
+
+    _needle_debug "Priority lock request: $bead_id (P$priority) wants $filepath"
+
+    # Record checkout attempt metric
+    _needle_metrics_record_event "checkout.attempt" "$bead_id" "$filepath" "priority=$priority"
+
+    # Check if file is already locked
+    local existing_locks
+    existing_locks=$(ls "${NEEDLE_LOCK_DIR}"/*-"${path_uuid}" 2>/dev/null || true)
+
+    if [[ -z "$existing_locks" ]]; then
+        # File is free - acquire lock immediately
+        local lock_file
+        lock_file=$(_needle_lock_file_path "$bead_id" "$filepath")
+
+        if (set -o noclobber; echo "" > "$lock_file" 2>/dev/null); then
+            _needle_lock_write_with_queue "$lock_file" "$bead_id" "$worker_id" "$filepath" "$workspace" "$priority"
+
+            _needle_debug "Priority lock acquired: $lock_file (P$priority)"
+
+            _needle_telemetry_emit "file.checkout" "info" \
+                "bead=$bead_id" \
+                "path=$filepath" \
+                "priority=$priority" \
+                "status=acquired"
+
+            _needle_metrics_record_event "checkout.acquired" "$bead_id" "$filepath" "priority=$priority"
+
+            return 0
+        else
+            # Race condition - retry
+            _needle_warn "Race condition acquiring priority lock for: $filepath"
+            return 1
+        fi
+    fi
+
+    # File is locked - check holder's priority
+    local lock_file lock_info holder_bead holder_priority holder_worker
+    lock_file=$(echo "$existing_locks" | head -1)
+    lock_info=$(_needle_lock_read_info "$lock_file")
+    holder_bead=$(_needle_lock_extract_bead_id "$lock_file")
+    holder_priority=$(_needle_lock_get_holder_priority "$lock_info")
+    holder_worker=$(_needle_lock_extract_worker_id "$lock_file")
+
+    # Check if holder worker is still alive
+    if ! _needle_lock_worker_alive "$holder_worker"; then
+        # Holder is dead - steal the lock
+        _needle_warn "Stealing orphaned lock from dead worker $holder_worker / bead $holder_bead for $filepath"
+        rm -f "$lock_file" 2>/dev/null || true
+
+        _needle_telemetry_emit "file.orphan_release" "warn" \
+            "bead=$bead_id" \
+            "path=$filepath" \
+            "orphaned_bead=$holder_bead" \
+            "dead_worker=$holder_worker"
+
+        _needle_metrics_record_event "checkout.orphan_released" "$bead_id" "$filepath" \
+            "orphaned_bead=$holder_bead"
+
+        # Retry the acquisition
+        lock_file=$(_needle_lock_file_path "$bead_id" "$filepath")
+        _needle_lock_write_with_queue "$lock_file" "$bead_id" "$worker_id" "$filepath" "$workspace" "$priority"
+        return 0
+    fi
+
+    # Same bead already has lock - refresh it
+    if [[ "$holder_bead" == "$bead_id" ]]; then
+        _needle_lock_write_with_queue "$lock_file" "$bead_id" "$worker_id" "$filepath" "$workspace" "$priority"
+        _needle_debug "Priority lock refreshed: $lock_file (P$priority)"
+        _needle_metrics_record_event "checkout.acquired" "$bead_id" "$filepath" "priority=$priority"
+        return 0
+    fi
+
+    # File locked by another bead - check priority
+    _needle_warn "File conflict: $filepath is locked by bead $holder_bead (P$holder_priority, worker: $holder_worker)"
+
+    if [[ "$priority" -lt "$holder_priority" ]]; then
+        # We're higher priority - add to queue and signal holder
+        _needle_lock_add_to_queue "$filepath" "$bead_id" "$worker_id" "$priority"
+
+        # Emit priority bump telemetry event
+        _needle_telemetry_emit "lock.priority_bump" "warn" \
+            "path=$filepath" \
+            "waiting_bead=$bead_id" \
+            "waiting_priority=$priority" \
+            "holder_bead=$holder_bead" \
+            "holder_priority=$holder_priority"
+
+        _needle_metrics_record_event "lock.priority_bump" "$bead_id" "$filepath" \
+            "waiting_priority=$priority" \
+            "holder_bead=$holder_bead" \
+            "holder_priority=$holder_priority"
+
+        # Signal the holder to expedite or yield
+        _needle_signal_worker "$holder_bead" "$holder_worker" "PRIORITY_BUMP" "$filepath" "$bead_id" "$priority"
+
+        _needle_info "Priority bump sent to $holder_bead (P$holder_priority -> P$priority waiting) for $filepath"
+
+        return 2  # Queued with priority bump
+    fi
+
+    # We're same or lower priority - standard conflict handling
+    _needle_telemetry_emit "file.conflict" "warn" \
+        "bead=$bead_id" \
+        "path=$filepath" \
+        "blocked_by=$holder_bead" \
+        "holder_priority=$holder_priority" \
+        "requester_priority=$priority"
+
+    _needle_metrics_record_event "checkout.blocked" "$bead_id" "$filepath" \
+        "blocked_by=$holder_bead" \
+        "priority=$priority"
+
+    # Return blocking info to stderr
+    echo "$lock_info" >&2
+    return 1
+}
+
+# Signal a worker about a priority bump
+# Creates a signal file in the queue directory that the worker can poll
+#
+# Usage: _needle_signal_worker <holder_bead> <holder_worker> <signal_type> <filepath> <waiting_bead> <waiting_priority>
+# Arguments:
+#   holder_bead      - Bead ID of the lock holder
+#   holder_worker    - Worker ID of the lock holder
+#   signal_type      - Type of signal (e.g., "PRIORITY_BUMP")
+#   filepath         - File that has the priority bump
+#   waiting_bead     - Bead ID that is waiting
+#   waiting_priority - Priority of waiting bead
+# Returns: 0 on success, 1 on failure
+_needle_signal_worker() {
+    local holder_bead="$1"
+    local holder_worker="$2"
+    local signal_type="$3"
+    local filepath="$4"
+    local waiting_bead="$5"
+    local waiting_priority="$6"
+
+    _needle_queue_ensure_dir || return 1
+
+    local queue_file ts signal_file
+    queue_file=$(_needle_queue_file_path "$holder_bead")
+    ts=$(date +%s)
+
+    # Create signal entry
+    if _needle_command_exists jq; then
+        local signal_json
+        signal_json=$(jq -n \
+            --arg type "$signal_type" \
+            --arg path "$filepath" \
+            --arg waiting_bead "$waiting_bead" \
+            --argjson waiting_priority "$waiting_priority" \
+            --argjson ts "$ts" \
+            '{
+                type: $type,
+                path: $path,
+                waiting_bead: $waiting_bead,
+                waiting_priority: $waiting_priority,
+                ts: $ts
+            }')
+
+        # Append to queue file (newline-delimited JSON)
+        echo "$signal_json" >> "$queue_file"
+
+        _needle_debug "Signal sent to $holder_bead: $signal_type for $filepath"
+    else
+        # Fallback: write simple format
+        echo "${signal_type}|${filepath}|${waiting_bead}|${waiting_priority}|${ts}" >> "$queue_file"
+    fi
+
+    return 0
+}
+
+# Check for priority bump signals for the current bead
+# Used by worker loop to detect when higher-priority beads are waiting
+#
+# Usage: _needle_check_priority_bumps [bead_id]
+# Arguments:
+#   bead_id - Optional bead ID (defaults to NEEDLE_BEAD_ID)
+# Returns:
+#   0 = No signals pending
+#   1+ = Number of priority bump signals found
+# Output: JSON array of pending signals to stdout
+_needle_check_priority_bumps() {
+    local bead_id="${1:-${NEEDLE_BEAD_ID:-}}"
+    local queue_file signals
+
+    if [[ -z "$bead_id" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    queue_file=$(_needle_queue_file_path "$bead_id")
+
+    if [[ ! -f "$queue_file" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    # Read and clear the queue file atomically
+    local tmp_file
+    tmp_file=$(mktemp)
+    mv "$queue_file" "$tmp_file" 2>/dev/null || {
+        echo "[]"
+        return 0
+    }
+
+    # Filter to priority bump signals
+    if _needle_command_exists jq; then
+        # Parse JSONL and filter
+        signals=$(jq -s 'map(select(.type == "PRIORITY_BUMP"))' "$tmp_file" 2>/dev/null || echo "[]")
+        local count
+        count=$(echo "$signals" | jq 'length')
+
+        echo "$signals"
+        rm -f "$tmp_file"
+        return "$count"
+    else
+        # Fallback: parse simple format
+        signals="[]"
+        local count=0
+        while IFS='|' read -r sig_type sig_path sig_bead sig_prio sig_ts; do
+            if [[ "$sig_type" == "PRIORITY_BUMP" ]]; then
+                count=$((count + 1))
+            fi
+        done < "$tmp_file"
+        rm -f "$tmp_file"
+        echo "$signals"
+        return "$count"
+    fi
+}
+
+# Handle a priority bump signal in the worker loop
+# Called when a worker discovers a higher-priority bead is waiting
+#
+# Usage: handle_priority_bump <signal_json>
+# Arguments:
+#   signal_json - JSON object describing the bump signal
+# Output: Logs warning and recommendations
+# Returns: 0 always (informational)
+#
+# Options for worker:
+#   1. Complete current work faster (reduce exploration depth)
+#   2. Checkpoint and yield (if supported)
+#   3. Continue but emit ETA for waiting bead
+handle_priority_bump() {
+    local signal_json="$1"
+    local waiting_bead waiting_priority filepath
+
+    if _needle_command_exists jq; then
+        waiting_bead=$(echo "$signal_json" | jq -r '.waiting_bead // "unknown"')
+        waiting_priority=$(echo "$signal_json" | jq -r '.waiting_priority // 2')
+        filepath=$(echo "$signal_json" | jq -r '.path // "unknown"')
+    else
+        _needle_warn "Priority bump received - jq required for details"
+        return 0
+    fi
+
+    local priority_name
+    case "$waiting_priority" in
+        0) priority_name="CRITICAL" ;;
+        1) priority_name="HIGH" ;;
+        2) priority_name="NORMAL" ;;
+        3) priority_name="LOW" ;;
+        *) priority_name="UNKNOWN" ;;
+    esac
+
+    _needle_warn "=========================================="
+    _needle_warn "PRIORITY BUMP RECEIVED"
+    _needle_warn "=========================================="
+    _needle_warn "Higher priority bead waiting: $waiting_bead (P$waiting_priority - $priority_name)"
+    _needle_warn "Affected file: $filepath"
+    _needle_warn ""
+    _needle_warn "Options:"
+    _needle_warn "  1. Expedite: Complete current work faster"
+    _needle_warn "  2. Yield: Checkpoint progress and release lock"
+    _needle_warn "  3. Continue: Work normally, bead will wait"
+    _needle_warn "=========================================="
+
+    # Emit telemetry about the bump being received
+    _needle_telemetry_emit "lock.priority_bump_received" "warn" \
+        "waiting_bead=$waiting_bead" \
+        "waiting_priority=$waiting_priority" \
+        "path=$filepath"
+
+    return 0
+}
+
+# Release lock and notify next in queue (if any)
+# Called when a bead releases a lock that has a queue
+#
+# Usage: _needle_release_lock_with_handoff <filepath> <bead_id>
+# Returns: 0 on success
+_needle_release_lock_with_handoff() {
+    local filepath="$1"
+    local bead_id="${2:-${NEEDLE_BEAD_ID:-}}"
+    local path_uuid lock_file lock_info
+
+    if [[ -z "$filepath" ]] || [[ -z "$bead_id" ]]; then
+        return 1
+    fi
+
+    path_uuid=$(_needle_lock_path_uuid "$filepath")
+    lock_file=$(_needle_lock_file_path "$bead_id" "$filepath")
+
+    if [[ ! -f "$lock_file" ]]; then
+        return 0
+    fi
+
+    lock_info=$(_needle_lock_read_info "$lock_file")
+
+    # Check if there's a queue
+    local queue_length=0
+    if _needle_command_exists jq; then
+        queue_length=$(echo "$lock_info" | jq '.queue | length')
+    fi
+
+    # Remove the lock
+    rm -f "$lock_file" 2>/dev/null
+
+    _needle_telemetry_emit "file.release" "info" \
+        "bead=$bead_id" \
+        "path=$filepath" \
+        "queue_depth=$queue_length"
+
+    # If there was a queue, the next in line can now acquire
+    # They will discover the lock is free on their next attempt
+    if [[ "$queue_length" -gt 0 ]]; then
+        _needle_info "Lock released with $queue_length waiting - next in queue can acquire"
+
+        # Signal the first in queue that lock is available
+        if _needle_command_exists jq; then
+            local next_bead next_worker
+            next_bead=$(echo "$lock_info" | jq -r '.queue[0].bead')
+            next_worker=$(echo "$lock_info" | jq -r '.queue[0].worker')
+
+            if [[ -n "$next_bead" ]] && [[ "$next_bead" != "null" ]]; then
+                _needle_signal_worker "$next_bead" "$next_worker" "LOCK_AVAILABLE" "$filepath" "$bead_id" "0"
+            fi
+        fi
+    fi
+
+    return 0
+}
+
+# ============================================================================
 # Hook Integration
 # ============================================================================
 

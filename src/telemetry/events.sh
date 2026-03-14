@@ -717,6 +717,18 @@ _needle_event_file_stale() {
     _needle_telemetry_emit "file.stale" "warn" "$@"
 }
 
+# Emit file.priority_bump event (high-priority bead waiting for lock)
+# Usage: _needle_event_file_priority_bump [path=...] [waiting_bead=...] [waiting_priority=...] [holder_bead=...] [holder_priority=...] [key=value ...]
+_needle_event_file_priority_bump() {
+    _needle_telemetry_emit "lock.priority_bump" "warn" "$@"
+}
+
+# Emit file.priority_bump_received event (worker received bump signal)
+# Usage: _needle_event_file_priority_bump_received [waiting_bead=...] [waiting_priority=...] [path=...] [key=value ...]
+_needle_event_file_priority_bump_received() {
+    _needle_telemetry_emit "lock.priority_bump_received" "warn" "$@"
+}
+
 # ============================================================================
 # Event Category Listing
 # ============================================================================
