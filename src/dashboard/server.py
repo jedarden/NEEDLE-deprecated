@@ -24,7 +24,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any
 
@@ -37,7 +37,7 @@ HEARTBEAT_INTERVAL = 15  # SSE heartbeat seconds
 events_buffer: deque[dict[str, Any]] = deque(maxlen=DEFAULT_BUFFER_SIZE)
 clients: list[Any] = []  # List of client queues for SSE
 clients_lock = threading.Lock()
-server_start_time = datetime.utcnow()
+server_start_time = datetime.now(timezone.utc)
 DAILY_BUDGET_USD: float = 0.0  # Set via --daily-budget CLI arg
 
 
@@ -93,7 +93,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             events = list(events_buffer)[-limit:]
             self._send_json({"events": events, "count": len(events)})
         elif self.path == "/health":
-            self._send_json({"status": "ok", "uptime": str(datetime.utcnow() - server_start_time)})
+            self._send_json({"status": "ok", "uptime": str(datetime.now(timezone.utc) - server_start_time)})
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -117,7 +117,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             # Add server timestamp if missing
             if "ts" not in event:
-                event["ts"] = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                event["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
             # Add to buffer
             events_buffer.append(event)
@@ -150,7 +150,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         try:
             # Send initial connection message
-            self._send_sse_event({"type": "connected", "ts": datetime.utcnow().isoformat() + "Z"})
+            self._send_sse_event({"type": "connected", "ts": datetime.now(timezone.utc).isoformat() + "Z"})
 
             # Send recent events (last 20) to bootstrap
             for event in list(events_buffer)[-20:]:
@@ -168,7 +168,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 # Send heartbeat every N seconds
                 if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
-                    self._send_sse_event({"type": "heartbeat", "ts": datetime.utcnow().isoformat() + "Z"})
+                    self._send_sse_event({"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat() + "Z"})
                     last_heartbeat = time.time()
 
                 # Flush
@@ -207,7 +207,7 @@ def broadcast_event(event: dict) -> None:
 
 def get_summary() -> dict:
     """Calculate aggregate stats from the event buffer."""
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Track workers
