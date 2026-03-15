@@ -547,6 +547,39 @@ else
     test_fail "Expected parent verification_cmd used as-is when no adaptation possible"
 fi
 
+test_case "_needle_perform_mitosis adds parent-inherited verification_cmd as label for verify.sh"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[],"verification_cmd":"make test"}'
+# Child has no verification_cmd — inherits from parent; must appear as label too
+analysis=$(make_analysis "Task" "desc" "Task2" "desc2" "" "")
+_needle_perform_mitosis "nd-parent" "/tmp" "$analysis" &>/dev/null
+if log_has "$CREATE_LOG" "verification_cmd:make test"; then
+    test_pass
+else
+    test_fail "Expected parent-inherited verification_cmd added as 'verification_cmd:make test' label"
+fi
+
+test_case "_needle_perform_mitosis adds label-format-inherited verification_cmd as child label"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":["verification_cmd:bash tests/run.sh"]}'
+# Parent has verification_cmd in label format — child should receive it as a label too
+analysis=$(make_analysis "Task" "desc" "Task2" "desc2" "" "")
+_needle_perform_mitosis "nd-parent" "/tmp" "$analysis" &>/dev/null
+if log_has "$CREATE_LOG" "verification_cmd:bash tests/run.sh"; then
+    test_pass
+else
+    test_fail "Expected label-format parent verification_cmd propagated as child label"
+fi
+
+test_case "_needle_perform_mitosis skips Verification section when no verification_cmd anywhere"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[]}'
+# Neither parent nor child has verification_cmd
+analysis=$(make_analysis "Task" "Clean desc" "Task2" "Other desc" "" "")
+_needle_perform_mitosis "nd-parent" "/tmp" "$analysis" &>/dev/null
+if ! log_has "$CREATE_LOG" "Verification:"; then
+    test_pass
+else
+    test_fail "Should not append Verification section when no verification_cmd is present"
+fi
+
 # ============================================================================
 # Tests: combined field propagation
 # ============================================================================
