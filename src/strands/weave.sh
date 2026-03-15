@@ -210,13 +210,33 @@ Return ONLY a JSON object (no markdown code blocks):
       "description": "What needs to be done. Reference the source of the intent (which bead, doc, or commit revealed this gap).",
       "source": "Where the intent was found (e.g., 'closed bead nd-xyz', 'genesis bd-abc', 'README.md', 'git log')",
       "priority": 2,
-      "type": "task"
+      "type": "task",
+      "verification_cmd": "optional: shell command that exits 0 when done condition is met"
     }
   ],
   "intent_summary": "One paragraph summarizing the project's inferred goal"
 }
 
-Create as many gaps as you find — do not artificially limit. If no gaps found: {"gaps": [], "intent_summary": "..."}
+## Verification Command (verification_cmd)
+
+For each gap bead, if the done condition can be expressed as a shell command
+that exits 0 on success and non-zero on failure, include a verification_cmd field.
+
+This enables automated verification after agent completion. The command runs
+in the workspace directory after the agent exits 0.
+
+Examples of good verification_cmd values:
+  - pytest tests/test_foo.py -q 2>&1 | grep -q passed
+  - grep -q 'def new_function' src/module.py
+  - curl -sf http://localhost:8080/health | jq -e '.status=="ok"'
+  - [[ $(wc -l < docs/api.md) -gt 50 ]]
+  - command -v new_command && grep -q 'new_command' README.md
+
+If no reliable machine-verifiable condition exists, omit the verification_cmd
+field entirely. Not all gaps need verification — only when the done condition
+is naturally testable via shell command.
+
+Create as many gaps as you find — do not artificially limit. If no gaps found: {"gaps": [], "intent_summary": "..."
 
 Priority: 0=critical, 1=high, 2=normal, 3=low
 Type: task|bug|feature
@@ -548,7 +568,7 @@ _needle_weave_create_beads() {
     while IFS= read -r gap; do
         [[ -z "$gap" ]] && continue
 
-        local title description priority source bead_type
+        local title description priority source bead_type verification_cmd
 
         if _needle_command_exists jq; then
             title=$(echo "$gap" | jq -r '.title // empty' 2>/dev/null)
@@ -556,6 +576,7 @@ _needle_weave_create_beads() {
             priority=$(echo "$gap" | jq -r '.priority // 2' 2>/dev/null)
             source=$(echo "$gap" | jq -r '.source // empty' 2>/dev/null)
             bead_type=$(echo "$gap" | jq -r '.type // "task"' 2>/dev/null)
+            verification_cmd=$(echo "$gap" | jq -r '.verification_cmd // empty' 2>/dev/null)
         else
             continue
         fi
@@ -575,6 +596,18 @@ _needle_weave_create_beads() {
             full_description+="\n\n---\n**Gap identified from:** $source"
         fi
 
+        # Build labels array
+        local labels=("weave-generated" "gap-analysis")
+
+        # Add verification_cmd as a label if present (format: verification_cmd:<command>)
+        if [[ -n "$verification_cmd" ]]; then
+            labels+=("verification_cmd:${verification_cmd}")
+        fi
+
+        # Join labels with commas for br create
+        local labels_arg
+        labels_arg=$(IFS=,; echo "${labels[*]}")
+
         local bead_id
         bead_id=$(_needle_create_bead \
             --workspace "$workspace" \
@@ -582,8 +615,7 @@ _needle_weave_create_beads() {
             --description "$full_description" \
             --priority "$priority" \
             --type "$bead_type" \
-            --label "weave-generated" \
-            --label "gap-analysis" \
+            --labels "$labels_arg" \
             --silent 2>/dev/null)
 
         if [[ $? -eq 0 ]] && [[ -n "$bead_id" ]]; then
