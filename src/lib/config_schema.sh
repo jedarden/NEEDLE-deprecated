@@ -184,11 +184,11 @@ _schema_warn() {
     echo "WARN: Config validation: $*" >&2
 }
 
-# Check if a value is a valid boolean
+# Check if a value is a valid boolean (true/false only, case-insensitive)
 _schema_is_boolean() {
     local v="$1"
     case "$v" in
-        true|True|TRUE|false|False|FALSE|yes|no|1|0) return 0 ;;
+        true|True|TRUE|false|False|FALSE) return 0 ;;
         *) return 1 ;;
     esac
 }
