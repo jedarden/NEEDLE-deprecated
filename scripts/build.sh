@@ -21,6 +21,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 OUTPUT_FILE="${ROOT_DIR}/dist/needle"
 MINIFY=false
+SKIP_NATIVE=false
 
 # -----------------------------------------------------------------------------
 # Parse Arguments
@@ -36,12 +37,17 @@ while [[ $# -gt 0 ]]; do
             MINIFY=true
             shift
             ;;
+        --skip-native)
+            SKIP_NATIVE=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --output, -o FILE   Output file (default: dist/needle)"
             echo "  --minify, -m        Strip comments for smaller file"
+            echo "  --skip-native       Skip native component build (libcheckout.so)"
             echo "  --help, -h          Show this help"
             exit 0
             ;;
@@ -555,3 +561,20 @@ echo "  Size:   $FILE_SIZE bytes"
 echo "  Lines:  $LINE_COUNT"
 echo ""
 echo "Test with: $OUTPUT_FILE --version"
+
+# Build native components (libcheckout.so) if gcc is available
+if [[ "$SKIP_NATIVE" == "false" ]]; then
+    echo ""
+    if command -v gcc &>/dev/null; then
+        echo "Building native components..."
+        if "$SCRIPT_DIR/build-native.sh" --lib-only; then
+            echo "Native build complete."
+        else
+            echo "Warning: Native build failed. LD_PRELOAD enforcement will be unavailable." >&2
+            echo "To skip: $0 --skip-native" >&2
+        fi
+    else
+        echo "Note: gcc not found — skipping native build (libcheckout.so)."
+        echo "Install gcc and run 'scripts/build-native.sh' to enable LD_PRELOAD enforcement."
+    fi
+fi
