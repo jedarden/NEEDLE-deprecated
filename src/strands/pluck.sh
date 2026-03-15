@@ -71,6 +71,11 @@ if [[ -z "${_NEEDLE_TELEMETRY_EVENTS_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/events.sh"
 fi
 
+# Source effort module for per-bead cost attribution on close
+if [[ -z "${_NEEDLE_EFFORT_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/effort.sh"
+fi
+
 # ============================================================================
 # Configuration Helpers
 # ============================================================================
@@ -306,6 +311,13 @@ _needle_mark_bead_completed() {
         if [[ -n "$duration" ]] && [[ "$duration" -gt 0 ]]; then
             _needle_event_effort_recorded "$bead_id" \
                 "duration_ms=$duration"
+        fi
+
+        # Annotate bead with cost attribution from session logs.
+        # Joins effort.recorded events back to the bead record so cost is
+        # visible per-bead in `br show <id>`.
+        if declare -f _needle_annotate_bead_with_effort &>/dev/null; then
+            _needle_annotate_bead_with_effort "$bead_id" "$workspace" || true
         fi
 
         return 0
