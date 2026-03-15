@@ -72,6 +72,9 @@ _needle_help() {
         refactor)
             _needle_refactor_help
             ;;
+        dashboard)
+            _needle_dashboard_help
+            ;;
         help)
             _needle_print "Display help for NEEDLE commands"
             _needle_print ""
@@ -122,6 +125,8 @@ COMMANDS:
     metrics     Analyze file collision effectiveness
     analyze     Analyze codebase patterns and file contention
     refactor    Suggest refactoring opportunities from metrics
+
+    dashboard   Start/stop the FABRIC real-time dashboard server
 
 OPTIONS:
     -h, --help       Print help information

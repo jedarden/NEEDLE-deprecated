@@ -240,7 +240,7 @@ _needle_dashboard_start() {
         else
             _needle_error "Failed to start dashboard server"
             _needle_info "Check logs: $NEEDLE_DASHBOARD_LOG_FILE"
-            exit $NEEDLE_EXIT_FAILURE
+            exit $NEEDLE_EXIT_ERROR
         fi
     fi
 
@@ -323,7 +323,7 @@ _needle_dashboard_status() {
         exit $NEEDLE_EXIT_SUCCESS
     else
         _needle_info "Dashboard is not running"
-        exit $NEEDLE_EXIT_FAILURE
+        exit $NEEDLE_EXIT_ERROR
     fi
 }
 
