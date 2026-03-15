@@ -1430,6 +1430,71 @@ unset NEEDLE_LOG_FILE
 # Reset to disabled for remaining tests
 export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
 
+# ----------------------------------------------------------------------------
+# Test 36: _needle_error_handle full chain: test session + enabled auto-bead =
+# no bead created (nd-nlfp regression)
+# ----------------------------------------------------------------------------
+# Bug: nd-nlfp was auto-created because Test 22 called:
+#   _needle_error_handle "error.agent_crash" 137 "bead_id=bead-2"
+# with NEEDLE_SESSION="test-session-errors" and the production config had
+# debug.auto_bead_on_error=true. The session safeguard in _needle_error_auto_bead
+# now prevents this, but this test verifies the full chain (via _needle_error_handle,
+# not just _needle_error_auto_bead directly).
+_test_start "_needle_error_handle full chain: test session blocks auto-bead even when enabled (nd-nlfp regression)"
+
+# Enable auto-bead (simulating production config)
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+
+# Use the exact session from the nd-nlfp bug report
+export NEEDLE_SESSION="test-session-errors"
+
+# Create a test workspace
+TEST_WORKSPACE_NLFP="/tmp/needle-test-ws-nlfp-$$"
+mkdir -p "$TEST_WORKSPACE_NLFP/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE_NLFP"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Mock br to detect any bead creation
+BR_CALLED_NLFP="/tmp/needle-br-called-nlfp-$$"
+MOCK_BR_NLFP="/tmp/needle-mock-br-nlfp-$$"
+rm -f "$BR_CALLED_NLFP"
+cat > "$MOCK_BR_NLFP" <<EOF
+#!/usr/bin/env bash
+echo "called" > "$BR_CALLED_NLFP"
+echo "nd-should-not-exist-nlfp"
+exit 0
+EOF
+chmod +x "$MOCK_BR_NLFP"
+ln -sf "$MOCK_BR_NLFP" "/tmp/br"
+export PATH="/tmp:$PATH"
+
+# Call the full chain with the exact parameters from the nd-nlfp bug report
+action_nlfp=$(_needle_error_handle "error.agent_crash" 137 "bead_id=bead-2" 2>/dev/null)
+
+# Escalation must still return quarantine
+if [[ "$action_nlfp" == "quarantine" ]]; then
+    _test_pass "_needle_error_handle returns quarantine for agent_crash (nd-nlfp regression)"
+else
+    _test_fail "Expected quarantine, got '$action_nlfp'"
+fi
+
+# No bead must have been created despite auto-bead being enabled
+if [[ -f "$BR_CALLED_NLFP" ]]; then
+    _test_fail "br was called for test session 'test-session-errors' — session safeguard failed (nd-nlfp regression)"
+else
+    _test_pass "No bead created for test session 'test-session-errors' via full _needle_error_handle chain (nd-nlfp regression)"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR_NLFP" "$BR_CALLED_NLFP"
+rm -rf "$TEST_WORKSPACE_NLFP"
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT
+
+# Reset state
+export NEEDLE_SESSION="test-session-errors"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+
 # ============================================================================
 # Summary
 # ============================================================================
