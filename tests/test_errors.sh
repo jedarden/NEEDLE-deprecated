@@ -1495,6 +1495,73 @@ unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT
 export NEEDLE_SESSION="test-session-errors"
 export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
 
+# ----------------------------------------------------------------------------
+# Test 37: Multi-error sequence (claim_failed + agent_crash) in test session
+# does not create auto-beads (nd-itd5 regression)
+# ----------------------------------------------------------------------------
+# Bug: nd-itd5 was auto-created because Test 22 called BOTH:
+#   _needle_error_handle "error.claim_failed" 1 "bead_id=bead-1"
+#   _needle_error_handle "error.agent_crash" 137 "bead_id=bead-2"
+# in sequence with NEEDLE_SESSION="test-session-errors" and production config
+# debug.auto_bead_on_error=true (no session safeguard existed yet).
+# This test verifies the full multi-error sequence (replicating Test 22) does
+# not create beads for test sessions even when auto-bead is enabled.
+_test_start "Multi-error sequence (claim_failed + agent_crash) in test session doesn't create beads (nd-itd5 regression)"
+
+# Enable auto-bead (simulating production config)
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+
+# Use the exact session from nd-itd5 bug report
+export NEEDLE_SESSION="test-session-errors"
+
+# Create a test workspace
+TEST_WORKSPACE_ITD5="/tmp/needle-test-ws-itd5-$$"
+mkdir -p "$TEST_WORKSPACE_ITD5/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE_ITD5"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Mock br to detect any bead creation
+BR_CALLED_ITD5="/tmp/needle-br-called-itd5-$$"
+MOCK_BR_ITD5="/tmp/needle-mock-br-itd5-$$"
+rm -f "$BR_CALLED_ITD5"
+cat > "$MOCK_BR_ITD5" <<EOF
+#!/usr/bin/env bash
+echo "called" > "$BR_CALLED_ITD5"
+echo "nd-should-not-exist-itd5"
+exit 0
+EOF
+chmod +x "$MOCK_BR_ITD5"
+ln -sf "$MOCK_BR_ITD5" "/tmp/br"
+export PATH="/tmp:$PATH"
+
+# Replicate the exact multi-error sequence from Test 22 that triggered nd-itd5
+action_itd5_1=$(_needle_error_handle "error.claim_failed" 1 "bead_id=bead-1" 2>/dev/null)
+action_itd5_2=$(_needle_error_handle "error.agent_crash" 137 "bead_id=bead-2" 2>/dev/null)
+
+# Escalations must still be correct
+if [[ "$action_itd5_1" == "retry" ]] && [[ "$action_itd5_2" == "quarantine" ]]; then
+    _test_pass "Escalation actions correct: claim_failed=retry, agent_crash=quarantine (nd-itd5 regression)"
+else
+    _test_fail "Unexpected escalations: claim_failed=$action_itd5_1, agent_crash=$action_itd5_2"
+fi
+
+# No bead must have been created despite auto-bead being enabled
+if [[ -f "$BR_CALLED_ITD5" ]]; then
+    _test_fail "br was called for test session 'test-session-errors' in multi-error sequence — session safeguard failed (nd-itd5 regression)"
+else
+    _test_pass "No bead created for test session 'test-session-errors' in multi-error sequence (nd-itd5 regression)"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR_ITD5" "$BR_CALLED_ITD5"
+rm -rf "$TEST_WORKSPACE_ITD5"
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT
+
+# Reset state
+export NEEDLE_SESSION="test-session-errors"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+
 # ============================================================================
 # Summary
 # ============================================================================
