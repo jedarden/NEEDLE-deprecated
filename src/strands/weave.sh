@@ -43,6 +43,12 @@ _needle_strand_weave() {
         return 1
     fi
 
+    # Check if weave strand is enabled (opt-in)
+    if ! _needle_weave_is_enabled; then
+        _needle_debug "weave: strand is disabled"
+        return 1
+    fi
+
     # Check frequency limit (don't run every loop)
     if ! _needle_weave_check_frequency "$workspace"; then
         _needle_debug "weave: frequency limit not reached, skipping"
@@ -122,11 +128,18 @@ _needle_strand_weave() {
 
 _needle_weave_build_prompt() {
     local workspace="$1"
+    local docs_arg="${2:-}"    # optional: doc file path(s)
+    local open_beads="${3:-}"  # optional: JSON array of open bead titles
+
+    # If open_beads not provided, gather from workspace
+    if [[ -z "$open_beads" ]]; then
+        open_beads=$(_needle_weave_get_open_beads "$workspace")
+    fi
 
     cat << 'PROMPT_HEADER'
-You are performing a gap analysis on a project. Your goal is to understand what
-this project is trying to achieve, then identify concrete gaps between that intent
-and what has actually been built.
+You are analyzing a codebase for gaps between documentation and implementation.
+Find features or functionality described in docs, plans, roadmaps, or commit history
+that are NOT already tracked as open beads and NOT already implemented in the codebase.
 
 PROMPT_HEADER
 
@@ -147,12 +160,20 @@ PROMPT_HEADER
     _needle_weave_genesis_beads "$workspace"
     echo ""
 
-    # Section 3: Open and in-progress beads — known remaining work
-    echo "## Known Remaining Work (Open + In-Progress Beads)"
+    # Section 3: Current open beads — for deduplication
+    echo "## Current Open Beads"
     echo ""
-    echo "These beads are already tracked. Do NOT create duplicates of these."
+    echo "These beads are already tracked. Do NOT create duplicates."
     echo ""
-    _needle_weave_existing_beads "$workspace"
+    if [[ -n "$open_beads" ]] && [[ "$open_beads" != "[]" ]]; then
+        if _needle_command_exists jq; then
+            echo "$open_beads" | jq -r '.[]' 2>/dev/null | while IFS= read -r title; do
+                echo "- $title"
+            done
+        fi
+    else
+        _needle_weave_existing_beads "$workspace"
+    fi
     echo ""
 
     # Section 4: Git history — commit messages reveal intent
@@ -175,8 +196,8 @@ PROMPT_HEADER
     _needle_weave_codebase_summary "$workspace"
     echo ""
 
-    # Instructions
-    cat << PROMPT_INSTRUCTIONS
+    # Instructions and output format
+    cat << 'PROMPT_INSTRUCTIONS'
 
 ## Your Task
 
@@ -207,10 +228,12 @@ Return ONLY a JSON object (no markdown code blocks):
   "gaps": [
     {
       "title": "Brief actionable title",
-      "description": "What needs to be done. Reference the source of the intent (which bead, doc, or commit revealed this gap).",
-      "source": "Where the intent was found (e.g., 'closed bead nd-xyz', 'genesis bd-abc', 'README.md', 'git log')",
+      "description": "What needs to be done. Reference the source of the intent.",
+      "source_file": "path/to/doc.md",
+      "source_line": "The specific line or passage from the source doc",
       "priority": 2,
-      "type": "task",
+      "type": "task|bug|feature",
+      "estimated_effort": "small|medium|large",
       "verification_cmd": "optional: shell command that exits 0 when done condition is met"
     }
   ],
@@ -236,7 +259,7 @@ If no reliable machine-verifiable condition exists, omit the verification_cmd
 field entirely. Not all gaps need verification — only when the done condition
 is naturally testable via shell command.
 
-Create as many gaps as you find — do not artificially limit. If no gaps found: {"gaps": [], "intent_summary": "..."
+Create as many gaps as you find — do not artificially limit. If no gaps found: {"gaps": []}
 
 Priority: 0=critical, 1=high, 2=normal, 3=low
 Type: task|bug|feature
@@ -564,17 +587,26 @@ _needle_weave_create_beads() {
     local gaps="$2"
 
     local created=0
+    local max_beads
+    max_beads=$(get_config "weave.max_beads_per_run" "0" 2>/dev/null || echo "0")
 
     while IFS= read -r gap; do
         [[ -z "$gap" ]] && continue
 
-        local title description priority source bead_type verification_cmd
+        # Respect max_beads_per_run limit
+        if [[ "$max_beads" -gt 0 ]] && [[ $created -ge $max_beads ]]; then
+            break
+        fi
+
+        local title description priority source source_file source_line bead_type verification_cmd
 
         if _needle_command_exists jq; then
             title=$(echo "$gap" | jq -r '.title // empty' 2>/dev/null)
             description=$(echo "$gap" | jq -r '.description // empty' 2>/dev/null)
             priority=$(echo "$gap" | jq -r '.priority // 2' 2>/dev/null)
             source=$(echo "$gap" | jq -r '.source // empty' 2>/dev/null)
+            source_file=$(echo "$gap" | jq -r '.source_file // empty' 2>/dev/null)
+            source_line=$(echo "$gap" | jq -r '.source_line // empty' 2>/dev/null)
             bead_type=$(echo "$gap" | jq -r '.type // "task"' 2>/dev/null)
             verification_cmd=$(echo "$gap" | jq -r '.verification_cmd // empty' 2>/dev/null)
         else
@@ -592,12 +624,18 @@ _needle_weave_create_beads() {
 
         # Build description with source attribution
         local full_description="$description"
+        if [[ -n "$source_line" ]]; then
+            full_description+=$'\n\n---\n'"**Source:** ${source_line}"
+        fi
+        if [[ -n "$source_file" ]]; then
+            full_description+=$'\n'"**File:** ${source_file}"
+        fi
         if [[ -n "$source" ]]; then
-            full_description+="\n\n---\n**Gap identified from:** $source"
+            full_description+=$'\n\n---\n'"**Gap identified from:** ${source}"
         fi
 
         # Build labels array
-        local labels=("weave-generated" "gap-analysis")
+        local labels=("weave-generated" "from-docs")
 
         # Add verification_cmd as a label if present (format: verification_cmd:<command>)
         if [[ -n "$verification_cmd" ]]; then
@@ -672,6 +710,78 @@ _needle_weave_clear_rate_limit() {
     if [[ -f "$last_run_file" ]]; then
         rm -f "$last_run_file"
         _needle_info "Cleared weave rate limit for: $workspace"
+    fi
+}
+
+# Check if weave strand is enabled (opt-in — disabled by default)
+# Usage: _needle_weave_is_enabled
+# Returns: 0 if enabled, 1 if disabled
+_needle_weave_is_enabled() {
+    local enabled
+    enabled=$(get_config "strands.weave" "false" 2>/dev/null)
+    case "$enabled" in
+        true|True|TRUE|yes|Yes|YES|1)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+# Find documentation files in workspace
+# Usage: _needle_weave_find_docs <workspace>
+# Returns: Newline-separated list of doc file paths
+_needle_weave_find_docs() {
+    local workspace="$1"
+    local max_files
+    max_files=$(get_config "strands.weave.max_doc_files" "15" 2>/dev/null || echo "15")
+
+    local doc_files
+    doc_files=$(find "$workspace" \
+        \( -name "README.md" -o -name "ROADMAP*" -o -name "TODO*" \
+           -o -name "CHANGELOG*" -o -name "plan.md" -o -name "PLAN*" \
+           -o -name "ARCHITECTURE*" -o -name "DESIGN*" -o -name "ADR-*" \
+           -o -name "AGENTS.md" -o -name "CLAUDE.md" \) \
+        -type f \
+        -not -path "*/.beads/*" \
+        -not -path "*/node_modules/*" \
+        -not -path "*/.git/*" \
+        -not -path "*/vendor/*" \
+        2>/dev/null | head -n "$max_files")
+
+    # Also check docs/ directory
+    if [[ -d "$workspace/docs" ]]; then
+        local docs_dir_files
+        docs_dir_files=$(find "$workspace/docs" -name "*.md" -type f \
+            -not -name "worker-starvation-*" \
+            2>/dev/null | head -n 10)
+        if [[ -n "$docs_dir_files" ]]; then
+            doc_files=$(printf '%s\n%s' "$doc_files" "$docs_dir_files" | sort -u | head -n "$max_files")
+        fi
+    fi
+
+    echo "$doc_files"
+}
+
+# Get open and in-progress beads for deduplication
+# Usage: _needle_weave_get_open_beads <workspace>
+# Returns: JSON array of bead title strings
+_needle_weave_get_open_beads() {
+    local workspace="$1"
+
+    local beads
+    beads=$(cd "$workspace" 2>/dev/null && br list --json 2>/dev/null)
+
+    if [[ -z "$beads" ]] || [[ "$beads" == "null" ]] || [[ "$beads" == "[]" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    if _needle_command_exists jq; then
+        echo "$beads" | jq -c '[.[] | select(.status == "open" or .status == "in_progress") | .title]' 2>/dev/null || echo "[]"
+    else
+        echo "[]"
     fi
 }
 
