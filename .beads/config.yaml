@@ -38,6 +38,16 @@ mitosis:
   # How long to wait for agent analysis before falling back to heuristics
   timeout: 60
 
+  # force_on_failure: Enable forced mitosis when a bead fails repeatedly (default: true)
+  # When enabled, beads that fail multiple times will be forced to split
+  # This aligns with the principle: agent failure = bead too coarse
+  force_on_failure: true
+
+  # force_failure_threshold: Number of failures before triggering forced mitosis (default: 3)
+  # After N consecutive failures, forced mitosis is attempted before quarantine
+  # If mitosis fails (task is truly atomic), the bead is then quarantined
+  force_failure_threshold: 3
+
   # skip_types: Bead types that should never be split (comma-separated)
   # These types are processed as-is without mitosis consideration
   skip_types: bug,hotfix,incident
