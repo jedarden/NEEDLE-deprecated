@@ -346,6 +346,9 @@ _test_start "Event type validation"
 if _needle_telemetry_valid_event "worker.started" && \
    _needle_telemetry_valid_event "bead.claimed" && \
    _needle_telemetry_valid_event "error.timeout" && \
+   _needle_telemetry_valid_event "bead.force_mitosis.attempt" && \
+   _needle_telemetry_valid_event "bead.force_mitosis.success" && \
+   _needle_telemetry_valid_event "bead.force_mitosis.quarantine" && \
    ! _needle_telemetry_valid_event "invalid.event.type"; then
     _test_pass "Event type validation works correctly"
 else
