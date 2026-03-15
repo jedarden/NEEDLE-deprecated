@@ -540,7 +540,9 @@ _needle_mark_bead_failed() {
         local force_threshold
         force_threshold=$(_needle_mitosis_force_threshold "$workspace")
 
-        if [[ "$bead_failure_count" -ge "$force_threshold" ]]; then
+        # Trigger forced mitosis at threshold - 1 (before quarantine threshold)
+        # This matches the behavior in loop.sh and gives mitosis a chance to decompose
+        if [[ "$bead_failure_count" -ge $((force_threshold - 1)) ]]; then
             _needle_warn "Bead $bead_id has failed $bead_failure_count time(s) — attempting forced mitosis (threshold=$force_threshold)"
             _needle_telemetry_emit "bead.force_mitosis.attempt" "warn" \
                 "bead_id=$bead_id" \
