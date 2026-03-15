@@ -150,7 +150,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         try:
             # Send initial connection message
-            self._send_sse_event({"type": "connected", "ts": datetime.now(timezone.utc).isoformat() + "Z"})
+            self._send_sse_event({"type": "connected", "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
 
             # Send recent events (last 20) to bootstrap
             for event in list(events_buffer)[-20:]:
@@ -168,7 +168,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
                 # Send heartbeat every N seconds
                 if time.time() - last_heartbeat > HEARTBEAT_INTERVAL:
-                    self._send_sse_event({"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat() + "Z"})
+                    self._send_sse_event({"type": "heartbeat", "ts": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")})
                     last_heartbeat = time.time()
 
                 # Flush
@@ -224,7 +224,7 @@ def get_summary() -> dict:
             ts_str = event.get("ts", "")
             if ts_str:
                 try:
-                    event_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
+                    event_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
                 except ValueError:
                     event_ts = now
 
@@ -293,7 +293,7 @@ def get_summary() -> dict:
     recent_beads = [e for e in bead_events if e.get("ts")]
     completed_recent = len([e for e in recent_beads
                            if e["type"] == "bead.completed" and
-                           datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).replace(tzinfo=None) >= one_hour_ago])
+                           datetime.fromisoformat(e["ts"].replace("Z", "+00:00")) >= one_hour_ago])
     throughput = completed_recent / 60.0 if completed_recent > 0 else 0
 
     # Active workers (those with current bead), with elapsed time
@@ -301,7 +301,7 @@ def get_summary() -> dict:
     for w in active_workers.values():
         if w.get("started"):
             try:
-                started_ts = datetime.fromisoformat(w["started"].replace("Z", "+00:00")).replace(tzinfo=None)
+                started_ts = datetime.fromisoformat(w["started"].replace("Z", "+00:00"))
                 w["elapsed_seconds"] = max(0, int((now - started_ts).total_seconds()))
             except (ValueError, TypeError):
                 pass
