@@ -68,6 +68,7 @@ limits:
 runner:
   polling_interval: 2s          # How often workers check for new beads
   idle_timeout: 300s            # Shut down worker after being idle this long (0 = never)
+  max_consecutive_empty: 5      # Empty-strand iterations before exponential backoff kicks in
 
 # ============================================================================
 # Session Naming
@@ -118,6 +119,9 @@ mend:
 
   # min_interval: Minimum seconds between mend runs
   min_interval: 60
+
+  # stale_claim_threshold: Seconds before an IN_PROGRESS bead with no heartbeat is released
+  stale_claim_threshold: 3600   # Default: 1 hour
 
 # ============================================================================
 # Hooks
