@@ -173,6 +173,7 @@ curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
     -H "Content-Type: application/json" \
     -d '{"type":"result","ts":"2026-03-15T12:00:02.000Z","worker":"cost-worker","data":{"usage":{"input_tokens":200,"output_tokens":80},"cost":0.0123}}' \
     &>/dev/null || true
+sleep 0.2  # Allow event to be processed
 summary3=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
 if echo "$summary3" | python3 -c "
 import sys, json
@@ -195,6 +196,7 @@ curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
     -H "Content-Type: application/json" \
     -d '{"type":"budget.warning","ts":"2026-03-15T12:00:03.000Z","worker":"cost-worker","data":{"message":"Daily budget 80% consumed","spent":40.0,"budget":50.0}}' \
     &>/dev/null || true
+sleep 0.2  # Allow event to be processed
 summary4=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
 if echo "$summary4" | python3 -c "
 import sys, json
@@ -216,6 +218,69 @@ if [[ $? -eq 0 ]]; then
     _pass "--host flag is documented in server --help"
 else
     _fail "--host flag not found in server --help"
+fi
+echo ""
+
+# Test 13: GET /api/throughput returns history array
+echo "Test 13: GET /api/throughput returns 30-minute history"
+throughput=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/throughput" 2>/dev/null || echo "")
+if echo "$throughput" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'history' in d, 'missing history field'
+assert 'window_minutes' in d, 'missing window_minutes field'
+h = d['history']
+assert isinstance(h, list), f'history should be list, got {type(h)}'
+assert len(h) == 30, f'expected 30 entries, got {len(h)}'
+for entry in h:
+    assert 'minute' in entry, 'entry missing minute'
+    assert 'count' in entry, 'entry missing count'
+    assert 'ts' in entry, 'entry missing ts'
+" 2>/dev/null; then
+    _pass "Throughput endpoint returns 30-entry history with correct shape"
+else
+    _fail "Throughput endpoint failed (got: ${throughput:0:200})"
+fi
+echo ""
+
+# Test 14: bead.completed event updates throughput history
+echo "Test 14: bead.completed event increments throughput count"
+# Ingest a bead.completed event with current timestamp
+NOW_TS=$(python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'))")
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d "{\"type\":\"bead.completed\",\"ts\":\"$NOW_TS\",\"worker\":\"test-worker\",\"data\":{\"bead_id\":\"nd-sparktest\"}}" \
+    &>/dev/null || true
+throughput2=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/throughput" 2>/dev/null || echo "")
+if echo "$throughput2" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+h = d.get('history', [])
+total = sum(e['count'] for e in h)
+assert total >= 1, f'expected at least 1 completion in history, got {total}'
+" 2>/dev/null; then
+    _pass "bead.completed event appears in throughput history"
+else
+    _fail "bead.completed not reflected in throughput history (got: ${throughput2:0:200})"
+fi
+echo ""
+
+# Test 15: Summary includes strand_last_run field
+echo "Test 15: Summary includes strand_last_run field"
+# Ingest a strand-type event
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d "{\"type\":\"pluck.started\",\"ts\":\"$NOW_TS\",\"worker\":\"test-worker\",\"data\":{}}" \
+    &>/dev/null || true
+summary5=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
+if echo "$summary5" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'strand_last_run' in d, 'missing strand_last_run in summary'
+" 2>/dev/null; then
+    _pass "Summary includes strand_last_run field"
+else
+    _fail "Summary missing strand_last_run (got: ${summary5:0:200})"
 fi
 echo ""
 

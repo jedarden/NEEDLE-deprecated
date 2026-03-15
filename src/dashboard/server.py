@@ -40,6 +40,12 @@ clients_lock = threading.Lock()
 server_start_time = datetime.now(timezone.utc)
 DAILY_BUDGET_USD: float = 0.0  # Set via --daily-budget CLI arg
 
+# Per-minute bead completion counts for throughput sparkline
+# Maps epoch_minute (int) -> completed_count (int)
+throughput_by_minute: dict[int, int] = {}
+throughput_lock = threading.Lock()
+THROUGHPUT_WINDOW_MINUTES = 30
+
 
 class DashboardHandler(BaseHTTPRequestHandler):
     """HTTP request handler for dashboard endpoints."""
@@ -87,6 +93,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._handle_sse()
         elif self.path == "/api/summary":
             self._send_json(get_summary())
+        elif self.path == "/api/throughput":
+            self._send_json({"history": get_throughput_history(), "window_minutes": THROUGHPUT_WINDOW_MINUTES})
         elif self.path == "/api/events":
             # Return last N events
             limit = int(self.headers.get("X-Limit", "100"))
@@ -121,6 +129,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
             # Add to buffer
             events_buffer.append(event)
+
+            # Track per-minute throughput for sparkline
+            event_type = event.get("type", event.get("event", ""))
+            if event_type == "bead.completed":
+                _update_throughput(event.get("ts", ""))
 
             # Broadcast to SSE clients
             broadcast_event(event)
@@ -188,6 +201,38 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.wfile.write(event_str.encode("utf-8"))
         if hasattr(self.wfile, 'flush'):
             self.wfile.flush()
+
+
+def _update_throughput(ts_str: str) -> None:
+    """Record a bead completion in the per-minute throughput tracker."""
+    try:
+        if ts_str:
+            event_ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+        else:
+            event_ts = datetime.now(timezone.utc)
+        epoch_minute = int(event_ts.timestamp() // 60)
+    except (ValueError, TypeError):
+        epoch_minute = int(time.time() // 60)
+
+    with throughput_lock:
+        throughput_by_minute[epoch_minute] = throughput_by_minute.get(epoch_minute, 0) + 1
+        # Prune old entries (keep only last THROUGHPUT_WINDOW_MINUTES + 1)
+        cutoff = int(time.time() // 60) - THROUGHPUT_WINDOW_MINUTES
+        for k in [m for m in throughput_by_minute if m < cutoff]:
+            del throughput_by_minute[k]
+
+
+def get_throughput_history() -> list[dict[str, Any]]:
+    """Return per-minute bead completion counts for the last THROUGHPUT_WINDOW_MINUTES."""
+    now_minute = int(time.time() // 60)
+    with throughput_lock:
+        snapshot = dict(throughput_by_minute)
+    result = []
+    for i in range(THROUGHPUT_WINDOW_MINUTES - 1, -1, -1):
+        minute = now_minute - i
+        ts = datetime.fromtimestamp(minute * 60, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+        result.append({"minute": minute, "count": snapshot.get(minute, 0), "ts": ts})
+    return result
 
 
 def broadcast_event(event: dict) -> None:
@@ -478,6 +523,9 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         .failure .bead-id { color: #f4212e; font-weight: 500; }
         .failure .reason { color: #71767b; font-size: 0.875rem; margin-top: 4px; }
         .empty { color: #71767b; text-align: center; padding: 20px; }
+        .sparkline { display: inline-block; vertical-align: middle; margin-left: 8px; }
+        .sparkline svg { display: block; }
+        .stat-inline { display: flex; align-items: center; gap: 4px; }
     </style>
 </head>
 <body>
@@ -498,7 +546,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         <div class="panel">
             <h2>Summary</h2>
             <div class="stat"><span class="stat-label">Events Today</span><span class="stat-value" id="events-today">0</span></div>
-            <div class="stat"><span class="stat-label">Beads/min</span><span class="stat-value highlight" id="throughput">0</span></div>
+            <div class="stat"><span class="stat-label">Beads/min</span><span class="stat-inline"><span class="stat-value highlight" id="throughput">0</span><span class="sparkline" id="throughput-sparkline"></span></span></div>
             <div class="stat"><span class="stat-label">Cost Today</span><span class="stat-value" id="cost-today">$0.00</span></div>
             <div class="stat" id="budget-row" style="display:none"><span class="stat-label">Daily Budget</span><span class="stat-value" id="daily-budget">-</span></div>
             <div class="stat"><span class="stat-label">Uptime</span><span class="stat-value" id="uptime">-</span></div>
@@ -524,6 +572,31 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         let eventSource = null;
         let events = [];
         const MAX_EVENTS = 50;
+
+        function renderSparkline(history) {
+            if (!history || history.length === 0) return '';
+            const counts = history.map(d => d.count);
+            const max = Math.max(...counts, 1);
+            const w = 80, h = 24, pad = 2;
+            const iw = w - pad * 2, ih = h - pad * 2;
+            const points = counts.map((c, i) => {
+                const x = pad + (i / Math.max(counts.length - 1, 1)) * iw;
+                const y = pad + ih - (c / max) * ih;
+                return `${x.toFixed(1)},${y.toFixed(1)}`;
+            }).join(' ');
+            const hasData = counts.some(c => c > 0);
+            if (!hasData) return '';
+            return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><polyline points="${points}" stroke="#1d9bf0" stroke-width="1.5" fill="none" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+        }
+
+        async function fetchThroughput() {
+            try {
+                const res = await fetch('/api/throughput');
+                const data = await res.json();
+                const sparkEl = document.getElementById('throughput-sparkline');
+                if (sparkEl) sparkEl.innerHTML = renderSparkline(data.history || []);
+            } catch (err) {}
+        }
 
         function fmtElapsed(isoTs) {
             if (!isoTs) return '';
@@ -564,6 +637,9 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (events.length > MAX_EVENTS) events.pop();
             renderEvents();
             fetchSummary();
+            // Refresh sparkline on bead completion events
+            const type = event.type || event.event || '';
+            if (type === 'bead.completed') fetchThroughput();
         }
 
         function renderEvents() {
@@ -653,12 +729,17 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             // Strands
             const strandDiv = document.getElementById('strand-list');
             const strands = s.strand_counts || {};
+            const strandLastRun = s.strand_last_run || {};
             if (Object.keys(strands).length === 0) {
                 strandDiv.innerHTML = '<div class="empty">No strand activity</div>';
             } else {
-                strandDiv.innerHTML = Object.entries(strands).map(([name, count]) => `
-                    <div class="stat"><span class="stat-label">${name}</span><span class="stat-value">${count}</span></div>
-                `).join('');
+                strandDiv.innerHTML = Object.entries(strands).map(([name, count]) => {
+                    const lastTs = strandLastRun[name] ? new Date(strandLastRun[name]).toLocaleTimeString() : '';
+                    return `<div class="stat">
+                        <span class="stat-label">${name}${lastTs ? ` <span class="ts">${lastTs}</span>` : ''}</span>
+                        <span class="stat-value">${count}</span>
+                    </div>`;
+                }).join('');
             }
 
             // Failures
@@ -684,6 +765,9 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 
         // Initial load
         fetchSummary();
+        fetchThroughput();
+        // Refresh sparkline every 60 seconds
+        setInterval(fetchThroughput, 60000);
         connect();
     </script>
 </body>
