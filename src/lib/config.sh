@@ -61,7 +61,9 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "max_children": 5,
     "min_children": 2,
     "min_complexity": 3,
-    "timeout": 60
+    "timeout": 60,
+    "force_on_failure": true,
+    "force_failure_threshold": 3
   },
   "knot": {
     "rate_limit_interval": 3600
@@ -246,6 +248,12 @@ mitosis:
 
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60
+
+  # force_on_failure: Enable forced mitosis when a bead fails repeatedly (default: true)
+  force_on_failure: true
+
+  # force_failure_threshold: Number of failures before triggering forced mitosis (default: 3)
+  force_failure_threshold: 3
 
 # Knot strand configuration (human alerts when stuck)
 knot:
@@ -874,6 +882,12 @@ mitosis:
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60
 
+  # force_on_failure: Enable forced mitosis when a bead fails repeatedly (default: true)
+  force_on_failure: true
+
+  # force_failure_threshold: Number of failures before triggering forced mitosis (default: 3)
+  force_failure_threshold: 3
+
 # Knot strand configuration (human alerts when stuck)
 knot:
   # rate_limit_interval: Minimum seconds between stuck alerts per workspace (default: 1 hour)
@@ -1110,6 +1124,14 @@ validate_config() {
 
     if [[ ! "$mitosis_min_complexity" =~ ^[0-9]+$ ]] || [[ "$mitosis_min_complexity" -lt 0 ]]; then
         _needle_error "Invalid mitosis.min_complexity: must be non-negative integer"
+        return 1
+    fi
+
+    local mitosis_force_failure_threshold
+    mitosis_force_failure_threshold=$(get_config "mitosis.force_failure_threshold" "3")
+
+    if [[ ! "$mitosis_force_failure_threshold" =~ ^[0-9]+$ ]] || [[ "$mitosis_force_failure_threshold" -lt 1 ]]; then
+        _needle_error "Invalid mitosis.force_failure_threshold: must be positive integer >= 1"
         return 1
     fi
 
