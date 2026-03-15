@@ -10,20 +10,7 @@
 # Example: 30s, 5m, 2h, 1d
 
 # ============================================================================
-# Effort Tracking and Budgets
-# ============================================================================
-# Controls cost tracking and budget enforcement for all bead execution.
-effort:
-  log_dir: ~/.needle/logs       # Directory where effort logs and metrics are stored
-
-  # Budget enforcement - prevents overspending on API calls
-  budget:
-    daily_limit_usd: 50.0       # Stop spawning new workers when daily spend exceeds this (0 = unlimited)
-    warning_threshold: 0.8      # Warn when daily spend reaches this percentage of limit (0.0-1.0)
-    per_bead_limit_usd: 5.0     # Maximum spend allowed for a single bead execution
-
-# ============================================================================
-# Billing
+# Billing Model
 # ============================================================================
 # Controls how NEEDLE optimizes work relative to API cost.
 #
@@ -31,19 +18,15 @@ effort:
 #   pay_per_token  — Conservative: minimize spend, respect budgets strictly
 #   use_or_lose    — Aggressive: maximize utilization of subscription quota
 #   unlimited      — Local inference (ollama): no cost constraints
-#
-# Per-provider overrides allow mixed billing environments (e.g., subscription
-# Alibaba + pay-as-you-go Anthropic on the same NEEDLE instance).
 billing:
-  default_model: pay_per_token  # Default billing model for providers not listed below
+  # model: Billing model profile
+  #   - pay_per_token: Conservative (default), minimize token usage
+  #   - use_or_lose: Aggressive, use allocated budget
+  #   - unlimited: Maximum throughput, no budget enforcement
+  model: pay_per_token
 
-  # Per-provider billing model (overrides default behavior per provider)
-  providers:
-    anthropic: pay_per_token    # Anthropic API — pay per token
-    openai: pay_per_token       # OpenAI API — pay per token
-    alibaba: use_or_lose        # Alibaba Cloud — monthly subscription quota
-    zai: use_or_lose            # ZhipuAI — monthly subscription quota
-    ollama: unlimited           # Local Ollama inference — no cost
+  # daily_budget_usd: Daily budget in USD (used by use_or_lose model)
+  daily_budget_usd: 10.0
 
 # ============================================================================
 # Concurrency Limits
@@ -85,7 +68,6 @@ limits:
 runner:
   polling_interval: 2s          # How often workers check for new beads
   idle_timeout: 300s            # Shut down worker after being idle this long (0 = never)
-  max_consecutive_empty: 5      # Exit after N consecutive empty polls (0 = run forever)
 
 # ============================================================================
 # Session Naming
@@ -101,34 +83,41 @@ naming:
 # ============================================================================
 # Strands
 # ============================================================================
-# Strands are an ordered list of work-finding strategies. Each strand has
-# a chance to claim work before the next one is tried. Set to false to disable.
+# Strands are an ordered list of work-finding strategies. Position = priority.
+# Presence = enabled. Remove from list to disable.
+#
+# Relative paths resolve against the NEEDLE installation directory.
 #
 # Built-in strands:
-#   pluck    — Strand 1: Claim OPEN beads from configured workspaces (always on)
-#   explore  — Strand 2: Discover work in adjacent workspaces (low overhead)
-#   mend     — Strand 3: Maintenance: clean logs, recover stale heartbeats
-#   weave    — Strand 4: Create beads from documentation gaps (opt-in)
-#   unravel  — Strand 5: Generate alternative approaches for blocked beads (opt-in)
-#   pulse    — Strand 6: Codebase health monitoring, auto-generate fix beads (opt-in)
-#   knot     — Strand 7: Alert the human when workers are stuck
+#   pluck    — Claim OPEN beads from configured workspaces (always on)
+#   explore  — Discover work in adjacent workspaces (low overhead)
+#   mend     — Maintenance: clean logs, recover stale heartbeats
+#   weave    — Create beads from documentation gaps (opt-in)
+#   unravel  — Generate alternative approaches for blocked beads (opt-in)
+#   pulse    — Codebase health monitoring, auto-generate fix beads (opt-in)
+#   knot     — Alert the human when workers are stuck
 strands:
-  pluck: true                  # Claim beads from workspaces
-  explore: true                # Discover adjacent workspace work
-  mend: true                   # Maintenance and cleanup
-  weave: false                 # Create doc-gap beads (opt-in)
-  unravel: false               # Generate alternative approaches (opt-in)
-  pulse: false                 # Health monitoring and fix beads (opt-in)
-  knot: true                   # Alert human when stuck
+  - strands/pluck.sh     # Primary work from configured workspaces
+  - strands/explore.sh   # Look for work in other workspaces
+  - strands/mend.sh      # Maintenance and cleanup
+  # - strands/weave.sh   # Create beads from documentation gaps (opt-in)
+  # - strands/unravel.sh # Create alternatives for blocked beads (opt-in)
+  # - strands/pulse.sh   # Codebase health monitoring (opt-in)
+  - strands/knot.sh      # Alert human when stuck
 
 # ============================================================================
-# Scaling
+# Mend Strand Configuration
 # ============================================================================
-# Controls automatic worker spawn behavior when the bead backlog grows.
-scaling:
-  spawn_threshold: 3            # Spawn a new worker when open bead count exceeds N
-  max_workers_per_agent: 10     # Hard ceiling on concurrent workers per agent type
-  cooldown_seconds: 30          # Minimum seconds between consecutive spawn attempts
+# Maintenance strand that cleans up stale resources.
+mend:
+  # heartbeat_max_age: Seconds before a stale heartbeat is considered dead
+  heartbeat_max_age: 3600       # Default: 1 hour
+
+  # max_log_files: Maximum number of log files to keep
+  max_log_files: 100
+
+  # min_interval: Minimum seconds between mend runs
+  min_interval: 60
 
 # ============================================================================
 # Hooks
@@ -156,8 +145,9 @@ scaling:
 #   post_task      — After the full bead lifecycle ends
 #   error_recovery — When NEEDLE attempts to recover from an error
 hooks:
-  # timeout: Maximum time to wait for any single hook script to complete
+  # timeout: Maximum time a hook can run
   timeout: 30s
+
   # fail_action: What to do when a hook exits non-zero
   #   warn   — Log warning and continue (default)
   #   abort  — Stop the current operation
@@ -178,42 +168,70 @@ hooks:
   # error_recovery: ~/.needle/hooks/error-recovery.sh
 
 # ============================================================================
-# File Locks
+# Mitosis
 # ============================================================================
-# Controls file locking behavior to prevent concurrent workers from writing
-# to the same files simultaneously.
-#
-# Strategies:
-#   pessimistic — Acquire exclusive lock before reading/writing (default)
-#   optimistic  — Write without locking; detect and merge conflicts after
-#
-# Merge conflict resolution (optimistic strategy only):
-#   git-merge-file — Use git's built-in three-way merge
-#   diff3          — Use diff3 for three-way merge
-#   custom         — Use a custom merge tool (set in merge.tool)
-file_locks:
-  # Maximum time a lock can be held before it is considered stale
-  timeout: 30m
-  # stale_action: What to do when a stale lock is detected
-  #   warn    — Log warning but keep the lock (default)
-  #   release — Force-release the stale lock
-  #   ignore  — Do not check for stale locks
-  stale_action: warn
-  # strategy: Locking strategy for concurrent file access
-  strategy: pessimistic
-  # ld_preload: Intercept filesystem calls via LD_PRELOAD for deeper lock coverage
-  # Provides hard enforcement for agents without native hook support (OpenCode, Aider)
-  ld_preload: false
-  # ld_preload_lib: Path to the LD_PRELOAD shared library (required if ld_preload: true)
-  # Build with: ./scripts/build-native.sh
-  # Default: ~/.needle/lib/libcheckout.so
-  # ld_preload_lib: ~/.needle/lib/libcheckout.so
+# Controls automatic bead splitting. When enabled, complex beads can be
+# split into smaller child beads by the worker before starting execution.
+mitosis:
+  # enabled: Enable/disable mitosis globally
+  enabled: true
 
-  # Merge settings (applies when strategy: optimistic)
-  merge:
-    enabled: false               # Enable automatic merge on optimistic conflict
-    tool: git-merge-file         # Merge tool: git-merge-file | diff3 | custom
-    on_conflict: block           # Action when merge fails: block | keep_ours | keep_theirs
+  # skip_types: Bead types that should not be split (comma-separated)
+  skip_types: bug,hotfix
+
+  # skip_labels: Labels that prevent mitosis (comma-separated)
+  skip_labels: no-mitosis,atomic
+
+  # max_children: Maximum number of children per mitosis
+  max_children: 5
+
+  # min_children: Minimum children required to perform mitosis
+  min_children: 2
+
+  # min_complexity: Minimum number of files/concerns before considering mitosis
+  min_complexity: 3
+
+  # timeout: Timeout in seconds for mitosis analysis
+  timeout: 60
+
+# ============================================================================
+# Knot Strand Configuration
+# ============================================================================
+# Human alerts when workers are stuck. The knot strand notifies humans
+# when beads remain blocked for extended periods.
+knot:
+  # rate_limit_interval: Minimum seconds between stuck alerts per workspace
+  rate_limit_interval: 3600     # Default: 1 hour
+
+# ============================================================================
+# Weave Strand Configuration
+# ============================================================================
+# Documentation gap detection. This strand analyzes documentation and
+# creates beads to fill gaps. Opt-in only (disabled by default).
+weave:
+  # frequency: Minimum seconds between weave runs per workspace
+  frequency: 3600               # Default: 1 hour
+
+  # max_beads_per_run: Maximum beads to create per weave analysis
+  max_beads_per_run: 5
+
+  # max_doc_files: Maximum documentation files to analyze per run
+  max_doc_files: 50
+
+# ============================================================================
+# Unravel Strand Configuration
+# ============================================================================
+# Alternative approaches for blocked HUMAN beads. This strand proposes
+# alternative solutions when human-assigned beads are stuck. Opt-in only.
+unravel:
+  # min_wait_hours: Hours a HUMAN bead must wait before alternatives proposed
+  min_wait_hours: 24
+
+  # max_alternatives: Maximum alternative beads to create per HUMAN bead
+  max_alternatives: 3
+
+  # timeout: Timeout in seconds for unravel analysis
+  timeout: 120
 
 # ============================================================================
 # Watchdog (Heartbeat)
@@ -221,28 +239,177 @@ file_locks:
 # Monitors worker health via heartbeat signals. Workers that stop sending
 # heartbeats are assumed stuck and can be automatically recovered.
 watchdog:
-  interval: 30                  # Seconds between watchdog checks
-  heartbeat_timeout: 120        # Seconds without a heartbeat before worker is considered stuck
-  bead_timeout: 600             # Seconds a bead can be in_progress before forced recovery
-  recovery_action: restart      # Action when a stuck worker is detected: restart | stop
-  startup_grace: 60             # Seconds to wait before enforcing heartbeat checks on new workers
+  # interval: Seconds between heartbeat checks
+  interval: 30
+
+  # heartbeat_timeout: Seconds without a heartbeat before worker is considered stuck
+  heartbeat_timeout: 120
+
+  # bead_timeout: Maximum seconds a bead can run before forced recovery
+  bead_timeout: 600             # Default: 10 minutes
+
+  # recovery_action: Action when a stuck worker is detected
+  #   restart — Attempt to respawn the worker after recovery
+  #   stop    — Just kill the worker without respawning
+  recovery_action: restart
+
+  # startup_grace: Seconds to wait before enforcing heartbeat checks on new workers
+  startup_grace: 60
 
 # ============================================================================
-# Mitosis
+# Pulse Strand Configuration
 # ============================================================================
-# Controls automatic bead splitting. When enabled, complex beads can be
-# split into smaller child beads by the worker before starting execution.
-#
-# skip_types:   Comma-separated bead types to never split (e.g., bug, hotfix)
-# skip_labels:  Comma-separated labels that opt a bead out of splitting
-mitosis:
-  enabled: true                 # Enable automatic bead splitting
-  max_children: 5               # Maximum child beads a single bead can be split into
-  min_children: 2               # Minimum children required to justify splitting
-  min_complexity: 3             # Minimum estimated complexity score to consider splitting
-  timeout: 60                   # Seconds the mitosis analysis step may run before aborting
-  skip_types: bug,hotfix        # Never split beads of these types
-  skip_labels: no-mitosis,atomic # Never split beads with these labels
+# Codebase health monitoring. This strand scans for security issues,
+# outdated dependencies, stale TODOs, and documentation drift.
+# Opt-in only (disabled by default in strands list).
+pulse:
+  # frequency: Minimum time between pulse scans
+  frequency: 24h
+
+  # max_beads_per_run: Maximum beads to create per scan
+  max_beads_per_run: 5
+
+  # seen_issues_retention_days: Days to remember seen issues for deduplication
+  seen_issues_retention_days: 30
+
+  # coverage_threshold: Minimum test coverage percentage
+  coverage_threshold: 70
+
+  # todo_age_days: Days before a TODO is considered stale
+  todo_age_days: 180
+
+  # max_todos_per_run: Maximum stale TODOs to report per scan
+  max_todos_per_run: 10
+
+  # stale_threshold_days: Days before a dependency is considered stale
+  stale_threshold_days: 365
+
+  # max_deps_per_run: Maximum stale dependencies to report per scan
+  max_deps_per_run: 10
+
+  # detectors: Enable/disable specific health detectors
+  detectors:
+    security: true              # Scan for security vulnerabilities
+    dependencies: true          # Check for outdated dependencies
+    docs: true                  # Check for documentation drift
+    doc_drift_enabled: true     # Enable documentation reference drift detection
+    coverage: false             # Monitor test coverage trends
+    todos: true                 # Detect stale TODO/FIXME comments
+
+# ============================================================================
+# Work Stealing (Select)
+# ============================================================================
+# Allows idle workers to claim beads assigned to inactive assignees.
+# This ensures work doesn't stall when workers become unavailable.
+select:
+  # work_stealing_enabled: Enable/disable work stealing
+  work_stealing_enabled: true
+
+  # work_stealing_timeout: Seconds before an assigned bead becomes stealable
+  work_stealing_timeout: 1800   # Default: 30 minutes
+
+  # stealable_assignees: List of assignee names whose beads can be stolen
+  # "coder" is the human user - their beads become stealable when stale
+  stealable_assignees:
+    - coder
+
+  # check_worker_heartbeat: Also check if assignee worker has no heartbeat
+  check_worker_heartbeat: true
+
+  # unassigned_by_default: Leave new beads unassigned for workers to claim
+  # When true, beads created by NEEDLE are immediately released after creation
+  unassigned_by_default: true
+
+  # === Advanced Work Stealing (Idle Worker Features) ===
+
+  # proactive_stealing_enabled: Enable proactive work stealing by idle workers
+  proactive_stealing_enabled: true
+
+  # stealing_load_threshold: Min claimed beads before worker is "overloaded"
+  stealing_load_threshold: 2
+
+  # stealing_idle_threshold: Seconds of idle time before worker can steal
+  stealing_idle_threshold: 60
+
+  # stealing_priority_boost: Priority weight multiplier for stolen beads
+  stealing_priority_boost: 1
+
+  # steal_from_active_workers: Allow stealing from workers with heartbeats
+  # WARNING: This can cause duplicate work if workers are actually processing
+  steal_from_active_workers: false
+
+# ============================================================================
+# Scaling
+# ============================================================================
+# Controls automatic worker spawn behavior when the bead backlog grows.
+scaling:
+  spawn_threshold: 3            # Spawn a new worker when open bead count exceeds N
+  max_workers_per_agent: 10     # Hard ceiling on concurrent workers per agent type
+  cooldown_seconds: 30          # Minimum seconds between consecutive spawn attempts
+
+# ============================================================================
+# File Locks
+# ============================================================================
+# Controls file locking behavior to prevent concurrent workers from writing
+# to the same files simultaneously.
+file_locks:
+  # timeout: Maximum time a lock can be held before it is considered stale
+  timeout: 30m
+
+  # stale_action: What to do when a stale lock is detected
+  #   warn    — Log warning but keep the lock (default)
+  #   release — Force-release the stale lock
+  #   ignore  — Do not check for stale locks
+  stale_action: warn
+
+  # strategy: Locking strategy for concurrent file access
+  #   pessimistic — Acquire exclusive lock before reading/writing (default)
+  #   optimistic  — Write without locking; detect and merge conflicts after
+  strategy: pessimistic
+
+  # ld_preload: Intercept filesystem calls via LD_PRELOAD for deeper lock coverage
+  # Provides hard enforcement for agents without native hook support (OpenCode, Aider)
+  ld_preload: false
+
+  # ld_preload_lib: Path to the LD_PRELOAD shared library (required if ld_preload: true)
+  # Build with: ./scripts/build-native.sh
+  # Default: ~/.needle/lib/libcheckout.so
+  # ld_preload_lib: ~/.needle/lib/libcheckout.so
+
+  # Merge settings (applies when strategy: optimistic)
+  merge:
+    enabled: false              # Enable automatic merge on optimistic conflict
+    tool: git-merge-file        # Merge tool: git-merge-file | diff3 | custom
+    on_conflict: block          # Action when merge fails: block | keep_ours | keep_theirs
+
+  # Lease settings for lock renewal
+  lease:
+    # duration: How long a lock lease is valid before requiring renewal
+    duration: 5m
+
+    # renewal_interval: How often to renew the lease while holding the lock
+    renewal_interval: 30s
+
+    # grace_period: Extra time allowed for renewal before lock is stale
+    grace_period: 1m
+
+# ============================================================================
+# FABRIC Telemetry
+# ============================================================================
+# Forwards stream-json events to FABRIC dashboard for live visualization.
+fabric:
+  # enabled: Enable/disable FABRIC event forwarding
+  enabled: false
+
+  # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
+  # Example: http://localhost:3000/api/events
+  endpoint: ""
+
+  # timeout: HTTP request timeout in seconds
+  timeout: 2
+
+  # batching: Enable event batching to reduce HTTP overhead
+  batching: false
 
 # ============================================================================
 # Bug Scanner
@@ -255,12 +422,12 @@ mitosis:
 #
 # Install UBS: needle bootstrap --dep ubs
 bug_scanner:
-  enabled: true                 # Enable/disable bug scanning (default: true)
-  severity_threshold: error     # Minimum severity that triggers a failure (default: error)
-  fail_on_issues: true          # Fail the bead if issues exceed threshold (default: true)
+  enabled: true                 # Enable/disable bug scanning
+  severity_threshold: error     # Minimum severity that triggers a failure
+  fail_on_issues: true          # Fail the bead if issues exceed threshold
   create_follow_up: true        # Create a follow-up bugfix bead when issues are found
-  timeout: 300                  # Seconds before scan is aborted (default: 300)
-  output_format: json           # Scan output format: json (default)
+  timeout: 300                  # Seconds before scan is aborted
+  output_format: json           # Scan output format
   preflight_check: false        # Run a quick critical-only check before agent dispatch
 
 # ============================================================================
@@ -270,17 +437,17 @@ bug_scanner:
 # When enabled, creates bug beads in a configured workspace when errors occur.
 #
 # Error types that trigger auto bead creation:
-#   quarantine  — Error escalation is "quarantine" (unrecoverable errors)
+#   quarantine   — Error escalation is "quarantine" (unrecoverable errors)
 #   unregistered — Error event type is not in the error registry
 #
 # Auto beads are rate-limited by error signature to prevent bead floods.
 debug:
-  auto_bead_on_error: false     # Enable/disable auto bead creation (default: false)
+  auto_bead_on_error: false     # Enable/disable auto bead creation
   auto_bead_workspace: ""       # Workspace path where auto beads are created (required if enabled)
-  auto_bead_types:              # Error types that trigger auto bead creation (array)
+  auto_bead_types:              # Error types that trigger auto bead creation
     - quarantine                #   - quarantine: errors with escalation=quarantine
     - unregistered              #   - unregistered: unknown/unregistered error types
-  auto_bead_rate_limit: 3600    # Minimum seconds between duplicate filings (default: 3600 = 1 hour)
+  auto_bead_rate_limit: 3600    # Minimum seconds between duplicate filings (default: 1 hour)
 
 # ============================================================================
 # Updates
