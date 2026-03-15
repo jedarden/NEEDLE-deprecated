@@ -4,7 +4,7 @@
 
 # Source lease management module for lock lease renewal
 if [[ -f "${NEEDLE_SRC:-$(dirname "${BASH_SOURCE[0]}")/../lock/lease.sh}" ]]; then
-    source "${NEEDLE_SRC:-$(dirname "${BASH_SOURCE[0]}")/../lock/lease.sh"
+    source "${NEEDLE_SRC:-$(dirname "${BASH_SOURCE[0]}")/../lock/lease.sh}"
 fi
 
 # Heartbeat state variables
