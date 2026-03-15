@@ -492,20 +492,28 @@ test_annotate_bead_no_effort() {
     export NEEDLE_LOG_DIR="$log_dir"
     export NEEDLE_HOME="$TEST_STATE_DIR"
 
-    # Should return 0 (success) and not call br
-    local br_called=false
-    br() {
-        br_called=true
-    }
-    export -f br
+    # Create a mock br that records calls
+    local mock_br_dir="$TEST_STATE_DIR/mock_br_bin_empty"
+    mkdir -p "$mock_br_dir"
+    cat > "$mock_br_dir/br" << 'BR_SCRIPT'
+#!/usr/bin/env bash
+# Mark that br was called by creating a flag file
+touch "${BR_CALLED_FILE}"
+BR_SCRIPT
+    chmod +x "$mock_br_dir/br"
+
+    local old_path="$PATH"
+    export PATH="$mock_br_dir:$PATH"
+    export BR_CALLED_FILE="$TEST_STATE_DIR/br_was_called.txt"
 
     _needle_annotate_bead_with_effort "nd-empty-bead" "$TEST_STATE_DIR" 2>/dev/null || true
 
     export NEEDLE_LOG_DIR="$old_log_dir"
     export NEEDLE_HOME="$old_home"
-    unset -f br
+    export PATH="$old_path"
+    unset BR_CALLED_FILE
 
-    if [[ "$br_called" == "false" ]]; then
+    if [[ ! -f "$TEST_STATE_DIR/br_was_called.txt" ]]; then
         _test_pass "$test_name - skips annotation when no effort data"
     else
         _test_fail "$test_name - should not call br when no effort data"
@@ -531,18 +539,29 @@ test_annotate_bead_with_effort() {
     # Use a temp file to capture br call args (variable assignments don't
     # propagate back from subshells)
     local br_args_file="$TEST_STATE_DIR/br_args_annotate.txt"
-    br() {
-        echo "$*" >> "$br_args_file"
-    }
-    export -f br
-    export br_args_file
+    local mock_br_dir="$TEST_STATE_DIR/mock_br_bin"
+    mkdir -p "$mock_br_dir"
+
+    # Create an actual executable br script (command -v will find this)
+    cat > "$mock_br_dir/br" << 'BR_SCRIPT'
+#!/usr/bin/env bash
+# Capture br arguments to the args file
+echo "$*" >> "${BR_ARGS_FILE}"
+BR_SCRIPT
+    chmod +x "$mock_br_dir/br"
+
+    # Add mock br to PATH
+    local old_path="$PATH"
+    export PATH="$mock_br_dir:$PATH"
+    export BR_ARGS_FILE="$br_args_file"
 
     local rc=0
     _needle_annotate_bead_with_effort "nd-annotate-me" "$TEST_STATE_DIR" 2>/dev/null || rc=$?
 
     export NEEDLE_LOG_DIR="$old_log_dir"
     export NEEDLE_HOME="$old_home"
-    unset -f br
+    export PATH="$old_path"
+    unset BR_ARGS_FILE
 
     # Check file existence BEFORE unsetting br_args_file (unset clears the var)
     if [[ -f "$br_args_file" ]]; then

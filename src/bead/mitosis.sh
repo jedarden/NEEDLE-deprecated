@@ -749,6 +749,7 @@ _needle_perform_mitosis() {
             2>/dev/null)
 
         # Append affected_files and verification_cmd to description when present
+        # (for human readability)
         if [[ -n "$affected_files" ]]; then
             description+=$'\n\n'"**Affected files:** ${affected_files}"
         fi
@@ -774,6 +775,10 @@ _needle_perform_mitosis() {
             while IFS= read -r clabel; do
                 [[ -n "$clabel" ]] && label_args+=("--label" "$clabel")
             done <<< "$child_labels"
+        fi
+        # Add verification_cmd as a label for verify.sh to pick it up (format: verification_cmd:<command>)
+        if [[ -n "$verification_cmd" ]]; then
+            label_args+=("--label" "verification_cmd:${verification_cmd}")
         fi
 
         # Create child bead using wrapper (handles unassigned_by_default)

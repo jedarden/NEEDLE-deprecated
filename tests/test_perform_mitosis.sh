@@ -366,6 +366,17 @@ else
     test_fail "Expected per-child 'api' label to be applied"
 fi
 
+test_case "_needle_perform_mitosis adds verification_cmd as label for verify.sh"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[]}'
+analysis=$(make_analysis "Task" "desc" "Task2" "desc2" \
+    "" "pytest tests/test_auth.py -q")
+_needle_perform_mitosis "nd-parent" "/tmp" "$analysis" &>/dev/null
+if log_has "$CREATE_LOG" "verification_cmd:pytest tests/test_auth.py -q"; then
+    test_pass
+else
+    test_fail "Expected verification_cmd label in format 'verification_cmd:<command>'"
+fi
+
 # ============================================================================
 # Tests: sequential blocked_by wiring
 # ============================================================================
