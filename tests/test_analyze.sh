@@ -733,6 +733,163 @@ fi
 echo ""
 
 # ============================================================================
+# Test: needle analyze cost by_strand and by_type breakdown
+# ============================================================================
+
+echo "=== analyze cost by_strand / by_type Tests ==="
+
+STRAND_SPEND_FILE="$TEST_DIR/strand_spend.json"
+TODAY=$(date +%Y-%m-%d)
+
+cat > "$STRAND_SPEND_FILE" << STRAND_EOF
+{
+  "$TODAY": {
+    "total": 0.06,
+    "agents": {
+      "claude-anthropic-sonnet": 0.06
+    },
+    "beads": {
+      "nd-str1": {
+        "cost": 0.030,
+        "agent": "claude-anthropic-sonnet",
+        "input_tokens": 10000,
+        "output_tokens": 5000,
+        "timestamp": "${TODAY}T10:00:00Z",
+        "strand": "pluck",
+        "type": "task"
+      },
+      "nd-str2": {
+        "cost": 0.020,
+        "agent": "claude-anthropic-sonnet",
+        "input_tokens": 7000,
+        "output_tokens": 3000,
+        "timestamp": "${TODAY}T11:00:00Z",
+        "strand": "loop",
+        "type": "feature"
+      },
+      "nd-str3": {
+        "cost": 0.010,
+        "agent": "claude-anthropic-sonnet",
+        "input_tokens": 3000,
+        "output_tokens": 1500,
+        "timestamp": "${TODAY}T12:00:00Z",
+        "strand": "pluck",
+        "type": "task"
+      }
+    }
+  }
+}
+STRAND_EOF
+
+export NEEDLE_DAILY_SPEND_FILE="$STRAND_SPEND_FILE"
+
+STRAND_JSON=$(_needle_analyze_cost --json 2>&1 || true)
+
+if echo "$STRAND_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'by_strand' in d" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: output has 'by_strand' key"
+else
+    fail "_needle_analyze_cost --json: missing 'by_strand' key (got: $STRAND_JSON)"
+fi
+
+if echo "$STRAND_JSON" | python3 -c "import json,sys; d=json.load(sys.stdin); assert 'by_type' in d" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: output has 'by_type' key"
+else
+    fail "_needle_analyze_cost --json: missing 'by_type' key"
+fi
+
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+strands = [s['strand'] for s in d.get('by_strand', [])]
+assert 'pluck' in strands, f'pluck not in {strands}'
+assert 'loop' in strands, f'loop not in {strands}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_strand includes pluck and loop entries"
+else
+    fail "_needle_analyze_cost --json: by_strand missing expected strand names (got: $STRAND_JSON)"
+fi
+
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+types = [t['type'] for t in d.get('by_type', [])]
+assert 'task' in types, f'task not in {types}'
+assert 'feature' in types, f'feature not in {types}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_type includes task and feature entries"
+else
+    fail "_needle_analyze_cost --json: by_type missing expected type names"
+fi
+
+# Verify pluck aggregates both nd-str1 and nd-str3 costs
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+pluck_entries = [s for s in d.get('by_strand', []) if s['strand'] == 'pluck']
+assert len(pluck_entries) == 1, 'expected 1 pluck entry'
+pluck = pluck_entries[0]
+assert pluck['bead_count'] == 2, f'expected 2 beads for pluck, got {pluck[\"bead_count\"]}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_strand pluck aggregates correct bead count"
+else
+    fail "_needle_analyze_cost --json: by_strand pluck bead count wrong"
+fi
+
+# Text output should include "By strand:" and "By type:" sections
+STRAND_TEXT=$(_needle_analyze_cost 2>&1 || true)
+
+if echo "$STRAND_TEXT" | grep -q "By strand:"; then
+    pass "_needle_analyze_cost text output: shows 'By strand:' section"
+else
+    fail "_needle_analyze_cost text output: missing 'By strand:' section (got: $STRAND_TEXT)"
+fi
+
+if echo "$STRAND_TEXT" | grep -q "By type:"; then
+    pass "_needle_analyze_cost text output: shows 'By type:' section"
+else
+    fail "_needle_analyze_cost text output: missing 'By type:' section"
+fi
+
+if echo "$STRAND_TEXT" | grep -q "pluck"; then
+    pass "_needle_analyze_cost text output: shows pluck strand"
+else
+    fail "_needle_analyze_cost text output: missing pluck strand"
+fi
+
+# by_strand entries should include cost_usd, input_tokens, output_tokens, bead_count
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for s in d.get('by_strand', []):
+    assert 'cost_usd' in s
+    assert 'input_tokens' in s
+    assert 'output_tokens' in s
+    assert 'bead_count' in s
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_strand entries have required fields"
+else
+    fail "_needle_analyze_cost --json: by_strand entries missing required fields"
+fi
+
+# by_bead entries should now include strand and type fields
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for b in d.get('by_bead', []):
+    assert 'strand' in b, f'strand missing from {b}'
+    assert 'type' in b, f'type missing from {b}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_bead entries include strand and type fields"
+else
+    fail "_needle_analyze_cost --json: by_bead entries missing strand/type fields"
+fi
+
+# Restore original spend file for remaining tests
+export NEEDLE_DAILY_SPEND_FILE="$SPEND_FILE"
+
+echo ""
+
+# ============================================================================
 # Test: Source File Structure (cost-related)
 # ============================================================================
 
