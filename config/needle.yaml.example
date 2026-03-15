@@ -124,6 +124,25 @@ mend:
   stale_claim_threshold: 3600   # Default: 1 hour
 
 # ============================================================================
+# Explore Strand Configuration
+# ============================================================================
+# Controls how the explore strand searches for work in adjacent workspaces.
+# The explore strand walks up and down the filesystem tree from the current
+# workspace, looking for other NEEDLE workspaces with open beads.
+explore:
+  # threshold: Minimum number of open beads in a discovered workspace before
+  # explore spawns workers or claims beads there
+  threshold: 3
+
+  # max_depth: Maximum directory depth to search downward into child directories
+  # when looking for nested workspaces with .beads/ directories
+  max_depth: 3
+
+  # max_upward_depth: Maximum number of parent directory levels to walk upward
+  # when searching for sibling workspaces at higher levels in the tree
+  max_upward_depth: 3
+
+# ============================================================================
 # Hooks
 # ============================================================================
 # User-defined scripts executed at lifecycle events. Each hook receives
