@@ -899,7 +899,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo ""
             echo "Commands:"
             echo "  calculate <agent> <in> <out>   Calculate cost for tokens"
-            echo "  record <bead> <cost> [agent] [in] [out]  Record effort"
+            echo "  record <bead> <cost> [agent] [in] [out] [strand] [type]  Record effort"
             echo "  spend [days]                   Show spend summary"
             echo "  daily [date]                   Get daily spend JSON"
             echo "  summary [start] [end]          Get spend summary JSON"
