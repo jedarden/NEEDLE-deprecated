@@ -517,6 +517,60 @@ else
     _test_fail "Create beads exceeded max_beads_per_run. Created: $created"
 fi
 
+# ============================================================================
+# Test 23: Create beads adds verification_cmd as label when present
+# ============================================================================
+_test_start "Create beads adds verification_cmd as label when present"
+CAPTURE_FILE=$(mktemp)
+_needle_create_bead() {
+    echo "$@" > "$CAPTURE_FILE"
+    echo "nd-weave-vcmd-$$"
+    return 0
+}
+test_gaps='[{"title": "Verified gap", "description": "Test", "priority": 2, "type": "task", "verification_cmd": "pytest tests/test_foo.py -q"}]'
+_needle_weave_create_beads "$NEEDLE_WORKSPACE" "$test_gaps" >/dev/null 2>&1
+if grep -q "verification_cmd:pytest tests/test_foo.py -q" "$CAPTURE_FILE"; then
+    _test_pass "Create beads adds verification_cmd label in format verification_cmd:<cmd>"
+else
+    _test_fail "Create beads missing verification_cmd label. Got: $(cat "$CAPTURE_FILE")"
+fi
+rm -f "$CAPTURE_FILE"
+
+# ============================================================================
+# Test 24: Create beads omits verification_cmd label when absent
+# ============================================================================
+_test_start "Create beads omits verification_cmd label when not in gap"
+CAPTURE_FILE=$(mktemp)
+_needle_create_bead() {
+    echo "$@" > "$CAPTURE_FILE"
+    echo "nd-weave-novcmd-$$"
+    return 0
+}
+test_gaps='[{"title": "Unverified gap", "description": "No verification", "priority": 2, "type": "task"}]'
+_needle_weave_create_beads "$NEEDLE_WORKSPACE" "$test_gaps" >/dev/null 2>&1
+if ! grep -q "verification_cmd:" "$CAPTURE_FILE"; then
+    _test_pass "Create beads correctly omits verification_cmd label when absent"
+else
+    _test_fail "Create beads should not include verification_cmd label. Got: $(cat "$CAPTURE_FILE")"
+fi
+rm -f "$CAPTURE_FILE"
+
+# ============================================================================
+# Test 25: Prompt template includes verification_cmd field documentation
+# ============================================================================
+_test_start "Prompt template includes verification_cmd field documentation"
+# Reset _needle_create_bead to default mock
+_needle_create_bead() {
+    echo "nd-weave-test-$$"
+    return 0
+}
+prompt=$(_needle_weave_build_prompt "$NEEDLE_WORKSPACE" "$NEEDLE_WORKSPACE/README.md" '[]' 2>/dev/null)
+if echo "$prompt" | grep -q "verification_cmd"; then
+    _test_pass "Prompt template includes verification_cmd in output schema"
+else
+    _test_fail "Prompt template missing verification_cmd field documentation"
+fi
+
 # Summary
 echo ""
 echo "=========================================="
