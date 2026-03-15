@@ -433,6 +433,153 @@ else
 fi
 
 # ============================================================================
+# Test Verification Workflow Integration (nd-lroc)
+# ============================================================================
+
+# Helper: Override internal functions called by _needle_pluck_process_bead
+# to isolate and control the verification workflow.
+#
+# Uses global (_NEEDLE_TEST_*) vars — not local — so they're visible inside
+# subshells created by $() in pluck.sh.  A counter state-file is used instead
+# of a shell variable for the same reason.
+#
+# Args:
+#   $1 - exit code carried in the dispatch result string (default: 0)
+#   $2 - _needle_verify_bead first-call exit: 0=pass, 1=fail, 2=skip (default: 2)
+#   $3 - _needle_verify_bead second-call exit (after self-correction): 0=pass, 1=fail (default: 0)
+_setup_verify_mocks() {
+    # Global config vars — accessible to functions running in subshells
+    _NEEDLE_TEST_DISPATCH_EXIT="${1:-0}"
+    _NEEDLE_TEST_VERIFY_FIRST="${2:-2}"
+    _NEEDLE_TEST_VERIFY_SECOND="${3:-0}"
+    _NEEDLE_TEST_VERIFY_COUNT_FILE="$TEST_DIR/verify_call_count"
+
+    NEEDLE_BEAD_COMPLETED=false
+    NEEDLE_BEAD_RELEASED=false
+
+    # Reset stateful counter
+    echo "0" > "$_NEEDLE_TEST_VERIFY_COUNT_FILE"
+
+    # No mitosis for these tests
+    _needle_check_mitosis() { return 1; }
+
+    # Return a minimal test prompt (avoids br dependency in prompt.sh)
+    _needle_build_prompt() { echo "test prompt for verification"; return 0; }
+
+    # Mock agent dispatch: echoes "<exit>|<ms>|<file>" — the format pluck.sh parses.
+    # The exit code comes from the global so it survives the subshell.
+    _needle_dispatch_agent() {
+        local out_file="$TEST_DIR/dispatch_out.log"
+        touch "$out_file"
+        echo "${_NEEDLE_TEST_DISPATCH_EXIT}|1000|${out_file}"
+        return 0
+    }
+
+    # Stateful verify mock: first call uses VERIFY_FIRST, subsequent use VERIFY_SECOND.
+    # Uses a file counter because the function runs inside $() subshells.
+    _needle_verify_bead() {
+        local count
+        count=$(cat "$_NEEDLE_TEST_VERIFY_COUNT_FILE" 2>/dev/null || echo 0)
+        ((count++))
+        echo "$count" > "$_NEEDLE_TEST_VERIFY_COUNT_FILE"
+
+        local exit_to_use
+        if [[ $count -le 1 ]]; then
+            exit_to_use="$_NEEDLE_TEST_VERIFY_FIRST"
+        else
+            exit_to_use="$_NEEDLE_TEST_VERIFY_SECOND"
+        fi
+
+        case "$exit_to_use" in
+            0)
+                echo '{"passed":true,"attempts":1,"command":"true","output":"","exit_code":0,"flaky":false,"skipped":false}'
+                return 0
+                ;;
+            1)
+                echo '{"passed":false,"attempts":3,"command":"test_cmd","output":"assertion failed","exit_code":1,"flaky":false,"skipped":false}'
+                return 1
+                ;;
+            2)
+                echo '{"passed":true,"attempts":0,"command":null,"output":null,"exit_code":0,"flaky":false,"skipped":true}'
+                return 2
+                ;;
+        esac
+    }
+
+    # Track bead outcome.  These functions are called directly (not via $()) so
+    # assignments propagate back to the parent shell.
+    _needle_mark_bead_completed() { NEEDLE_BEAD_COMPLETED=true; return 0; }
+    _needle_release_bead()        { NEEDLE_BEAD_RELEASED=true;  return 0; }
+    _needle_mark_bead_failed()    { return 0; }
+
+    # No-op telemetry/cost stubs
+    _needle_extract_tokens()          { echo "0|0"; return 0; }
+    calculate_cost()                  { echo "0.00"; return 0; }
+    record_effort()                   { return 0; }
+    _needle_annotate_bead_with_effort() { return 0; }
+}
+
+test_case "_needle_pluck_process_bead closes bead when verification passes"
+create_test_config
+mock_br '[{"id":"bd-vpass","title":"Verify Pass","priority":2}]'
+_setup_verify_mocks 0 0  # dispatch=ok, verify=pass
+
+_needle_pluck_process_bead "bd-vpass" "$TEST_DIR/workspace" "test-agent" 2>/dev/null
+exit_code=$?
+
+if [[ $exit_code -eq 0 ]] && [[ "$NEEDLE_BEAD_COMPLETED" == "true" ]]; then
+    test_pass
+else
+    test_fail "Expected exit 0 and bead completed, got exit=$exit_code completed=$NEEDLE_BEAD_COMPLETED"
+fi
+
+test_case "_needle_pluck_process_bead closes bead when no verification_cmd (skip)"
+create_test_config
+mock_br '[{"id":"bd-vskip","title":"Verify Skip","priority":2}]'
+_setup_verify_mocks 0 2  # dispatch=ok, verify=skip
+
+_needle_pluck_process_bead "bd-vskip" "$TEST_DIR/workspace" "test-agent" 2>/dev/null
+exit_code=$?
+
+if [[ $exit_code -eq 0 ]] && [[ "$NEEDLE_BEAD_COMPLETED" == "true" ]]; then
+    test_pass
+else
+    test_fail "Expected exit 0 and bead completed when skipped, got exit=$exit_code completed=$NEEDLE_BEAD_COMPLETED"
+fi
+
+test_case "_needle_pluck_process_bead self-corrects when first verify fails but correction passes"
+create_test_config
+mock_br '[{"id":"bd-vcorr","title":"Self Correct","priority":2}]'
+_setup_verify_mocks 0 1 0  # dispatch=ok, first_verify=fail, second_verify=pass
+
+_needle_pluck_process_bead "bd-vcorr" "$TEST_DIR/workspace" "test-agent" 2>/dev/null
+exit_code=$?
+
+verify_calls=$(cat "$_NEEDLE_TEST_VERIFY_COUNT_FILE" 2>/dev/null || echo 0)
+if [[ $exit_code -eq 0 ]] && [[ "$NEEDLE_BEAD_COMPLETED" == "true" ]] && \
+   [[ $verify_calls -ge 2 ]]; then
+    test_pass
+else
+    test_fail "Expected self-correction to close bead: exit=$exit_code completed=$NEEDLE_BEAD_COMPLETED verify_calls=$verify_calls"
+fi
+
+test_case "_needle_pluck_process_bead releases bead when verification persistently fails"
+create_test_config
+mock_br '[{"id":"bd-vfail","title":"Verify Fail","priority":2}]'
+_setup_verify_mocks 0 1 1  # dispatch=ok, first_verify=fail, second_verify=fail
+
+_needle_pluck_process_bead "bd-vfail" "$TEST_DIR/workspace" "test-agent" 2>/dev/null
+exit_code=$?
+
+verify_calls=$(cat "$_NEEDLE_TEST_VERIFY_COUNT_FILE" 2>/dev/null || echo 0)
+if [[ $exit_code -eq 1 ]] && [[ "$NEEDLE_BEAD_RELEASED" == "true" ]] && \
+   [[ $verify_calls -ge 2 ]]; then
+    test_pass
+else
+    test_fail "Expected bead released after persistent verify failure: exit=$exit_code released=$NEEDLE_BEAD_RELEASED verify_calls=$verify_calls"
+fi
+
+# ============================================================================
 # Test Direct Execution Support
 # ============================================================================
 
