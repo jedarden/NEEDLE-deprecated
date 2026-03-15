@@ -76,6 +76,9 @@ if [[ -z "${_NEEDLE_EFFORT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/effort.sh"
 fi
 
+# Source tokens module for per-bead token extraction
+source "$(dirname "${BASH_SOURCE[0]}")/../telemetry/tokens.sh"
+
 # ============================================================================
 # Configuration Helpers
 # ============================================================================
@@ -212,6 +215,30 @@ _needle_pluck_process_bead() {
     IFS='|' read -r exit_code duration output_file <<< "$last_line"
 
     _needle_debug "Agent completed: exit_code=$exit_code, duration=${duration}ms"
+
+    # Step 4a: Extract tokens and record effort (updates daily_spend.json for needle analyze cost)
+    local input_tokens=0
+    local output_tokens=0
+    local cost="0.00"
+
+    if [[ -n "$output_file" ]] && [[ -f "$output_file" ]]; then
+        local token_result
+        token_result=$(_needle_extract_tokens "$agent" "$output_file")
+
+        if [[ -n "$token_result" ]]; then
+            input_tokens=$(echo "$token_result" | cut -d'|' -f1)
+            output_tokens=$(echo "$token_result" | cut -d'|' -f2)
+            [[ ! "$input_tokens" =~ ^[0-9]+$ ]] && input_tokens=0
+            [[ ! "$output_tokens" =~ ^[0-9]+$ ]] && output_tokens=0
+        fi
+
+        cost=$(calculate_cost "$agent" "$input_tokens" "$output_tokens")
+    fi
+
+    if [[ "$input_tokens" -gt 0 ]] || [[ "$output_tokens" -gt 0 ]]; then
+        record_effort "$bead_id" "$cost" "$agent" "$input_tokens" "$output_tokens"
+        _needle_debug "Recorded effort: bead=$bead_id, cost=\$$cost, agent=$agent"
+    fi
 
     # Step 5: Check exit code and mark bead appropriately
     if [[ "$exit_code" -eq 0 ]]; then
