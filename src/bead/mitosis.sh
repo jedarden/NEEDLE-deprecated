@@ -604,6 +604,30 @@ _needle_perform_mitosis() {
         children_count=$max_children
     fi
 
+    # Fetch parent bead details for field inheritance (priority, labels)
+    local parent_json_raw parent_obj
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        parent_json_raw=$(cd "$workspace" && br show "$parent_id" --json 2>/dev/null)
+    else
+        parent_json_raw=$(br show "$parent_id" --json 2>/dev/null)
+    fi
+    if echo "$parent_json_raw" | jq -e 'type == "array"' &>/dev/null; then
+        parent_obj=$(echo "$parent_json_raw" | jq -c '.[0]')
+    else
+        parent_obj="$parent_json_raw"
+    fi
+
+    # Inherit priority from parent (default 2 if unavailable)
+    local parent_priority
+    parent_priority=$(echo "$parent_obj" | jq -r '.priority // 2' 2>/dev/null)
+    parent_priority="${parent_priority:-2}"
+
+    # Inherit non-system labels from parent (exclude mitosis-child and parent-* labels)
+    local parent_inherited_labels
+    parent_inherited_labels=$(echo "$parent_obj" | jq -r \
+        '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not))) | .[]' \
+        2>/dev/null)
+
     # Emit mitosis started event
     _needle_emit_event "bead.mitosis.started" \
         "Starting mitosis for bead $parent_id" \
@@ -630,12 +654,33 @@ _needle_perform_mitosis() {
         description=$(echo "$child" | jq -r '.description // ""')
         blocked_by=$(echo "$child" | jq -r '.blocked_by // [] | join(",")')
 
+        # Extract optional rich fields from extended child schema
+        local affected_files verification_cmd
+        affected_files=$(echo "$child" | jq -r '.affected_files // [] | join(", ")' 2>/dev/null)
+        verification_cmd=$(echo "$child" | jq -r '.verification_cmd // ""' 2>/dev/null)
+
+        # Append affected_files and verification_cmd to description when present
+        if [[ -n "$affected_files" ]]; then
+            description+=$'\n\n'"**Affected files:** ${affected_files}"
+        fi
+        if [[ -n "$verification_cmd" ]]; then
+            description+=$'\n'"**Verification:** \`${verification_cmd}\`"
+        fi
+
         # Truncate title if too long (br CLI may have limits)
         if [[ ${#title} -gt 100 ]]; then
             title="${title:0:97}..."
         fi
 
-        _needle_debug "Creating child $child_num: $title"
+        _needle_debug "Creating child $child_num: $title (priority: $parent_priority)"
+
+        # Build label args: system labels + labels inherited from parent
+        local label_args=("--label" "mitosis-child" "--label" "parent-$parent_id")
+        if [[ -n "$parent_inherited_labels" ]]; then
+            while IFS= read -r plabel; do
+                [[ -n "$plabel" ]] && label_args+=("--label" "$plabel")
+            done <<< "$parent_inherited_labels"
+        fi
 
         # Create child bead using wrapper (handles unassigned_by_default)
         local child_id=""
@@ -644,10 +689,9 @@ _needle_perform_mitosis() {
             --workspace "$workspace" \
             --title "$title" \
             --description "$description" \
-            --priority 2 \
+            --priority "$parent_priority" \
             --type task \
-            --label "mitosis-child" \
-            --label "parent-$parent_id" \
+            "${label_args[@]}" \
             --silent 2>/dev/null)
 
         if [[ $? -ne 0 ]] || [[ -z "$child_id" ]]; then
