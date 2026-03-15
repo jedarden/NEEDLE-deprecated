@@ -483,6 +483,52 @@ else
     _test_fail "Error convenience functions failed"
 fi
 
+# Test 21: Forced mitosis event convenience functions
+_test_start "Forced mitosis event convenience functions"
+force_mitosis_ok=true
+
+output=$(NEEDLE_SESSION="test-session" NEEDLE_VERBOSE=true \
+    _needle_event_bead_force_mitosis_attempt "nd-test" "2" 2>&1)
+if ! echo "$output" | jq -e '.event == "bead.force_mitosis.attempt"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.data.bead_id == "nd-test"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.data.failure_count == 2' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.level == "warn"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+
+output=$(NEEDLE_SESSION="test-session" NEEDLE_VERBOSE=true \
+    _needle_event_bead_force_mitosis_success "nd-test" "2" 2>&1)
+if ! echo "$output" | jq -e '.event == "bead.force_mitosis.success"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.level == "info"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+
+output=$(NEEDLE_SESSION="test-session" NEEDLE_VERBOSE=true \
+    _needle_event_bead_force_mitosis_quarantine "nd-test" "3" 2>&1)
+if ! echo "$output" | jq -e '.event == "bead.force_mitosis.quarantine"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.level == "error"' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+if ! echo "$output" | jq -e '.data.failure_count == 3' > /dev/null 2>&1; then
+    force_mitosis_ok=false
+fi
+
+if $force_mitosis_ok; then
+    _test_pass "Forced mitosis convenience functions work"
+else
+    _test_fail "Forced mitosis convenience functions failed"
+fi
+
 # ============================================================================
 # Summary
 # ============================================================================
