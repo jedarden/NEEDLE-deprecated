@@ -369,6 +369,7 @@ Respond with ONLY a JSON object (no markdown, no code blocks):
       "description": "Detailed, file-specific description referencing actual paths from the workspace context",
       "affected_files": ["src/auth.py", "tests/test_auth.py"],
       "verification_cmd": "pytest tests/test_auth.py -q",
+      "labels": ["optional-domain-label"],
       "blocked_by": []
     }
   ]
@@ -378,6 +379,7 @@ Respond with ONLY a JSON object (no markdown, no code blocks):
 - **affected_files**: List actual file paths from the workspace context that this child will modify
 - **verification_cmd**: Provide a specific test command to validate this child's work (e.g., "pytest tests/X.py", "npm test -- path/to/test")
 - **description**: Must reference actual files and include specific implementation details
+- **labels**: Optional list of domain-specific labels to apply to this child (do NOT include "mitosis-child" or "parent-*" — these are added automatically)
 
 ## Examples
 
@@ -505,7 +507,7 @@ _needle_analyze_for_mitosis() {
     fi
 }
 
-# Extract JSON from agent output (handles markdown code blocks)
+# Extract JSON from agent output (handles markdown code blocks and raw JSON)
 # Usage: _needle_extract_json_from_output <file_path>
 # Returns: Clean JSON string
 _needle_extract_json_from_output() {
@@ -515,32 +517,48 @@ _needle_extract_json_from_output() {
         return 1
     fi
 
-    local content
-    content=$(cat "$file_path")
-
-    # Try to extract JSON from markdown code block
-    if [[ "$content" =~ \`\`\`(json)?[[:space:]]*([{}][[:space:]]*)\`\`\` ]]; then
-        # Extract content between code fences
-        local in_block=false
-        local json_lines=()
-        while IFS= read -r line; do
-            if [[ "$line" =~ ^\`\`\` ]]; then
-                if [[ "$in_block" == "true" ]]; then
-                    break
-                else
-                    in_block=true
-                    continue
-                fi
-            fi
-            if [[ "$in_block" == "true" ]]; then
-                json_lines+=("$line")
-            fi
-        done <<< "$content"
-        printf '%s\n' "${json_lines[*]}"
-    else
-        # Try to find raw JSON object
-        echo "$content" | grep -oE '\{.*\}' | head -1
+    # Method 1: Extract content from a markdown code block (handles multiline JSON)
+    local extracted
+    extracted=$(awk '/^```(json)?[[:space:]]*$/{f=1;next} /^```[[:space:]]*$/{if(f){f=0}} f' "$file_path")
+    if [[ -n "$extracted" ]] && echo "$extracted" | jq -e '.' &>/dev/null 2>&1; then
+        echo "$extracted"
+        return 0
     fi
+
+    # Method 2: Find the first balanced JSON object in the file (handles raw multiline JSON)
+    local json_obj
+    json_obj=$(python3 - "$file_path" <<'PYEOF' 2>/dev/null
+import sys, json
+
+with open(sys.argv[1], 'r') as f:
+    content = f.read()
+
+start = content.find('{')
+if start < 0:
+    sys.exit(1)
+
+depth = 0
+for i, c in enumerate(content[start:], start):
+    if c == '{':
+        depth += 1
+    elif c == '}':
+        depth -= 1
+        if depth == 0:
+            try:
+                obj = json.loads(content[start:i+1])
+                print(json.dumps(obj))
+            except Exception:
+                pass
+            break
+
+PYEOF
+)
+    if [[ -n "$json_obj" ]]; then
+        echo "$json_obj"
+        return 0
+    fi
+
+    return 1
 }
 
 # Heuristic-based mitosis analysis (fallback when agent unavailable)
@@ -723,9 +741,12 @@ _needle_perform_mitosis() {
         blocked_by=$(echo "$child" | jq -r '.blocked_by // [] | join(",")')
 
         # Extract optional rich fields from extended child schema
-        local affected_files verification_cmd
+        local affected_files verification_cmd child_labels
         affected_files=$(echo "$child" | jq -r '.affected_files // [] | join(", ")' 2>/dev/null)
         verification_cmd=$(echo "$child" | jq -r '.verification_cmd // ""' 2>/dev/null)
+        child_labels=$(echo "$child" | jq -r \
+            '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not))) | .[]' \
+            2>/dev/null)
 
         # Append affected_files and verification_cmd to description when present
         if [[ -n "$affected_files" ]]; then
@@ -742,12 +763,17 @@ _needle_perform_mitosis() {
 
         _needle_debug "Creating child $child_num: $title (priority: $parent_priority)"
 
-        # Build label args: system labels + labels inherited from parent
+        # Build label args: system labels + labels inherited from parent + per-child labels from LLM
         local label_args=("--label" "mitosis-child" "--label" "parent-$parent_id")
         if [[ -n "$parent_inherited_labels" ]]; then
             while IFS= read -r plabel; do
                 [[ -n "$plabel" ]] && label_args+=("--label" "$plabel")
             done <<< "$parent_inherited_labels"
+        fi
+        if [[ -n "$child_labels" ]]; then
+            while IFS= read -r clabel; do
+                [[ -n "$clabel" ]] && label_args+=("--label" "$clabel")
+            done <<< "$child_labels"
         fi
 
         # Create child bead using wrapper (handles unassigned_by_default)
