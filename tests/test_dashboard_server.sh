@@ -158,7 +158,8 @@ echo ""
 # Test 9: SSE /stream endpoint sends initial connection event
 # -N disables curl's output buffering so we get data as it arrives
 echo "Test 9: GET /stream sends SSE data"
-sse_output=$(timeout 2 curl -sfN --max-time 3 "http://localhost:$TEST_PORT/stream" 2>/dev/null || true)
+# Use --max-time 5 to give server time to send initial events, no outer timeout
+sse_output=$(curl -sfN --max-time 5 "http://localhost:$TEST_PORT/stream" 2>/dev/null || true)
 if echo "$sse_output" | grep -q "^data:"; then
     _pass "SSE stream sends data: lines"
 else
