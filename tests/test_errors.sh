@@ -31,6 +31,10 @@ NEEDLE_MODEL="test-model"
 NEEDLE_IDENTIFIER="test-identifier"
 export NEEDLE_VERBOSE=false
 export NEEDLE_DEFAULT_RETRY_COUNT=3
+# Disable auto-bead creation globally for tests to prevent side effects on the
+# production workspace. Tests that specifically test auto-bead behavior must
+# explicitly set NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true".
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
 
 # Source events module first (errors.sh depends on it)
 source "$PROJECT_ROOT/src/telemetry/events.sh"
@@ -1184,6 +1188,53 @@ fi
 # Cleanup
 rm -f "/tmp/br" "$MOCK_BR7" "$DESC_FILE" "$NEEDLE_LOG_DIR/${NEEDLE_SESSION}.log"
 rm -rf "$TEST_WORKSPACE"
+
+# ----------------------------------------------------------------------------
+# Test 33: _needle_error_handle doesn't create real beads when auto-bead is
+# disabled (nd-lbtu regression)
+# ----------------------------------------------------------------------------
+# Bug: test 22 called _needle_error_handle "error.agent_crash" 137 without
+# disabling auto-bead, causing it to read the production config
+# (~/.needle/config.yaml) and create a real bead in the production workspace.
+_test_start "_needle_error_handle with error.agent_crash doesn't create beads when auto-bead disabled"
+
+# Ensure auto-bead is disabled (as set by the global default above)
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+
+# Set up a mock br that records if it was called
+BR_CALLED_LBTU="/tmp/needle-br-called-lbtu-$$"
+MOCK_BR_LBTU="/tmp/needle-mock-br-lbtu-$$"
+rm -f "$BR_CALLED_LBTU"
+cat > "$MOCK_BR_LBTU" <<EOF
+#!/usr/bin/env bash
+echo "called" > "$BR_CALLED_LBTU"
+echo "nd-should-not-exist-lbtu"
+exit 0
+EOF
+chmod +x "$MOCK_BR_LBTU"
+ln -sf "$MOCK_BR_LBTU" "/tmp/br"
+export PATH="/tmp:$PATH"
+
+# Replicate the multi-error test scenario from Test 22 that triggered the bug
+action1=$(_needle_error_handle "error.claim_failed" 1 "bead_id=bead-1")
+action2=$(_needle_error_handle "error.agent_crash" 137 "bead_id=bead-2")
+
+# Verify escalation is still correct
+if [[ "$action1" == "retry" ]] && [[ "$action2" == "quarantine" ]]; then
+    _test_pass "Escalation actions are correct (retry/quarantine)"
+else
+    _test_fail "Unexpected escalation: claim_failed=$action1, agent_crash=$action2"
+fi
+
+# Verify no bead was created (br should not have been invoked)
+if [[ -f "$BR_CALLED_LBTU" ]]; then
+    _test_fail "br was called when auto-bead is disabled - production workspace contaminated (nd-lbtu regression)"
+else
+    _test_pass "No bead created when auto-bead is disabled (nd-lbtu regression)"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR_LBTU" "$BR_CALLED_LBTU"
 
 # ============================================================================
 # Summary
