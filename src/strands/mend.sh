@@ -231,8 +231,23 @@ _needle_mend_orphaned_claims() {
         bead_id=$(echo "$bead" | jq -r '.id // empty')
         assignee=$(echo "$bead" | jq -r '.assignee // empty')
 
-        # Skip beads without an assignee
+        # If no assignee, bead is in_progress with no owner — unconditionally orphaned
         if [[ -z "$assignee" ]]; then
+            _needle_warn "Found ownerless in_progress bead: $bead_id (no assignee — unconditionally orphaned)"
+
+            if _needle_mend_release_bead "$db_path" "$bead_id" "ownerless_claim"; then
+                _needle_info "Released ownerless bead: $bead_id"
+
+                # Emit event for monitoring
+                _needle_emit_event "mend.ownerless_released" \
+                    "Released ownerless in_progress bead" \
+                    "bead_id=$bead_id" \
+                    "workspace=$workspace"
+
+                ((fixed++))
+            else
+                _needle_warn "Failed to release ownerless bead: $bead_id"
+            fi
             continue
         fi
 
