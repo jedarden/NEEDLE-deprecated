@@ -623,6 +623,89 @@ br() {
     esac
 }
 
+# Test 24: blocked beads behavior (nd-nlgt)
+# This test documents the behavior of _needle_explore_count_unassigned with respect to blocked beads.
+# A "blocked" bead is one that is blocked-by another bead (i.e., it has a dependency that must complete first).
+# A "blocker" bead is one that blocks another bead (i.e., it has a "blocks" dependency pointing to another bead).
+#
+# Current behavior using br list --status open --unassigned:
+# - Counts ALL open, unassigned beads, including both blockers and blocked beads
+# - This is correct for blockers (they ARE claimable)
+# - This may include blocked beads (which are NOT claimable until their dependency resolves)
+#
+# The alternative (br ready) would correctly exclude blocked beads but incorrectly excludes blockers.
+# This is the trade-off: br list correctly counts blockers but may count blocked beads.
+# In practice, this is acceptable because blockers are typically claimed and completed before
+# workers move on to other beads.
+_test_start "Blocked beads behavior - documents current trade-off (nd-nlgt)"
+
+# Create a test workspace with .beads directory
+mkdir -p "/tmp/test-blocked-beads-workspace-$$/.beads"
+
+# Override br to simulate a scenario with both blockers and blocked beads:
+# - blocker-abc: open, unassigned, blocks parent-bead (this IS claimable)
+# - blocked-xyz: open, unassigned, blocked-by blocker-abc (this is NOT claimable)
+# - independent-123: open, unassigned, no dependencies (this IS claimable)
+br() {
+    case "$1" in
+        list)
+            if [[ "$*" == *"--status open"* ]] && [[ "$*" == *"--unassigned"* ]] && [[ "$*" == *"--json"* ]]; then
+                # br list returns ALL open, unassigned beads (including blocked ones)
+                echo '[{"id":"blocker-abc","status":"open","assignee":null},{"id":"blocked-xyz","status":"open","assignee":null},{"id":"independent-123","status":"open","assignee":null}]'
+                return 0
+            fi
+            echo '[]'
+            return 0
+            ;;
+        ready)
+            if [[ "$*" == *"--json"* ]] && [[ "$*" == *"--unassigned"* ]]; then
+                # br ready (ideally) would return only claimable beads: blocker-abc and independent-123
+                # but it has the bug where it also excludes blocker-abc
+                echo '[{"id":"independent-123","status":"open","assignee":null}]'
+                return 0
+            fi
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Test that _needle_explore_count_unassigned returns 3 (all open, unassigned beads from br list)
+count=$(_needle_explore_count_unassigned "/tmp/test-blocked-beads-workspace-$$")
+
+# Current behavior: count is 3 (includes both claimable and blocked beads)
+if [[ "$count" == "3" ]]; then
+    _test_pass "count_unassigned uses br list (count=3) - includes blocked beads as current behavior"
+else
+    _test_fail "count_unassigned expected 3, got $count"
+fi
+
+# Note: The ideal behavior would be to count only claimable beads (2: blocker-abc and independent-123)
+# but br list doesn't have a filter for blocked status. This is a known limitation.
+
+# Clean up
+rm -rf "/tmp/test-blocked-beads-workspace-$$"
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 # Summary
 echo ""
 echo "=========================================="
