@@ -1096,6 +1096,95 @@ fi
 rm -f "/tmp/br" "$MOCK_BR6" "$DESC_FILE" "$NEEDLE_HOME/logs/${NEEDLE_SESSION}.log"
 rm -rf "$TEST_WORKSPACE"
 
+# ----------------------------------------------------------------------------
+# Test 32: Auto bead log file lookup with full path NEEDLE_LOG_DIR (runner export)
+# ----------------------------------------------------------------------------
+# This tests the fix for bug nd-6ys3 where NEEDLE_LOG_DIR is exported as a full
+# path by the runner (e.g., /home/user/.needle/logs) but the auto_bead function
+# was treating it as a relative directory name, resulting in malformed paths.
+_test_start "_needle_error_auto_bead handles full path NEEDLE_LOG_DIR correctly"
+
+TEST_WORKSPACE="/tmp/needle-test-ws7-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Set up session
+export NEEDLE_SESSION="needle-test-agent-fullpath"
+export NEEDLE_WORKER_ID="bravo"
+
+# Export NEEDLE_LOG_DIR as a full path (as the runner does)
+export NEEDLE_LOG_DIR="$NEEDLE_HOME/logs"
+export NEEDLE_HOME="$NEEDLE_HOME"
+
+# Create the log file at the full path
+mkdir -p "$NEEDLE_LOG_DIR"
+echo "Full path test log line 1" > "$NEEDLE_LOG_DIR/${NEEDLE_SESSION}.log"
+echo "Full path test log line 2" >> "$NEEDLE_LOG_DIR/${NEEDLE_SESSION}.log"
+
+# Create mock br that captures the description
+MOCK_BR7="/tmp/needle-mock-br7-$$"
+DESC_FILE="/tmp/needle-test-desc-fullpath-$$"
+cat > "$MOCK_BR7" <<BRSCRIPT
+#!/usr/bin/env bash
+if [[ "\$1" == "create" ]]; then
+    desc_capture=""
+    in_desc=false
+    for arg in "\$@"; do
+        if [[ "\$arg" == "--description" ]]; then
+            in_desc=true
+            continue
+        fi
+        if [[ "\$arg" == --* ]] && [[ "\$in_desc" == "true" ]]; then
+            in_desc=false
+        fi
+        if [[ "\$in_desc" == "true" ]]; then
+            desc_capture+="\$arg"\n
+        fi
+    done
+    printf '%s' "\$desc_capture" > "$DESC_FILE" 2>/dev/null
+    echo "nd-fullpath-test-\$(date +%s)"
+    exit 0
+fi
+exit 1
+BRSCRIPT
+chmod +x "$MOCK_BR7"
+ln -sf "$MOCK_BR7" "/tmp/br"
+
+# Clear state
+rm -f "$STATE_DIR/auto_bead_signatures.json" 2>/dev/null
+rm -f "$DESC_FILE"
+
+# Call auto bead with quarantine escalation
+if _needle_error_auto_bead "error.test_fullpath_log" "quarantine" "bead_id=test-fullpath" 2>/dev/null; then
+    _test_pass "Auto bead function returns success with full path NEEDLE_LOG_DIR"
+
+    # Verify the log content was included
+    if [[ -f "$DESC_FILE" ]]; then
+        if grep -q "Full path test log line" "$DESC_FILE" 2>/dev/null; then
+            _test_pass "Log file content found when NEEDLE_LOG_DIR is a full path"
+        else
+            _test_fail "Log content not found - full path handling may be broken"
+        fi
+
+        # Verify we don't see the malformed double-slash path pattern
+        if grep -q "//" "$DESC_FILE" 2>/dev/null; then
+            _test_fail "Malformed double-slash path found in description"
+        else
+            _test_pass "No malformed double-slash paths in description"
+        fi
+    else
+        _test_fail "Description file not created by mock br"
+    fi
+else
+    _test_fail "Auto bead should return 0 for quarantine error with full path NEEDLE_LOG_DIR"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR7" "$DESC_FILE" "$NEEDLE_LOG_DIR/${NEEDLE_SESSION}.log"
+rm -rf "$TEST_WORKSPACE"
+
 # ============================================================================
 # Summary
 # ============================================================================
