@@ -27,6 +27,11 @@
 #   NEEDLE_LINES_ADDED    - Number of lines added
 #   NEEDLE_LINES_REMOVED  - Number of lines removed
 #
+# Cost Attribution Variables (set by runner after agent execution):
+#   NEEDLE_INPUT_TOKENS   - Input tokens consumed by the agent
+#   NEEDLE_OUTPUT_TOKENS  - Output tokens consumed by the agent
+#   NEEDLE_COST           - Estimated cost in USD (e.g., "0.001234")
+#
 # Configuration (in ~/.needle/config.yaml or .needle.yaml):
 #   hooks:
 #     post_complete: ~/.needle/hooks/post-complete.sh
@@ -39,7 +44,7 @@
 set -euo pipefail
 
 # ============================================================================
-# Example: Log completion summary
+# Log completion summary
 # ============================================================================
 echo "Bead ${NEEDLE_BEAD_ID:-} completed at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
 if [[ -n "${NEEDLE_BEAD_TITLE:-}" ]]; then
@@ -50,6 +55,13 @@ if [[ -n "${NEEDLE_DURATION_MS:-}" ]]; then
 fi
 if [[ -n "${NEEDLE_FILES_CHANGED:-}" ]] && [[ "${NEEDLE_FILES_CHANGED}" -gt 0 ]]; then
     echo "  Files:    ${NEEDLE_FILES_CHANGED} changed (+${NEEDLE_LINES_ADDED:-0}/-${NEEDLE_LINES_REMOVED:-0} lines)"
+fi
+
+# ============================================================================
+# Cost summary (NEEDLE exports token/cost data from the agent run)
+# ============================================================================
+if [[ -n "${NEEDLE_COST:-}" ]] && [[ "${NEEDLE_COST}" != "0.00" ]] && [[ "${NEEDLE_COST}" != "0" ]]; then
+    echo "  Cost:     \$${NEEDLE_COST} (${NEEDLE_INPUT_TOKENS:-0} in / ${NEEDLE_OUTPUT_TOKENS:-0} out tokens)"
 fi
 
 # ============================================================================
@@ -64,7 +76,7 @@ fi
 #             \"type\": \"section\",
 #             \"text\": {
 #               \"type\": \"mrkdwn\",
-#               \"text\": \"*Bead:* ${NEEDLE_BEAD_ID:-}\\n*Worker:* ${NEEDLE_WORKER:-}\\n*Duration:* ${NEEDLE_DURATION_MS:-}ms\"
+#               \"text\": \"*Bead:* ${NEEDLE_BEAD_ID:-}\\n*Worker:* ${NEEDLE_WORKER:-}\\n*Duration:* ${NEEDLE_DURATION_MS:-}ms\\n*Cost:* \$${NEEDLE_COST:-0}\"
 #             }
 #           }]
 #         }" || true

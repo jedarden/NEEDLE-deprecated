@@ -112,12 +112,14 @@ _NEEDLE_LOOP_INTERRUPT=false
 NEEDLE_LOOP_DEFAULT_POLLING_INTERVAL="2s"
 NEEDLE_LOOP_DEFAULT_IDLE_TIMEOUT="300s"
 NEEDLE_LOOP_DEFAULT_MAX_EMPTY="5"
+NEEDLE_LOOP_DEFAULT_AGENT_TIMEOUT="1800"
 NEEDLE_LOOP_SHUTDOWN_GRACE_PERIOD="5"
 
 # Runtime config values (updated on hot-reload and workspace config changes)
 NEEDLE_LOOP_CURRENT_POLLING_INTERVAL="2"
 NEEDLE_LOOP_CURRENT_IDLE_TIMEOUT="300"
 NEEDLE_LOOP_CURRENT_MAX_CONSECUTIVE_EMPTY="5"
+NEEDLE_LOOP_CURRENT_AGENT_TIMEOUT="1800"
 
 # ============================================================================
 # Backoff and Crash Recovery Configuration
@@ -736,7 +738,11 @@ _needle_apply_workspace_config_overrides() {
     NEEDLE_LOOP_CURRENT_IDLE_TIMEOUT="$new_idle_timeout"
     NEEDLE_LOOP_CURRENT_MAX_CONSECUTIVE_EMPTY="$new_max_consecutive_empty"
 
-    _needle_debug "Applied workspace config overrides: polling_interval=${new_polling_interval}s, idle_timeout=${new_idle_timeout}s"
+    local new_agent_timeout
+    new_agent_timeout=$(_needle_loop_get_config "runner.agent_timeout" "$NEEDLE_LOOP_DEFAULT_AGENT_TIMEOUT")
+    NEEDLE_LOOP_CURRENT_AGENT_TIMEOUT="$new_agent_timeout"
+
+    _needle_debug "Applied workspace config overrides: polling_interval=${new_polling_interval}s, idle_timeout=${new_idle_timeout}s, agent_timeout=${new_agent_timeout}s"
 }
 
 # ============================================================================
@@ -1095,9 +1101,10 @@ _needle_process_bead() {
         "session=$NEEDLE_SESSION" \
         "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    # Dispatch to agent
+    # Dispatch to agent with configurable timeout
+    local agent_timeout="${NEEDLE_LOOP_CURRENT_AGENT_TIMEOUT:-1800}"
     local result
-    result=$(_needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title")
+    result=$(_needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title" "$agent_timeout")
     local dispatch_exit=$?
     local dispatch_duration=0
     local dispatch_output=""
@@ -1270,6 +1277,13 @@ _needle_complete_bead() {
         "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     _needle_success "Bead completed: $bead_id"
+
+    # Annotate bead with cost attribution from session logs.
+    # This joins effort.recorded events (written earlier in this session)
+    # back to the bead record so cost is visible per-bead in br show/list.
+    if declare -f _needle_annotate_bead_with_effort &>/dev/null; then
+        _needle_annotate_bead_with_effort "$bead_id" "${NEEDLE_WORKSPACE:-$(pwd)}" || true
+    fi
 
     # Run post-complete hook
     _needle_run_hook "post_complete" "$bead_id"

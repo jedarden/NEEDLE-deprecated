@@ -620,6 +620,170 @@ _needle_event_effort_recorded() {
 }
 
 # -----------------------------------------------------------------------------
+# Per-Bead Effort Lookup (join events.jsonl to bead on close)
+# -----------------------------------------------------------------------------
+
+# Get aggregated effort for a specific bead from NEEDLE session logs
+# Usage: _needle_get_bead_effort <bead_id>
+# Returns: input_tokens|output_tokens|cost_usd|attempts
+#
+# Reads all NEEDLE session log files ($NEEDLE_HOME/logs/*.jsonl) and sums
+# effort events (effort.recorded and bead.effort_recorded) for the given bead.
+# This gives accurate totals across multiple agent attempts on the same bead.
+#
+# Example:
+#   result=$(_needle_get_bead_effort "nd-abc123")
+#   IFS='|' read -r in out cost attempts <<< "$result"
+#   echo "Total cost: \$$cost ($in in / $out out, $attempts attempts)"
+_needle_get_bead_effort() {
+    local bead_id="$1"
+
+    if [[ -z "$bead_id" ]]; then
+        echo "0|0|0|0"
+        return 1
+    fi
+
+    local log_dir="${NEEDLE_HOME:-$HOME/.needle}/${NEEDLE_LOG_DIR:-logs}"
+
+    if [[ ! -d "$log_dir" ]]; then
+        echo "0|0|0|0"
+        return 0
+    fi
+
+    # Collect all session log files
+    local log_files=()
+    while IFS= read -r f; do
+        log_files+=("$f")
+    done < <(find "$log_dir" -maxdepth 1 -name "*.jsonl" -type f 2>/dev/null)
+
+    if [[ ${#log_files[@]} -eq 0 ]]; then
+        echo "0|0|0|0"
+        return 0
+    fi
+
+    if command -v jq &>/dev/null; then
+        # Parse all log files and aggregate effort events for this bead
+        cat "${log_files[@]}" 2>/dev/null | \
+            jq -rcs --arg bead_id "$bead_id" '
+                [.[] | select(
+                    (.event == "effort.recorded" or .event == "bead.effort_recorded")
+                    and .data.bead_id == $bead_id
+                )] |
+                {
+                    attempts: length,
+                    input_tokens: (map(.data.input_tokens // 0) | add // 0),
+                    output_tokens: (map(.data.output_tokens // 0) | add // 0),
+                    cost_usd: (map(.data.cost // "0" | tonumber) | add // 0)
+                } |
+                "\(.input_tokens)|\(.output_tokens)|\(.cost_usd)|\(.attempts)"
+            ' 2>/dev/null || echo "0|0|0|0"
+    else
+        # Fallback: python3
+        python3 - "$bead_id" "$log_dir" << 'PYEOF' 2>/dev/null
+import json, sys, glob, os
+
+bead_id = sys.argv[1]
+log_dir = sys.argv[2]
+
+total_input, total_output, total_cost, attempts = 0, 0, 0.0, 0
+
+for log_file in glob.glob(os.path.join(log_dir, '*.jsonl')):
+    try:
+        with open(log_file, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                    if ev.get('event') in ('effort.recorded', 'bead.effort_recorded'):
+                        d = ev.get('data', {})
+                        if d.get('bead_id') == bead_id:
+                            total_input += int(d.get('input_tokens', 0) or 0)
+                            total_output += int(d.get('output_tokens', 0) or 0)
+                            try:
+                                total_cost += float(d.get('cost', '0') or '0')
+                            except (ValueError, TypeError):
+                                pass
+                            attempts += 1
+                except json.JSONDecodeError:
+                    pass
+    except IOError:
+        pass
+
+print(f'{total_input}|{total_output}|{total_cost:.6f}|{attempts}')
+PYEOF
+        echo "0|0|0|0"
+    fi
+}
+
+# Annotate a closed bead with its effort/cost summary from session logs
+# Usage: _needle_annotate_bead_with_effort <bead_id> [workspace]
+# Returns: 0 if annotation was written, 1 otherwise
+#
+# Reads NEEDLE session logs, sums all effort events for the given bead, then
+# adds a cost comment to the bead record via `br comments add`. Safe to call
+# even if no effort data exists — it silently skips annotation in that case.
+#
+# Example:
+#   _needle_annotate_bead_with_effort "nd-abc123" "/home/user/project"
+_needle_annotate_bead_with_effort() {
+    local bead_id="$1"
+    local workspace="${2:-}"
+
+    if [[ -z "$bead_id" ]]; then
+        return 1
+    fi
+
+    # Get aggregated effort from session logs
+    local effort_result
+    effort_result=$(_needle_get_bead_effort "$bead_id")
+
+    local input_tokens output_tokens cost_usd attempts
+    IFS='|' read -r input_tokens output_tokens cost_usd attempts <<< "$effort_result"
+
+    input_tokens="${input_tokens:-0}"
+    output_tokens="${output_tokens:-0}"
+    cost_usd="${cost_usd:-0}"
+    attempts="${attempts:-0}"
+
+    # Skip if nothing was recorded
+    if [[ "$attempts" -eq 0 ]] && [[ "$input_tokens" -eq 0 ]]; then
+        _needle_debug "No effort data found for bead $bead_id, skipping annotation"
+        return 0
+    fi
+
+    local total_tokens=$(( input_tokens + output_tokens ))
+
+    # Format cost string
+    local cost_display
+    cost_display=$(printf "%.6f" "$cost_usd" 2>/dev/null || echo "$cost_usd")
+
+    local comment="**Cost attribution** | cost: \$${cost_display} | input: ${input_tokens} | output: ${output_tokens} | total: ${total_tokens} tokens | attempts: ${attempts}"
+
+    # Write comment to bead via br
+    if ! _needle_command_exists br; then
+        _needle_debug "br not found, cannot annotate bead $bead_id with cost data"
+        return 1
+    fi
+
+    local br_rc=0
+    if [[ -n "$workspace" ]] && [[ -d "$workspace" ]]; then
+        (cd "$workspace" && br comments add "$bead_id" "$comment" 2>/dev/null) || br_rc=$?
+    else
+        br comments add "$bead_id" "$comment" 2>/dev/null || br_rc=$?
+    fi
+
+    if [[ $br_rc -eq 0 ]]; then
+        _needle_debug "Annotated bead $bead_id: cost=\$$cost_display, tokens=${total_tokens}"
+        return 0
+    else
+        _needle_warn "Failed to annotate bead $bead_id with cost data (br exit: $br_rc)"
+        return 1
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Direct Execution Support (for testing)
 # -----------------------------------------------------------------------------
 
@@ -657,6 +821,20 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             _needle_effort_init
             echo "Daily spend file: $NEEDLE_DAILY_SPEND_FILE"
             ;;
+        get-effort)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 get-effort <bead_id>"
+                exit 1
+            fi
+            _needle_get_bead_effort "$2"
+            ;;
+        annotate)
+            if [[ -z "${2:-}" ]]; then
+                echo "Usage: $0 annotate <bead_id> [workspace]"
+                exit 1
+            fi
+            _needle_annotate_bead_with_effort "$2" "${3:-}"
+            ;;
         -h|--help)
             echo "Usage: $0 <command> [args]"
             echo ""
@@ -667,6 +845,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "  daily [date]                   Get daily spend JSON"
             echo "  summary [start] [end]          Get spend summary JSON"
             echo "  init                           Initialize spend file"
+            echo "  get-effort <bead_id>           Get aggregated effort from logs"
+            echo "  annotate <bead_id> [workspace] Annotate bead with cost comment"
             ;;
         *)
             echo "Unknown command: ${1:-}"
