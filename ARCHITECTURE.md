@@ -13,6 +13,7 @@ This document describes the internal design of NEEDLE's core subsystems: how the
 7. [Telemetry Pipeline](#7-telemetry-pipeline)
 8. [Hook Error Handling Specification](#8-hook-error-handling-specification)
 9. [Bead Verification System](#9-bead-verification-system)
+10. [Bead Mitosis System](#10-bead-mitosis-system)
 
 ---
 
@@ -800,3 +801,167 @@ Weave stores the command in `metadata.verification_cmd` when creating beads via 
 | `bead.verify_self_correct` | Self-correction re-dispatch initiated |
 | `bead.verify_self_correct_passed` | Self-correction succeeded |
 | `bead.verify_self_correct_failed` | Self-correction also failed — releasing bead |
+
+---
+
+## 10. Bead Mitosis System
+
+**Source:** `src/bead/mitosis.sh`
+
+### Overview
+
+The mitosis system automatically detects when a bead represents multiple independent tasks and splits it into child beads. This enables parallel work, reduces failure rates on complex tasks, and ensures children have enough context to be immediately actionable.
+
+```
+_needle_check_mitosis (entry point)
+  → enabled guard, type/label skip, min_complexity gate
+  → _needle_analyze_for_mitosis
+      → _needle_build_mitosis_prompt (workspace context + bead details)
+      → agent dispatch (LLM analysis) | heuristic fallback
+      → returns JSON: {mitosis, reasoning, children[]}
+  → mitosis == true → _needle_perform_mitosis
+      → create child beads with inherited priority, labels, fields
+      → wire blocked_by relationships
+      → block parent bead by all children
+      → release parent claim
+```
+
+### Entry Point: `_needle_check_mitosis`
+
+```bash
+_needle_check_mitosis <bead_id> <workspace> <agent>
+# Returns: 0 if mitosis performed, 1 if not
+```
+
+Guard sequence (stops at first failure):
+
+1. Mitosis enabled check (config + workspace override)
+2. Type skip: bead type must not be in `skip_types` (default: `bug,hotfix`)
+3. Label skip: bead must not have a label in `skip_labels` (default: `no-mitosis,atomic`)
+4. Complexity gate: description must have at least `min_complexity` lines (default: 3)
+5. Analysis via LLM or heuristic
+
+Use `no-mitosis` or `atomic` labels on a bead to opt out of mitosis.
+
+### Prompt Construction: `_needle_build_mitosis_prompt`
+
+The prompt passed to the LLM includes both bead details and live workspace context:
+
+```
+# Mitosis Analysis Task
+## Task Details
+- ID, Title, Priority, Parent Labels, Description
+
+## Workspace Context
+### Relevant Files (first 50)         ← git ls-files | head -50
+### Recent Commits (last 10)          ← git log --oneline -10
+### Test Files                        ← git ls-files | grep -E 'test[_-]|spec|tests/'
+```
+
+The workspace context lets the LLM reference actual file paths in child descriptions and verification commands, making children immediately actionable rather than generic.
+
+### Extended Child Output Schema
+
+The LLM is required to produce structured child records:
+
+```json
+{
+  "mitosis": true,
+  "reasoning": "...",
+  "children": [
+    {
+      "title": "Child task title",
+      "description": "File-specific description referencing actual paths",
+      "affected_files": ["src/auth.py", "tests/test_auth.py"],
+      "verification_cmd": "pytest tests/test_auth.py -q",
+      "labels": ["optional-domain-label"],
+      "blocked_by": []
+    }
+  ]
+}
+```
+
+- **`affected_files`**: Actual file paths from workspace context that this child modifies.
+- **`verification_cmd`**: Specific shell command to validate the child's done condition.
+- **`labels`**: Optional domain labels (system labels like `mitosis-child` and `parent-*` are added automatically and must not appear here).
+- **`blocked_by`**: List of sibling indices or `"previous"` to express sequential dependencies.
+
+### Field Inheritance in `_needle_perform_mitosis`
+
+When creating child beads, `_needle_perform_mitosis` inherits several fields from the parent:
+
+#### Priority
+Parent priority propagates to all children via `br create --priority <n>`. A P0 parent produces P0 children; if the parent has no priority, it defaults to P2.
+
+#### Labels
+Non-system labels from the parent propagate to all children. System labels excluded from propagation:
+- `mitosis-child` — would create circular labelling
+- `parent-*` — child's parent is the current bead, not its grandparent
+
+Every child always receives two system labels regardless of parent labels:
+- `mitosis-child` — marks it as a product of mitosis
+- `parent-<id>` — links it to the parent bead for `_needle_get_mitosis_children`
+
+#### verification_cmd
+The child's own `verification_cmd` takes priority. If a child has none, the parent's command is adapted or inherited:
+
+1. **Adaptation**: If the parent command is a pytest/npm invocation and the child's `affected_files` includes a test file, the command is narrowed to target that file (`pytest tests/test_specific.py -q`).
+2. **Fallback**: If no adaptation is possible, the parent's command is used as-is.
+3. **No command**: If neither child nor parent has a `verification_cmd`, no verification step is added.
+
+The resolved `verification_cmd` is stored in two places:
+- Appended to the child's description as `**Verification:** \`<cmd>\`` for human readability.
+- Added as a `verification_cmd:<cmd>` label so `claim.sh` can extract it without an extra `br show` call.
+
+#### affected_files
+Appended to the child's description as `**Affected files:** <list>` for human readability. Not stored as a separate field or label.
+
+### Sequential Dependencies
+
+`blocked_by: ["previous"]` in the child schema causes `_needle_perform_mitosis` to wire a `br update <child_id> --blocked-by <prev_child_id>` relationship. This models ordered work: e.g., a test-writing child blocked by the implementation child.
+
+### Parent Mutation
+
+After creating all children, `_needle_perform_mitosis` mutates the parent bead:
+
+1. **Blocks parent by each child**: `br update <parent_id> --blocked-by <child_id>` — the parent auto-resolves when all children close.
+2. **Releases parent claim**: `br update <parent_id> --release --reason mitosis` — workers claim children instead.
+3. **Labels parent**: `br update <parent_id> --label mitosis-parent` — marks it as a split bead.
+
+### Heuristic Fallback
+
+When no agent dispatcher is available, `_needle_heuristic_mitosis_analysis` applies rule-based analysis:
+
+| Signal | Indicator weight |
+|--------|-----------------|
+| ≥2 ` and ` conjunctions | +1 |
+| Numbered list (`1.`, `2.`, …) | +1 |
+| ≥3 bullet points | +1 |
+| >5 distinct file extensions mentioned | +1 |
+| Multiple `implement/add/create` verbs | +1 |
+
+Score ≥ 2 triggers mitosis. Child titles are extracted from the description structure (numbered list items → bullet items → numbered fallback). The heuristic does not produce `affected_files` or `verification_cmd`; those are LLM-only.
+
+### Configuration
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `mitosis.enabled` | `true` | Enable/disable mitosis globally |
+| `mitosis.skip_types` | `bug,hotfix` | Bead types that never split |
+| `mitosis.skip_labels` | `no-mitosis,atomic` | Labels that opt a bead out of mitosis |
+| `mitosis.max_children` | `5` | Maximum child beads per mitosis event |
+| `mitosis.min_children` | `2` | Minimum children required (else aborted) |
+| `mitosis.min_complexity` | `3` | Minimum description lines to consider mitosis |
+| `mitosis.timeout` | `60` | Agent analysis timeout in seconds |
+
+All keys support workspace-level overrides via `.needle.yaml`.
+
+### Telemetry Events
+
+| Event | When emitted |
+|-------|-------------|
+| `bead.mitosis.check` | Complexity gate passed; entering LLM/heuristic analysis |
+| `bead.mitosis.started` | Analysis confirmed split; child creation beginning |
+| `bead.mitosis.child_created` | Each individual child bead created |
+| `bead.mitosis.complete` | All children created, parent mutated |
+| `bead.mitosis.failed` | No children were successfully created |
