@@ -548,6 +548,91 @@ else
 fi
 
 # ============================================================================
+# Tests: combined field propagation
+# ============================================================================
+
+test_case "_needle_perform_mitosis propagates priority, labels, and verification_cmd together"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":0,"labels":["security","api"],"verification_cmd":"pytest tests/ -q"}'
+analysis=$(make_analysis "Secure Task" "desc" "API Task" "desc2" "" "")
+_needle_perform_mitosis "nd-parent" "/tmp" "$analysis" &>/dev/null
+p0_count=$(log_count "$CREATE_LOG" "\-\-priority 0")
+sec_count=$(log_count "$CREATE_LOG" "security")
+vc_count=$(log_count "$CREATE_LOG" "pytest tests/ -q")
+if [[ "$p0_count" -eq 2 ]] && [[ "$sec_count" -ge 2 ]] && [[ "$vc_count" -ge 1 ]]; then
+    test_pass
+else
+    test_fail "Expected P0 priority ($p0_count/2), 'security' label ($sec_count/2+), and verification_cmd ($vc_count/1+)"
+fi
+
+test_case "_needle_perform_mitosis strips system labels from LLM-supplied child labels"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[]}'
+# LLM output includes system labels in per-child labels — they should be stripped
+tainted_analysis=$(jq -n '{
+    "mitosis": true,
+    "reasoning": "test",
+    "children": [
+        {"title":"Child A","description":"desc","affected_files":[],"verification_cmd":"",
+         "labels":["mitosis-child","parent-nd-foo","legit-label"],"blocked_by":[]},
+        {"title":"Child B","description":"desc2","affected_files":[],"verification_cmd":"",
+         "labels":[],"blocked_by":[]}
+    ]
+}')
+_needle_perform_mitosis "nd-parent" "/tmp" "$tainted_analysis" &>/dev/null
+# legit-label should appear, but parent-nd-foo should not (double-applied)
+if log_has "$CREATE_LOG" "legit-label" && ! log_has "$CREATE_LOG" "parent-nd-foo"; then
+    test_pass
+else
+    test_fail "Expected legit-label present and parent-nd-foo stripped from child labels"
+fi
+
+test_case "_needle_perform_mitosis each child gets independent affected_files and verification_cmd"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[]}'
+multi_analysis=$(jq -n '{
+    "mitosis": true,
+    "reasoning": "test",
+    "children": [
+        {"title":"Auth Task","description":"desc",
+         "affected_files":["src/auth.py","tests/test_auth.py"],
+         "verification_cmd":"pytest tests/test_auth.py -q",
+         "labels":[],"blocked_by":[]},
+        {"title":"Email Task","description":"desc2",
+         "affected_files":["src/email.py","tests/test_email.py"],
+         "verification_cmd":"pytest tests/test_email.py -q",
+         "labels":[],"blocked_by":[]}
+    ]
+}')
+_needle_perform_mitosis "nd-parent" "/tmp" "$multi_analysis" &>/dev/null
+auth_vc=$(log_count "$CREATE_LOG" "pytest tests/test_auth.py -q")
+email_vc=$(log_count "$CREATE_LOG" "pytest tests/test_email.py -q")
+if [[ "$auth_vc" -ge 1 ]] && [[ "$email_vc" -ge 1 ]]; then
+    test_pass
+else
+    test_fail "Expected both children to have their own verification_cmd (auth: $auth_vc, email: $email_vc)"
+fi
+
+test_case "_needle_perform_mitosis child without verification_cmd gets parent cmd when parent has one"
+PARENT_BEAD_JSON='{"id":"nd-parent","priority":2,"labels":[],"verification_cmd":"make test"}'
+# Only child 1 has no cmd; child 2 has its own — parent cmd should appear at least once
+mixed_analysis=$(jq -n '{
+    "mitosis": true,
+    "reasoning": "test",
+    "children": [
+        {"title":"No Cmd Child","description":"desc","affected_files":[],"verification_cmd":"",
+         "labels":[],"blocked_by":[]},
+        {"title":"Own Cmd Child","description":"desc2","affected_files":[],"verification_cmd":"npm test",
+         "labels":[],"blocked_by":[]}
+    ]
+}')
+_needle_perform_mitosis "nd-parent" "/tmp" "$mixed_analysis" &>/dev/null
+make_count=$(log_count "$CREATE_LOG" "make test")
+npm_count=$(log_count "$CREATE_LOG" "npm test")
+if [[ "$make_count" -ge 1 ]] && [[ "$npm_count" -ge 1 ]]; then
+    test_pass
+else
+    test_fail "Expected 'make test' from parent ($make_count) and 'npm test' from child ($npm_count)"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 
