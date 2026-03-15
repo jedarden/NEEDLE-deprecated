@@ -993,9 +993,9 @@ All keys support workspace-level overrides via `.needle.yaml`.
 | `bead.mitosis.child_created` | Each individual child bead created |
 | `bead.mitosis.complete` | All children created, parent mutated |
 | `bead.mitosis.failed` | No children were successfully created |
-| `bead.forced_mitosis_attempt` | Forced mitosis triggered for a repeatedly failing bead |
-| `bead.forced_mitosis_success` | Forced mitosis succeeded (children created) |
-| `bead.forced_mitosis_failed` | Forced mitosis failed (bead is atomic, will quarantine) |
+| `bead.force_mitosis.attempt` | Forced mitosis triggered for a repeatedly failing bead |
+| `bead.force_mitosis.success` | Forced mitosis succeeded (children created) |
+| `bead.force_mitosis.quarantine` | Forced mitosis failed (bead is atomic, will quarantine) |
 
 ### Forced Mitosis on Repeated Failure
 
@@ -1076,9 +1076,9 @@ Both settings support workspace-level overrides via `.needle.yaml`.
 
 | Event | When emitted |
 |-------|-------------|
-| `bead.forced_mitosis_attempt` | Forced mitosis triggered for a failing bead |
-| `bead.forced_mitosis_success` | Forced mitosis succeeded (children created) |
-| `bead.forced_mitosis_failed` | Forced mitosis failed (bead is atomic) |
+| `bead.force_mitosis.attempt` | Forced mitosis triggered for a failing bead |
+| `bead.force_mitosis.success` | Forced mitosis succeeded (children created) |
+| `bead.force_mitosis.quarantine` | Forced mitosis failed (bead is atomic) |
 
 #### Design Rationale
 
