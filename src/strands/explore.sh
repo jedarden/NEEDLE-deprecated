@@ -1,20 +1,17 @@
 #!/usr/bin/env bash
 # NEEDLE Strand: explore (Priority 3)
-# Search for work in configured, child, and sibling workspaces
+# Search for work in child workspaces; cascade upward to siblings via parent switch
 #
 # Implementation: nd-hq2
 #
 # This strand expands the search scope when pluck and mend find nothing.
-# It searches in three phases:
-#   Phase 0: Check all workspaces configured in config.yaml
-#   Phase 1 (Down): Search child directories for .beads/ workspaces
-#   Phase 2 (Up):   Walk up parent directories, searching siblings at each level
-#
-# At each discovered workspace, explore checks for:
-#   - Open, claimable beads (spawns workers or claims directly)
-#   - Stale in_progress beads (dead workers holding claims)
-#
-# The upward walk is constrained by explore.max_upward_depth config (default: 3).
+# It cascades in two phases:
+#   Phase 1 (Down): Search all child directories for .beads/ workspaces (unlimited depth).
+#                   Runs mend+pluck inline in each child. Returns 0 if work claimed.
+#   Phase 2 (Up):   If Phase 1 finds nothing, move up one folder and signal the engine
+#                   to restart the full loop (pluck→mend→explore) from the parent.
+#                   The parent's Phase 1 will then discover all sibling workspaces.
+#                   Returns 2 + NEEDLE_EXPLORE_NEW_WORKSPACE to trigger workspace switch.
 #
 # Usage:
 #   _needle_strand_explore <workspace> <agent>
@@ -395,86 +392,6 @@ _needle_explore_spawn_workers_if_needed() {
 }
 
 # ============================================================================
-# Phase 0: Check Configured Workspaces
-# ============================================================================
-
-# Find the first configured workspace with claimable beads.
-# Reads workspaces from config.yaml and checks each for unassigned beads.
-# Returns: workspace path on stdout (empty if none found)
-_needle_explore_find_configured_workspace_with_beads() {
-    local current_workspace="$1"
-
-    _needle_debug "explore: checking configured workspaces from config"
-
-    # Check if config file exists
-    if [[ ! -f "$NEEDLE_CONFIG_FILE" ]]; then
-        _needle_debug "explore: no config file found at $NEEDLE_CONFIG_FILE, skipping configured workspaces check"
-        return 1
-    fi
-
-    local ws_count=0
-    local checked_count=0
-
-    # Count total configured workspaces
-    while IFS= read -r ws; do
-        [[ -z "$ws" ]] && continue
-        ((ws_count++))
-    done < <(yq -r '.workspaces[]' "$NEEDLE_CONFIG_FILE" 2>/dev/null)
-
-    if [[ "$ws_count" -eq 0 ]]; then
-        _needle_debug "explore: no workspaces configured in config.yaml"
-        return 1
-    fi
-
-    _needle_debug "explore: found $ws_count configured workspace(s) to check"
-
-    # Check each configured workspace for claimable beads
-    while IFS= read -r ws; do
-        [[ -z "$ws" ]] && continue
-
-        # Expand tilde if present
-        ws="${ws/#\~/$HOME}"
-
-        # Skip the current workspace (we're already here, pluck would have found work)
-        [[ "$ws" == "$current_workspace" ]] && continue
-
-        ((checked_count++))
-        _needle_debug "explore: checking configured workspace: $ws"
-
-        # Verify the workspace exists
-        if [[ ! -d "$ws/.beads" ]]; then
-            _needle_debug "explore: workspace $ws has no .beads directory, skipping"
-            continue
-        fi
-
-        local bead_count
-        bead_count=$(_needle_explore_count_unassigned "$ws")
-
-        if (( bead_count > 0 )); then
-            _needle_info "explore: configured workspace $ws has $bead_count claimable bead(s)"
-            echo "$ws"
-            return 0
-        fi
-
-        # Also check for stale beads while we're here
-        local released
-        released=$(_needle_explore_check_stale "$ws")
-        if (( released > 0 )); then
-            _needle_info "explore: released $released stale bead(s) in configured workspace $ws"
-            # Re-check if this workspace now has claimable beads
-            bead_count=$(_needle_explore_count_unassigned "$ws")
-            if (( bead_count > 0 )); then
-                echo "$ws"
-                return 0
-            fi
-        fi
-    done < <(yq -r '.workspaces[]' "$NEEDLE_CONFIG_FILE" 2>/dev/null)
-
-    _needle_debug "explore: checked $checked_count configured workspace(s), found no work"
-    return 1
-}
-
-# ============================================================================
 # Phase 1: Search Children (Downward)
 # ============================================================================
 
@@ -624,125 +541,71 @@ _needle_strand_explore() {
         return 1
     fi
 
-    local max_depth
-    max_depth=$(_needle_explore_get_max_depth)
-
-    local max_upward
-    max_upward=$(_needle_explore_get_max_upward_depth)
-
-    # Phase 0: Check configured workspaces from config.yaml first
-    # This ensures we find work in ALL configured workspaces, not just filesystem neighbors
-    local configured_workspace
-    configured_workspace=$(_needle_explore_find_configured_workspace_with_beads "$workspace")
-
-    if [[ -n "$configured_workspace" ]]; then
-        _needle_info "explore: configured workspace $configured_workspace has beads, switching"
-
-        # Auto-scale: spawn additional workers if bead count exceeds threshold
-        _needle_explore_spawn_workers_if_needed "$configured_workspace" "$agent"
-
-        _needle_telemetry_emit "explore.workspace_switch" "info" \
-            "from=$workspace" \
-            "to=$configured_workspace" \
-            "direction=configured"
-
-        # Signal the engine to change workspace and restart
-        export NEEDLE_EXPLORE_NEW_WORKSPACE="$configured_workspace"
-        return 2
-    fi
-
-    # Phase 1: Traverse downward and upward, running pluck and mend
-    # into each discovered workspace directly. This avoids the workspace-switch
-    # overhead and the br ready filtering issue — just try to claim directly.
-
-    # Collect all discovered workspaces (children + siblings via upward walk)
-    local -a discovered_workspaces=()
-
-    # Children
+    # Phase 1: Search all child directories (unlimited depth) for workspaces with beads.
+    # Run mend+pluck inline in each discovered child workspace.
+    local -a child_workspaces=()
     while IFS= read -r beads_dir; do
         [[ -z "$beads_dir" ]] && continue
         local found_ws
         found_ws=$(dirname "$beads_dir")
         [[ "$found_ws" == "$workspace" ]] && continue
-        discovered_workspaces+=("$found_ws")
-    done < <(find "$workspace" -maxdepth "$max_depth" -name ".beads" -type d \
+        child_workspaces+=("$found_ws")
+    done < <(find "$workspace" -name ".beads" -type d \
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
         -not -path "*/.cache/*" 2>/dev/null)
 
-    # Walk upward and collect siblings
-    local current="$workspace"
-    local level=0
-    while (( level < max_upward )); do
-        local parent
-        parent=$(dirname "$current")
-        [[ "$parent" == "$current" ]] || [[ "$parent" == "/" ]] && break
-        ((level++))
+    if [[ ${#child_workspaces[@]} -gt 0 ]]; then
+        _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
 
-        while IFS= read -r beads_dir; do
-            [[ -z "$beads_dir" ]] && continue
-            local found_ws
-            found_ws=$(dirname "$beads_dir")
-            [[ "$found_ws" == "$workspace" ]] && continue
-            # Deduplicate
-            local already=false
-            for existing in "${discovered_workspaces[@]}"; do
-                [[ "$existing" == "$found_ws" ]] && already=true && break
-            done
-            $already || discovered_workspaces+=("$found_ws")
-        done < <(find "$parent" -maxdepth "$max_depth" -name ".beads" -type d \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.git/*" \
-            -not -path "*/vendor/*" \
-            -not -path "*/.cache/*" 2>/dev/null)
+        # Run mend first (release stale/orphaned claims)
+        for ws in "${child_workspaces[@]}"; do
+            if declare -f _needle_strand_mend &>/dev/null; then
+                _needle_strand_mend "$ws" "$agent" 2>/dev/null
+            fi
+        done
 
-        current="$parent"
-    done
+        # Run pluck into each child workspace
+        for ws in "${child_workspaces[@]}"; do
+            if declare -f _needle_strand_pluck &>/dev/null; then
+                _needle_debug "explore: running pluck in child $ws"
 
-    if [[ ${#discovered_workspaces[@]} -eq 0 ]]; then
-        _needle_telemetry_emit "explore.scan_completed" "info" \
-            "workspace=$workspace" \
-            "result=no_workspaces_found"
-        _needle_debug "explore: no workspaces with beads found"
-        return 1
+                _needle_telemetry_emit "explore.workspace_pluck" "info" \
+                    "from=$workspace" \
+                    "to=$ws"
+
+                if _needle_strand_pluck "$ws" "$agent"; then
+                    _needle_info "explore: pluck found work in $ws"
+                    _needle_explore_spawn_workers_if_needed "$ws" "$agent"
+                    return 0
+                fi
+            fi
+        done
     fi
 
-    _needle_debug "explore: found ${#discovered_workspaces[@]} workspace(s), running mend+pluck into each"
+    # Phase 2: No work found in children. Move up one folder and signal the engine
+    # to restart the loop from the parent. The parent's explore Phase 1 will then
+    # discover all sibling workspaces as its children.
+    local parent
+    parent=$(dirname "$workspace")
+    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]]; then
+        _needle_info "explore: no work in children, walking up to $parent"
 
-    # Run mend into each workspace first (release stale/orphaned claims)
-    for ws in "${discovered_workspaces[@]}"; do
-        if declare -f _needle_strand_mend &>/dev/null; then
-            _needle_strand_mend "$ws" "$agent" 2>/dev/null
-        fi
-    done
+        _needle_telemetry_emit "explore.workspace_switch" "info" \
+            "from=$workspace" \
+            "to=$parent" \
+            "direction=up"
 
-    # Run pluck into each workspace (attempt to claim and work on beads)
-    for ws in "${discovered_workspaces[@]}"; do
-        if declare -f _needle_strand_pluck &>/dev/null; then
-            _needle_debug "explore: running pluck in $ws"
-
-            _needle_telemetry_emit "explore.workspace_pluck" "info" \
-                "from=$workspace" \
-                "to=$ws"
-
-            if _needle_strand_pluck "$ws" "$agent"; then
-                _needle_info "explore: pluck found work in $ws"
-
-                # Auto-scale if needed
-                _needle_explore_spawn_workers_if_needed "$ws" "$agent"
-
-                return 0  # Work done
-            fi
-        fi
-    done
+        export NEEDLE_EXPLORE_NEW_WORKSPACE="$parent"
+        return 2
+    fi
 
     _needle_telemetry_emit "explore.scan_completed" "info" \
         "workspace=$workspace" \
-        "discovered=${#discovered_workspaces[@]}" \
-        "result=no_claimable_work"
+        "result=no_work_found"
 
-    _needle_debug "explore: no claimable work in ${#discovered_workspaces[@]} discovered workspace(s)"
+    _needle_debug "explore: no claimable work found"
     return 1
 }
 
@@ -805,14 +668,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "  run <workspace> <agent>   Run the explore strand"
             echo "  stats                     Show strand statistics"
             echo ""
-            echo "The explore strand searches in three phases:"
-            echo "  Phase 0: Check configured workspaces from config.yaml"
-            echo "  Phase 1 (Down): Search child directories for .beads/"
-            echo "  Phase 2 (Up):   Walk up, searching siblings at each level"
-            echo ""
-            echo "At each workspace found, checks for:"
-            echo "  - Open, claimable beads (spawns workers)"
-            echo "  - Stale in_progress beads (reclaims from dead workers)"
+            echo "The explore strand cascades in two phases:"
+            echo "  Phase 1 (Down): Search all child directories for .beads/ (unlimited depth)."
+            echo "                  Runs mend+pluck inline in each child workspace."
+            echo "  Phase 2 (Up):   If Phase 1 finds nothing, move up one folder and signal"
+            echo "                  engine to restart from parent (NEEDLE_EXPLORE_NEW_WORKSPACE)."
+            echo "                  Parent's Phase 1 then discovers all siblings as its children."
             ;;
         *)
             echo "Unknown command: ${1:-}"
