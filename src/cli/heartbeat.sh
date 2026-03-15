@@ -358,13 +358,13 @@ _needle_heartbeat_status_dashboard() {
         if ((heartbeat_ago > timeout)); then
             health="STUCK"
             health_color="$NEEDLE_COLOR_RED"
-            ((stuck_count++))
+            ((stuck_count++)) || true
         elif ((heartbeat_ago > timeout / 2)); then
             health="warning"
             health_color="$NEEDLE_COLOR_YELLOW"
-            ((warning_count++))
+            ((warning_count++)) || true
         else
-            ((healthy_count++))
+            ((healthy_count++)) || true
         fi
 
         # Format heartbeat ago
@@ -383,10 +383,11 @@ _needle_heartbeat_status_dashboard() {
             display_bead="${display_bead:0:12}…"
         fi
 
-        # Print row with color-coded health
-        printf "  %-45s  " "$display_worker"
-        _needle_print_color "$health_color" "$(printf '%-10s' "$health")"
-        printf "  %-11s  %-13s %s\n" "${heartbeat_ago_str} ago" "$display_bead" "${bead_duration:--}"
+        # Print row with color-coded health (single line using inline ANSI)
+        printf "  %-45s  %b%-10s%b  %-11s  %-13s %s\n" \
+            "$display_worker" \
+            "$health_color" "$health" "$NEEDLE_COLOR_RESET" \
+            "${heartbeat_ago_str} ago" "$display_bead" "${bead_duration:--}"
     done
 
     _needle_print ""
