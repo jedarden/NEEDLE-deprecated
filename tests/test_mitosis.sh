@@ -505,6 +505,61 @@ else
 fi
 rm -rf "$workspace_dir"
 
+test_case "_needle_build_mitosis_prompt with force=true appends Forced Decomposition Notice"
+bead_obj='{"title":"Atomic Task","description":"Single-line fix","priority":2,"labels":[]}'
+workspace_dir=$(mktemp -d "$TEST_DIR/workspace-XXXXXX")
+result=$(_needle_build_mitosis_prompt "nd-test" "$workspace_dir" "$bead_obj" "true" "5")
+if echo "$result" | grep -q "Forced Decomposition Notice"; then
+    test_pass
+else
+    test_fail "Expected prompt to include Forced Decomposition Notice when force=true"
+fi
+rm -rf "$workspace_dir"
+
+test_case "_needle_build_mitosis_prompt with force=true includes failure count in notice"
+bead_obj='{"title":"Atomic Task","description":"Single-line fix","priority":2,"labels":[]}'
+workspace_dir=$(mktemp -d "$TEST_DIR/workspace-XXXXXX")
+result=$(_needle_build_mitosis_prompt "nd-test" "$workspace_dir" "$bead_obj" "true" "7")
+if echo "$result" | grep -q "7 time(s)"; then
+    test_pass
+else
+    test_fail "Expected forced prompt to reference failure_count=7"
+fi
+rm -rf "$workspace_dir"
+
+test_case "_needle_build_mitosis_prompt with force=false does NOT append Forced Decomposition Notice"
+bead_obj='{"title":"Feature","description":"Description","priority":2,"labels":[]}'
+workspace_dir=$(mktemp -d "$TEST_DIR/workspace-XXXXXX")
+result=$(_needle_build_mitosis_prompt "nd-test" "$workspace_dir" "$bead_obj" "false" "3")
+if echo "$result" | grep -q "Forced Decomposition Notice"; then
+    test_fail "Unexpected Forced Decomposition Notice when force=false"
+else
+    test_pass
+fi
+rm -rf "$workspace_dir"
+
+test_case "_needle_build_mitosis_prompt with default force (omitted) does NOT append forced section"
+bead_obj='{"title":"Feature","description":"Description","priority":2,"labels":[]}'
+workspace_dir=$(mktemp -d "$TEST_DIR/workspace-XXXXXX")
+result=$(_needle_build_mitosis_prompt "nd-test" "$workspace_dir" "$bead_obj")
+if echo "$result" | grep -q "Forced Decomposition Notice"; then
+    test_fail "Unexpected Forced Decomposition Notice when force not specified"
+else
+    test_pass
+fi
+rm -rf "$workspace_dir"
+
+test_case "_needle_build_mitosis_prompt with force=true instructs to decompose regardless"
+bead_obj='{"title":"Task","description":"A task","priority":2,"labels":[]}'
+workspace_dir=$(mktemp -d "$TEST_DIR/workspace-XXXXXX")
+result=$(_needle_build_mitosis_prompt "nd-test" "$workspace_dir" "$bead_obj" "true" "3")
+if echo "$result" | grep -q "decompose" && echo "$result" | grep -q "mitosis: false"; then
+    test_pass
+else
+    test_fail "Expected forced prompt to instruct decomposition and mention mitosis: false escape hatch"
+fi
+rm -rf "$workspace_dir"
+
 # ============================================================================
 # Summary
 # ============================================================================
