@@ -651,68 +651,98 @@ _needle_strand_explore() {
         return 2
     fi
 
-    # Phase 1: Search children of current workspace
-    # If a child workspace has beads, signal the engine to change workspace
-    # and restart from pluck (return 2).
-    local child_workspace
-    child_workspace=$(_needle_explore_find_child_with_beads "$workspace" "$max_depth")
+    # Phase 1: Traverse downward and upward, running pluck and mend
+    # into each discovered workspace directly. This avoids the workspace-switch
+    # overhead and the br ready filtering issue — just try to claim directly.
 
-    if [[ -n "$child_workspace" ]]; then
-        _needle_info "explore: child workspace $child_workspace has beads, switching"
+    # Collect all discovered workspaces (children + siblings via upward walk)
+    local -a discovered_workspaces=()
 
-        # Auto-scale: spawn additional workers if bead count exceeds threshold
-        _needle_explore_spawn_workers_if_needed "$child_workspace" "$agent"
+    # Children
+    while IFS= read -r beads_dir; do
+        [[ -z "$beads_dir" ]] && continue
+        local found_ws
+        found_ws=$(dirname "$beads_dir")
+        [[ "$found_ws" == "$workspace" ]] && continue
+        discovered_workspaces+=("$found_ws")
+    done < <(find "$workspace" -maxdepth "$max_depth" -name ".beads" -type d \
+        -not -path "*/node_modules/*" \
+        -not -path "*/.git/*" \
+        -not -path "*/vendor/*" \
+        -not -path "*/.cache/*" 2>/dev/null)
 
-        _needle_telemetry_emit "explore.workspace_switch" "info" \
-            "from=$workspace" \
-            "to=$child_workspace" \
-            "direction=down"
+    # Walk upward and collect siblings
+    local current="$workspace"
+    local level=0
+    while (( level < max_upward )); do
+        local parent
+        parent=$(dirname "$current")
+        [[ "$parent" == "$current" ]] || [[ "$parent" == "/" ]] && break
+        ((level++))
 
-        # Signal the engine to change workspace and restart
-        export NEEDLE_EXPLORE_NEW_WORKSPACE="$child_workspace"
-        return 2
+        while IFS= read -r beads_dir; do
+            [[ -z "$beads_dir" ]] && continue
+            local found_ws
+            found_ws=$(dirname "$beads_dir")
+            [[ "$found_ws" == "$workspace" ]] && continue
+            # Deduplicate
+            local already=false
+            for existing in "${discovered_workspaces[@]}"; do
+                [[ "$existing" == "$found_ws" ]] && already=true && break
+            done
+            $already || discovered_workspaces+=("$found_ws")
+        done < <(find "$parent" -maxdepth "$max_depth" -name ".beads" -type d \
+            -not -path "*/node_modules/*" \
+            -not -path "*/.git/*" \
+            -not -path "*/vendor/*" \
+            -not -path "*/.cache/*" 2>/dev/null)
+
+        current="$parent"
+    done
+
+    if [[ ${#discovered_workspaces[@]} -eq 0 ]]; then
+        _needle_telemetry_emit "explore.scan_completed" "info" \
+            "workspace=$workspace" \
+            "result=no_workspaces_found"
+        _needle_debug "explore: no workspaces with beads found"
+        return 1
     fi
 
-    # Also check stale beads in children (dead workers holding claims)
-    local children_stale
-    children_stale=$(_needle_explore_search_children_stale "$workspace" "$max_depth")
+    _needle_debug "explore: found ${#discovered_workspaces[@]} workspace(s), running mend+pluck into each"
 
-    if (( children_stale > 0 )); then
-        _needle_info "explore: released $children_stale stale bead(s) in children"
-        # Don't return 0 here — the freed beads are in other workspaces.
-        # Instead, re-check if any child now has claimable beads
-        child_workspace=$(_needle_explore_find_child_with_beads "$workspace" "$max_depth")
-        if [[ -n "$child_workspace" ]]; then
-            export NEEDLE_EXPLORE_NEW_WORKSPACE="$child_workspace"
-            return 2
+    # Run mend into each workspace first (release stale/orphaned claims)
+    for ws in "${discovered_workspaces[@]}"; do
+        if declare -f _needle_strand_mend &>/dev/null; then
+            _needle_strand_mend "$ws" "$agent" 2>/dev/null
         fi
-    fi
+    done
 
-    # Phase 2: Walk upward, checking siblings at each level
-    # If a sibling workspace has beads, change workspace and restart
-    local sibling_workspace
-    sibling_workspace=$(_needle_explore_find_sibling_with_beads "$workspace" "$max_upward" "$max_depth")
+    # Run pluck into each workspace (attempt to claim and work on beads)
+    for ws in "${discovered_workspaces[@]}"; do
+        if declare -f _needle_strand_pluck &>/dev/null; then
+            _needle_debug "explore: running pluck in $ws"
 
-    if [[ -n "$sibling_workspace" ]]; then
-        _needle_info "explore: sibling workspace $sibling_workspace has beads, switching"
+            _needle_telemetry_emit "explore.workspace_pluck" "info" \
+                "from=$workspace" \
+                "to=$ws"
 
-        # Auto-scale: spawn additional workers if bead count exceeds threshold
-        _needle_explore_spawn_workers_if_needed "$sibling_workspace" "$agent"
+            if _needle_strand_pluck "$ws" "$agent"; then
+                _needle_info "explore: pluck found work in $ws"
 
-        _needle_telemetry_emit "explore.workspace_switch" "info" \
-            "from=$workspace" \
-            "to=$sibling_workspace" \
-            "direction=up"
+                # Auto-scale if needed
+                _needle_explore_spawn_workers_if_needed "$ws" "$agent"
 
-        export NEEDLE_EXPLORE_NEW_WORKSPACE="$sibling_workspace"
-        return 2
-    fi
+                return 0  # Work done
+            fi
+        fi
+    done
 
     _needle_telemetry_emit "explore.scan_completed" "info" \
         "workspace=$workspace" \
-        "result=no_workspaces_found"
+        "discovered=${#discovered_workspaces[@]}" \
+        "result=no_claimable_work"
 
-    _needle_debug "explore: no workspaces with work found"
+    _needle_debug "explore: no claimable work in ${#discovered_workspaces[@]} discovered workspace(s)"
     return 1
 }
 
