@@ -301,6 +301,23 @@ ${failure_context}"
             IFS='|' read -r corr_exit_code corr_duration corr_file <<< "$correction_last_line"
 
             if [[ "$corr_exit_code" -eq 0 ]]; then
+                # Record effort for correction pass
+                if [[ -n "$corr_file" ]] && [[ -f "$corr_file" ]]; then
+                    local corr_token_result corr_input_tokens=0 corr_output_tokens=0 corr_cost="0.00"
+                    corr_token_result=$(_needle_extract_tokens "$agent" "$corr_file")
+                    if [[ -n "$corr_token_result" ]]; then
+                        corr_input_tokens=$(echo "$corr_token_result" | cut -d'|' -f1)
+                        corr_output_tokens=$(echo "$corr_token_result" | cut -d'|' -f2)
+                        [[ ! "$corr_input_tokens" =~ ^[0-9]+$ ]] && corr_input_tokens=0
+                        [[ ! "$corr_output_tokens" =~ ^[0-9]+$ ]] && corr_output_tokens=0
+                    fi
+                    if [[ "$corr_input_tokens" -gt 0 ]] || [[ "$corr_output_tokens" -gt 0 ]]; then
+                        corr_cost=$(calculate_cost "$agent" "$corr_input_tokens" "$corr_output_tokens")
+                        record_effort "$bead_id" "$corr_cost" "$agent" "$corr_input_tokens" "$corr_output_tokens" "pluck" "$bead_type"
+                        _needle_debug "Recorded correction effort: bead=$bead_id, cost=\$$corr_cost"
+                    fi
+                fi
+
                 # Self-correction agent exited cleanly — re-verify
                 local reverify_result reverify_exit
                 reverify_result=$(_needle_verify_bead "$bead_id" "$workspace")

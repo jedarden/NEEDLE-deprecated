@@ -565,6 +565,41 @@ else
     test_fail "Expected self-correction to close bead: exit=$exit_code completed=$NEEDLE_BEAD_COMPLETED verify_calls=$verify_calls"
 fi
 
+test_case "_needle_pluck_process_bead records effort for self-correction pass"
+create_test_config
+mock_br '[{"id":"bd-vcost","title":"Correction Cost","priority":2}]'
+_setup_verify_mocks 0 1 0  # dispatch=ok, first_verify=fail, second_verify=pass
+
+# Track record_effort calls (initial pass + correction pass)
+EFFORT_RECORD_COUNT=0
+record_effort() { ((EFFORT_RECORD_COUNT++)) || true; return 0; }
+# Override extract_tokens to return non-zero for correction pass tracking
+_PLUCK_DISPATCH_CALL=0
+_needle_dispatch_agent() {
+    ((_PLUCK_DISPATCH_CALL++)) || true
+    local out_file="$TEST_DIR/dispatch_out_corr.log"
+    printf '{"usage":{"input_tokens":100,"output_tokens":50}}\n' > "$out_file"
+    echo "0|1000|${out_file}"
+    return 0
+}
+_needle_extract_tokens() {
+    # Return non-zero tokens so record_effort is called for each pass
+    echo "100|50"
+    return 0
+}
+calculate_cost() { echo "0.001"; return 0; }
+
+_needle_pluck_process_bead "bd-vcost" "$TEST_DIR/workspace" "test-agent" 2>/dev/null
+exit_code=$?
+
+# Self-correction succeeds: record_effort should be called for initial pass AND correction pass
+if [[ $exit_code -eq 0 ]] && [[ "$NEEDLE_BEAD_COMPLETED" == "true" ]] && \
+   [[ $EFFORT_RECORD_COUNT -ge 2 ]]; then
+    test_pass
+else
+    test_fail "Expected effort recorded 2+ times (initial+correction), got: exit=$exit_code completed=$NEEDLE_BEAD_COMPLETED effort_calls=$EFFORT_RECORD_COUNT"
+fi
+
 test_case "_needle_pluck_process_bead releases bead when verification persistently fails"
 create_test_config
 mock_br '[{"id":"bd-vfail","title":"Verify Fail","priority":2}]'
