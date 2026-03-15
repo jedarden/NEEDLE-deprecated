@@ -229,6 +229,202 @@ _needle_apply_backoff() {
 }
 
 # ============================================================================
+# Per-Bead Failure Tracking and Forced Mitosis
+# ============================================================================
+
+# Get the failure count state file path
+# Usage: _needle_bead_failure_state_file
+# Returns: Path to the failure count state file
+_needle_bead_failure_state_file() {
+    local state_dir="${NEEDLE_STATE_DIR:-${NEEDLE_HOME:-$HOME/.needle}/state}"
+    echo "$state_dir/bead_failures.json"
+}
+
+# Get the failure count for a specific bead
+# Usage: _needle_get_bead_failure_count <bead_id>
+# Returns: Failure count (0 if not tracked)
+_needle_get_bead_failure_count() {
+    local bead_id="$1"
+    local state_file
+    state_file=$(_needle_bead_failure_state_file)
+
+    if [[ ! -f "$state_file" ]]; then
+        echo 0
+        return 0
+    fi
+
+    # Use python3 to safely parse and query JSON
+    if command -v python3 &>/dev/null; then
+        python3 - "$state_file" "$bead_id" 2>/dev/null <<'PYEOF'
+import json, sys
+try:
+    with open(sys.argv[1]) as f:
+        data = json.load(f)
+    print(data.get(sys.argv[2], 0))
+except Exception:
+    print(0)
+PYEOF
+    else
+        echo 0
+    fi
+}
+
+# Increment the failure count for a specific bead
+# Usage: _needle_increment_bead_failure_count <bead_id>
+# Returns: New failure count
+_needle_increment_bead_failure_count() {
+    local bead_id="$1"
+    local state_file
+    state_file=$(_needle_bead_failure_state_file)
+    local state_dir
+    state_dir=$(dirname "$state_file")
+
+    # Ensure state directory exists
+    mkdir -p "$state_dir" 2>/dev/null || true
+
+    # Initialize state file if it doesn't exist
+    if [[ ! -f "$state_file" ]]; then
+        echo "{}" > "$state_file"
+    fi
+
+    # Use python3 to safely parse, update, and write JSON
+    if command -v python3 &>/dev/null; then
+        local new_count
+        new_count=$(python3 - "$state_file" "$bead_id" 2>/dev/null <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+current = data.get(sys.argv[2], 0)
+data[sys.argv[2]] = current + 1
+with open(sys.argv[1], 'w') as f:
+    json.dump(data, f)
+print(current + 1)
+PYEOF
+        )
+        echo "$new_count"
+    else
+        echo 1
+    fi
+}
+
+# Reset the failure count for a specific bead
+# Usage: _needle_reset_bead_failure_count <bead_id>
+_needle_reset_bead_failure_count() {
+    local bead_id="$1"
+    local state_file
+    state_file=$(_needle_bead_failure_state_file)
+
+    if [[ ! -f "$state_file" ]]; then
+        return 0
+    fi
+
+    # Use python3 to safely parse, update, and write JSON
+    if command -v python3 &>/dev/null; then
+        python3 - "$state_file" "$bead_id" 2>/dev/null <<'PYEOF'
+import json, sys
+with open(sys.argv[1]) as f:
+    data = json.load(f)
+if sys.argv[2] in data:
+    del data[sys.argv[2]]
+with open(sys.argv[1], 'w') as f:
+    json.dump(data, f)
+PYEOF
+    fi
+}
+
+# Check if forced mitosis should be triggered for a failed bead
+# Usage: _needle_check_forced_mitosis <bead_id> <workspace>
+# Returns: 0 if forced mitosis should trigger, 1 otherwise
+_needle_check_forced_mitosis() {
+    local bead_id="$1"
+    local workspace="$2"
+
+    # Source mitosis module to access config functions
+    if [[ -z "${_NEEDLE_MITOSIS_LOADED:-}" ]]; then
+        source "$NEEDLE_SRC/bead/mitosis.sh"
+    fi
+
+    # Check if forced mitosis on failure is enabled
+    if ! _needle_mitosis_force_enabled "$workspace"; then
+        _needle_debug "Forced mitosis on failure is disabled"
+        return 1
+    fi
+
+    # Get the failure threshold
+    local threshold
+    threshold=$(_needle_mitosis_force_threshold "$workspace")
+
+    # Get current bead failure count
+    local failure_count
+    failure_count=$(_needle_get_bead_failure_count "$bead_id")
+
+    _needle_debug "Bead $bead_id has failed $failure_count time(s), threshold is $threshold"
+
+    # Trigger forced mitosis if we've reached the threshold - 1
+    # (i.e., on the Nth failure, we trigger mitosis before the Nth retry)
+    if [[ $failure_count -ge $((threshold - 1)) ]]; then
+        _needle_info "Forced mitosis threshold reached for bead $bead_id ($failure_count failures)"
+        return 0
+    fi
+
+    return 1
+}
+
+# Handle forced mitosis for a repeatedly failing bead
+# Usage: _needle_handle_forced_mitosis <bead_id> <workspace> <agent>
+# Returns: 0 if mitosis succeeded (bead released as blocked), 1 if mitosis failed
+_needle_handle_forced_mitosis() {
+    local bead_id="$1"
+    local workspace="$2"
+    local agent="$3"
+    local failure_count
+    failure_count=$(_needle_get_bead_failure_count "$bead_id")
+
+    _needle_warn "Attempting forced mitosis for bead $bead_id (failures: $failure_count)"
+
+    # Emit forced mitosis attempt event
+    _needle_telemetry_emit "bead.forced_mitosis_attempt" "warn" \
+        "bead_id=$bead_id" \
+        "failure_count=$failure_count" \
+        "session=$NEEDLE_SESSION"
+
+    # Source mitosis module if not already loaded
+    if [[ -z "${_NEEDLE_MITOSIS_LOADED:-}" ]]; then
+        source "$NEEDLE_SRC/bead/mitosis.sh"
+    fi
+
+    # Attempt forced mitosis (force=true bypasses min_complexity check)
+    if _needle_check_mitosis "$bead_id" "$workspace" "$agent" "true" "$failure_count"; then
+        _needle_info "Forced mitosis succeeded for bead $bead_id - releasing as blocked-by-children"
+
+        # Emit success event
+        _needle_telemetry_emit "bead.forced_mitosis_success" "info" \
+            "bead_id=$bead_id" \
+            "failure_count=$failure_count" \
+            "session=$NEEDLE_SESSION"
+
+        # Reset the bead failure count after successful mitosis
+        _needle_reset_bead_failure_count "$bead_id"
+
+        return 0
+    else
+        _needle_warn "Forced mitosis failed for bead $bead_id - task is atomic or cannot be decomposed"
+
+        # Emit failure event
+        _needle_telemetry_emit "bead.forced_mitosis_failed" "warn" \
+            "bead_id=$bead_id" \
+            "failure_count=$failure_count" \
+            "session=$NEEDLE_SESSION"
+
+        # Reset the bead failure count - we've tried mitosis and it didn't work
+        # so we should return to normal failure handling (quarantine or release)
+        _needle_reset_bead_failure_count "$bead_id"
+
+        return 1
+    fi
+}
+
+# ============================================================================
 # Configuration Hot-Reload Functions
 # ============================================================================
 
@@ -499,6 +695,9 @@ _needle_handle_exit_code() {
             if _needle_complete_bead "$bead_id"; then
                 _needle_reset_backoff
 
+                # Reset per-bead failure count on success
+                _needle_reset_bead_failure_count "$bead_id"
+
                 # Emit success event
                 _needle_event_bead_completed "$bead_id"
                 _needle_telemetry_emit "bead.completed" "info" \
@@ -514,8 +713,28 @@ _needle_handle_exit_code() {
             ;;
 
         1)
-            # Failure - release and retry later
+            # Failure - track per-bead failure count and check forced mitosis
             _needle_warn "Exit code 1: Failure - releasing bead for retry"
+
+            # Increment per-bead failure count
+            local bead_fail_count
+            bead_fail_count=$(_needle_increment_bead_failure_count "$bead_id")
+            _needle_debug "Per-bead failure count for $bead_id: $bead_fail_count"
+
+            # Check if forced mitosis should be triggered (repeated failures indicate task too coarse)
+            if _needle_check_forced_mitosis "$bead_id" "$workspace"; then
+                if _needle_handle_forced_mitosis "$bead_id" "$workspace" "$agent"; then
+                    # Mitosis succeeded - bead is now released as blocked-by-children
+                    _needle_increment_backoff
+                    _needle_apply_backoff
+                    return 0
+                else
+                    # Mitosis failed - task is atomic and cannot be decomposed; quarantine it
+                    _needle_quarantine_bead "$bead_id" "repeated_failure_atomic"
+                    NEEDLE_FAILURE_COUNT=0
+                    return 0
+                fi
+            fi
 
             _needle_release_bead "$bead_id" "agent_failed"
             _needle_increment_backoff
