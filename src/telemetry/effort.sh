@@ -625,28 +625,37 @@ _needle_event_effort_recorded() {
 
 # Get aggregated effort for a specific bead from NEEDLE session logs
 # Usage: _needle_get_bead_effort <bead_id>
-# Returns: input_tokens|output_tokens|cost_usd|attempts
+# Returns: input_tokens|output_tokens|cost_usd|attempts|agents
 #
-# Reads all NEEDLE session log files ($NEEDLE_HOME/logs/*.jsonl) and sums
+# Reads all NEEDLE session log files ($NEEDLE_HOME/logs/*.log|*.jsonl) and sums
 # effort events (effort.recorded and bead.effort_recorded) for the given bead.
 # This gives accurate totals across multiple agent attempts on the same bead.
 #
+# The 5th field (agents) is a comma-separated list of unique worker/agent names
+# that contributed effort, enabling "join events.jsonl to bead assignee" queries.
+#
 # Example:
 #   result=$(_needle_get_bead_effort "nd-abc123")
-#   IFS='|' read -r in out cost attempts <<< "$result"
-#   echo "Total cost: \$$cost ($in in / $out out, $attempts attempts)"
+#   IFS='|' read -r in out cost attempts agents <<< "$result"
+#   echo "Cost: \$$cost ($in in / $out out, $attempts attempts by $agents)"
 _needle_get_bead_effort() {
     local bead_id="$1"
 
     if [[ -z "$bead_id" ]]; then
-        echo "0|0|0|0"
+        echo "0|0|0|0|"
         return 1
     fi
 
-    local log_dir="${NEEDLE_HOME:-$HOME/.needle}/${NEEDLE_LOG_DIR:-logs}"
+    # Resolve log directory: use NEEDLE_LOG_DIR if absolute, else join with NEEDLE_HOME
+    local log_dir
+    if [[ "${NEEDLE_LOG_DIR:-}" == /* ]]; then
+        log_dir="$NEEDLE_LOG_DIR"
+    else
+        log_dir="${NEEDLE_HOME:-$HOME/.needle}/${NEEDLE_LOG_DIR:-logs}"
+    fi
 
     if [[ ! -d "$log_dir" ]]; then
-        echo "0|0|0|0"
+        echo "0|0|0|0|"
         return 0
     fi
 
@@ -657,13 +666,16 @@ _needle_get_bead_effort() {
     done < <(find "$log_dir" -maxdepth 1 \( -name "*.log" -o -name "*.jsonl" \) -type f 2>/dev/null)
 
     if [[ ${#log_files[@]} -eq 0 ]]; then
-        echo "0|0|0|0"
+        echo "0|0|0|0|"
         return 0
     fi
 
     if command -v jq &>/dev/null; then
-        # Parse all log files and aggregate effort events for this bead
+        # Parse all log files and aggregate effort events for this bead.
+        # Two-stage pipeline: first filter to valid JSON objects (skipping
+        # malformed lines), then aggregate effort events for the target bead.
         cat "${log_files[@]}" 2>/dev/null | \
+            jq -Rrc 'try fromjson catch empty' 2>/dev/null | \
             jq -rcs --arg bead_id "$bead_id" '
                 [.[] | select(
                     (.event == "effort.recorded" or .event == "bead.effort_recorded")
@@ -673,19 +685,21 @@ _needle_get_bead_effort() {
                     attempts: length,
                     input_tokens: (map(.data.input_tokens // 0) | add // 0),
                     output_tokens: (map(.data.output_tokens // 0) | add // 0),
-                    cost_usd: (map(.data.cost // "0" | tonumber) | add // 0)
+                    cost_usd: (map(.data.cost // "0" | tonumber) | add // 0),
+                    agents: (map(.data.agent // .worker // "") | map(select(length > 0)) | unique | join(","))
                 } |
-                "\(.input_tokens)|\(.output_tokens)|\(.cost_usd)|\(.attempts)"
-            ' 2>/dev/null || echo "0|0|0|0"
+                "\(.input_tokens)|\(.output_tokens)|\(.cost_usd)|\(.attempts)|\(.agents)"
+            ' 2>/dev/null || echo "0|0|0|0|"
     else
         # Fallback: python3
-        python3 - "$bead_id" "$log_dir" << 'PYEOF' 2>/dev/null || echo "0|0|0|0"
+        python3 - "$bead_id" "$log_dir" << 'PYEOF' 2>/dev/null || echo "0|0|0|0|"
 import json, sys, glob, os
 
 bead_id = sys.argv[1]
 log_dir = sys.argv[2]
 
 total_input, total_output, total_cost, attempts = 0, 0, 0.0, 0
+agents_seen = []
 
 for pattern in ('*.log', '*.jsonl'):
     for log_file in glob.glob(os.path.join(log_dir, pattern)):
@@ -707,12 +721,16 @@ for pattern in ('*.log', '*.jsonl'):
                                 except (ValueError, TypeError):
                                     pass
                                 attempts += 1
+                                agent = d.get('agent', '') or ev.get('worker', '')
+                                if agent and agent not in agents_seen:
+                                    agents_seen.append(agent)
                     except json.JSONDecodeError:
                         pass
         except IOError:
             pass
 
-print(f'{total_input}|{total_output}|{total_cost:.6f}|{attempts}')
+agents_str = ','.join(agents_seen)
+print(f'{total_input}|{total_output}|{total_cost:.6f}|{attempts}|{agents_str}')
 PYEOF
     fi
 }
@@ -739,13 +757,14 @@ _needle_annotate_bead_with_effort() {
     local effort_result
     effort_result=$(_needle_get_bead_effort "$bead_id")
 
-    local input_tokens output_tokens cost_usd attempts
-    IFS='|' read -r input_tokens output_tokens cost_usd attempts <<< "$effort_result"
+    local input_tokens output_tokens cost_usd attempts agents
+    IFS='|' read -r input_tokens output_tokens cost_usd attempts agents <<< "$effort_result"
 
     input_tokens="${input_tokens:-0}"
     output_tokens="${output_tokens:-0}"
     cost_usd="${cost_usd:-0}"
     attempts="${attempts:-0}"
+    agents="${agents:-}"
 
     # Skip if nothing was recorded
     if [[ "$attempts" -eq 0 ]] && [[ "$input_tokens" -eq 0 ]]; then
@@ -759,7 +778,13 @@ _needle_annotate_bead_with_effort() {
     local cost_display
     cost_display=$(printf "%.6f" "$cost_usd" 2>/dev/null || echo "$cost_usd")
 
-    local comment="**Cost attribution** | cost: \$${cost_display} | input: ${input_tokens} | output: ${output_tokens} | total: ${total_tokens} tokens | attempts: ${attempts}"
+    # Build comment — include worker attribution when available
+    local comment
+    if [[ -n "$agents" ]]; then
+        comment="**Cost attribution** | worker: ${agents} | cost: \$${cost_display} | input: ${input_tokens} | output: ${output_tokens} | total: ${total_tokens} tokens | attempts: ${attempts}"
+    else
+        comment="**Cost attribution** | cost: \$${cost_display} | input: ${input_tokens} | output: ${output_tokens} | total: ${total_tokens} tokens | attempts: ${attempts}"
+    fi
 
     # Write comment to bead via br
     if ! _needle_command_exists br; then
