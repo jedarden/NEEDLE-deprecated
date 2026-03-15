@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # NEEDLE Strand: explore (Priority 3)
-# Search for work in child and sibling workspaces
+# Search for work in configured, child, and sibling workspaces
 #
 # Implementation: nd-hq2
 #
 # This strand expands the search scope when pluck and mend find nothing.
-# It searches in two phases:
+# It searches in three phases:
+#   Phase 0: Check all workspaces configured in config.yaml
 #   Phase 1 (Down): Search child directories for .beads/ workspaces
 #   Phase 2 (Up):   Walk up parent directories, searching siblings at each level
 #
@@ -80,19 +81,18 @@ _needle_explore_count_unassigned() {
 
     local count
 
-    # Use br ready by cd-ing into the workspace (same as _needle_get_claimable_beads).
-    # This correctly handles dependency-blocked beads and reads the WAL for the latest
-    # state — unlike br ready --db which can miss WAL updates and fall back to a broken
-    # br list filter that counts blocked beads as claimable.
-    count=$(cd "$workspace" && br ready --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
+    # Use br list --status open --unassigned instead of br ready.
+    # br ready incorrectly filters out beads with "blocks" dependencies (the blockers)
+    # as if they were blocked. br list correctly identifies open, unassigned beads.
+    count=$(cd "$workspace" && br list --status open --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
 
     if [[ "$count" =~ ^[0-9]+$ ]]; then
         echo "$count"
         return 0
     fi
 
-    # Fallback: JSONL-only mode — still respects dependency blocks
-    count=$(cd "$workspace" && br ready --no-db --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null)
+    # Fallback: JSONL-only mode
+    count=$(cd "$workspace" && br list --status open --unassigned --no-db --json 2>/dev/null | jq 'length' 2>/dev/null)
 
     if [[ ! "$count" =~ ^[0-9]+$ ]]; then
         echo "0"
@@ -395,6 +395,81 @@ _needle_explore_spawn_workers_if_needed() {
 }
 
 # ============================================================================
+# Phase 0: Check Configured Workspaces
+# ============================================================================
+
+# Find the first configured workspace with claimable beads.
+# Reads workspaces from config.yaml and checks each for unassigned beads.
+# Returns: workspace path on stdout (empty if none found)
+_needle_explore_find_configured_workspace_with_beads() {
+    local current_workspace="$1"
+
+    _needle_debug "explore: checking configured workspaces from config"
+
+    # Load config and extract workspaces list
+    local config
+    config=$(load_config 2>/dev/null)
+
+    if [[ -z "$config" ]]; then
+        _needle_debug "explore: no config loaded, skipping configured workspaces check"
+        return 1
+    fi
+
+    local ws_count=0
+    local checked_count=0
+
+    # Count total configured workspaces
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+        ((ws_count++))
+    done < <(echo "$config" | jq -r '.workspaces[]? // empty' 2>/dev/null)
+
+    _needle_debug "explore: found $ws_count configured workspace(s) to check"
+
+    # Check each configured workspace for claimable beads
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+
+        # Skip the current workspace (we're already here, pluck would have found work)
+        [[ "$ws" == "$current_workspace" ]] && continue
+
+        ((checked_count++))
+        _needle_debug "explore: checking configured workspace: $ws"
+
+        # Verify the workspace exists
+        if [[ ! -d "$ws/.beads" ]]; then
+            _needle_debug "explore: workspace $ws has no .beads directory, skipping"
+            continue
+        fi
+
+        local bead_count
+        bead_count=$(_needle_explore_count_unassigned "$ws")
+
+        if (( bead_count > 0 )); then
+            _needle_info "explore: configured workspace $ws has $bead_count claimable bead(s)"
+            echo "$ws"
+            return 0
+        fi
+
+        # Also check for stale beads while we're here
+        local released
+        released=$(_needle_explore_check_stale "$ws")
+        if (( released > 0 )); then
+            _needle_info "explore: released $released stale bead(s) in configured workspace $ws"
+            # Re-check if this workspace now has claimable beads
+            bead_count=$(_needle_explore_count_unassigned "$ws")
+            if (( bead_count > 0 )); then
+                echo "$ws"
+                return 0
+            fi
+        fi
+    done < <(echo "$config" | jq -r '.workspaces[]? // empty' 2>/dev/null)
+
+    _needle_debug "explore: checked $checked_count configured workspace(s), found no work"
+    return 1
+}
+
+# ============================================================================
 # Phase 1: Search Children (Downward)
 # ============================================================================
 
@@ -550,6 +625,27 @@ _needle_strand_explore() {
     local max_upward
     max_upward=$(_needle_explore_get_max_upward_depth)
 
+    # Phase 0: Check configured workspaces from config.yaml first
+    # This ensures we find work in ALL configured workspaces, not just filesystem neighbors
+    local configured_workspace
+    configured_workspace=$(_needle_explore_find_configured_workspace_with_beads "$workspace")
+
+    if [[ -n "$configured_workspace" ]]; then
+        _needle_info "explore: configured workspace $configured_workspace has beads, switching"
+
+        # Auto-scale: spawn additional workers if bead count exceeds threshold
+        _needle_explore_spawn_workers_if_needed "$configured_workspace" "$agent"
+
+        _needle_telemetry_emit "explore.workspace_switch" "info" \
+            "from=$workspace" \
+            "to=$configured_workspace" \
+            "direction=configured"
+
+        # Signal the engine to change workspace and restart
+        export NEEDLE_EXPLORE_NEW_WORKSPACE="$configured_workspace"
+        return 2
+    fi
+
     # Phase 1: Search children of current workspace
     # If a child workspace has beads, signal the engine to change workspace
     # and restart from pluck (return 2).
@@ -674,7 +770,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo "  run <workspace> <agent>   Run the explore strand"
             echo "  stats                     Show strand statistics"
             echo ""
-            echo "The explore strand searches in two phases:"
+            echo "The explore strand searches in three phases:"
+            echo "  Phase 0: Check configured workspaces from config.yaml"
             echo "  Phase 1 (Down): Search child directories for .beads/"
             echo "  Phase 2 (Up):   Walk up, searching siblings at each level"
             echo ""
