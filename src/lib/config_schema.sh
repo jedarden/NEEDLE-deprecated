@@ -166,6 +166,7 @@ NEEDLE_CONFIG_SCHEMA=(
     # debug
     ["debug.auto_bead_on_error"]="boolean|false|||"
     ["debug.auto_bead_workspace"]="string|false|||"
+    ["debug.auto_bead_types"]="string|false|||"
     ["debug.auto_bead_rate_limit"]="integer|false|0||"
 )
 

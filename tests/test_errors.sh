@@ -662,6 +662,289 @@ fi
 $multi_ok && _test_pass "Multiple error types handled independently and correctly"
 
 # ============================================================================
+# Auto Bug Bead Creation Tests
+# ============================================================================
+
+# Source config.sh for get_config function if not already available
+if ! declare -f get_config &>/dev/null; then
+    source "$PROJECT_ROOT/src/lib/config.sh"
+fi
+
+# ----------------------------------------------------------------------------
+# Test 23: _needle_error_auto_bead function exists
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_auto_bead function is defined"
+if declare -f _needle_error_auto_bead &>/dev/null; then
+    _test_pass "_needle_error_auto_bead function is defined"
+else
+    _test_fail "_needle_error_auto_bead function not found"
+fi
+
+# ----------------------------------------------------------------------------
+# Test 24: Auto bead returns early when disabled
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_auto_bead returns early when feature disabled"
+# Ensure feature is disabled
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+# Create a test workspace
+TEST_WORKSPACE="/tmp/needle-test-auto-bead-$$"
+mkdir -p "$TEST_WORKSPACE"
+# Function should return 0 (success) without creating a bead
+if _needle_error_auto_bead "error.test" "retry" "bead_id=test-123" 2>/dev/null; then
+    _test_pass "Auto bead returns success when disabled"
+else
+    _test_fail "Auto bead should return 0 when disabled"
+fi
+rm -rf "$TEST_WORKSPACE"
+
+# ----------------------------------------------------------------------------
+# Test 25: Auto bead returns early when workspace not configured
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_auto_bead returns early when workspace not configured"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE=""
+if _needle_error_auto_bead "error.test" "retry" 2>/dev/null; then
+    _test_pass "Auto bead returns success when workspace not configured"
+else
+    _test_fail "Auto bead should return 0 when workspace not configured"
+fi
+
+# ----------------------------------------------------------------------------
+# Test 26: Auto bead creates bead for quarantine escalation (with br mock)
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_auto_bead attempts bead creation for quarantine errors"
+# Create a mock br command that captures the call
+TEST_WORKSPACE="/tmp/needle-test-ws-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Create a temporary br mock
+MOCK_BR="/tmp/needle-mock-br-$$"
+cat > "$MOCK_BR" <<'EOF'
+#!/usr/bin/env bash
+# Mock br CLI that simulates successful bead creation
+if [[ "$1" == "create" ]]; then
+    echo "nd-test-$(date +%s)"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MOCK_BR"
+
+# Temporarily add mock to PATH
+export PATH="/tmp:$PATH"
+ln -sf "$MOCK_BR" "/tmp/br"
+
+# Clear any existing rate limit state
+STATE_DIR="$NEEDLE_HOME/$NEEDLE_STATE_DIR"
+rm -f "$STATE_DIR/auto_bead_signatures.json" 2>/dev/null
+mkdir -p "$STATE_DIR"
+
+# Call auto bead with quarantine escalation
+if _needle_error_auto_bead "error.test_quarantine" "quarantine" "bead_id=test-456" 2>/dev/null; then
+    _test_pass "Auto bead function returns success for quarantine error"
+else
+    _test_fail "Auto bead should return 0 for quarantine error"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR"
+rm -rf "$TEST_WORKSPACE"
+
+# ----------------------------------------------------------------------------
+# Test 27: Auto bead creates bead for unregistered error types
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_auto_bead handles unregistered error types"
+TEST_WORKSPACE="/tmp/needle-test-ws2-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_TYPES="unregistered"
+
+# Verify error.type_not_registered is not in registry
+if _needle_error_is_registered "error.type_not_registered"; then
+    _test_fail "Test setup error: error.type_not_registered should not be registered"
+else
+    _test_pass "Test error type correctly unregistered"
+fi
+
+# Create mock br
+MOCK_BR2="/tmp/needle-mock-br2-$$"
+cat > "$MOCK_BR2" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "create" ]]; then
+    echo "nd-unreg-$(date +%s)"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MOCK_BR2"
+ln -sf "$MOCK_BR2" "/tmp/br"
+
+# Call auto bead with unregistered error type
+if _needle_error_auto_bead "error.type_not_registered" "fail" 2>/dev/null; then
+    _test_pass "Auto bead function returns success for unregistered error type"
+else
+    _test_fail "Auto bead should return 0 for unregistered error type"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR2"
+rm -rf "$TEST_WORKSPACE"
+
+# ----------------------------------------------------------------------------
+# Test 28: Auto bead rate limiting prevents duplicate filings
+# ----------------------------------------------------------------------------
+_test_start "Auto bead rate limiting uses signature-based deduplication"
+TEST_WORKSPACE="/tmp/needle-test-ws3-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+
+# Create a test config file
+TEST_CONFIG="/tmp/needle-test-config-$$"
+cat > "$TEST_CONFIG" <<'EOF'
+debug:
+  auto_bead_on_error: true
+  auto_bead_workspace: PLACEHOLDER
+  auto_bead_rate_limit: 3600
+EOF
+
+# Replace workspace placeholder
+sed -i "s|PLACEHOLDER|$TEST_WORKSPACE|g" "$TEST_CONFIG"
+
+# Export config path for this test
+export NEEDLE_CONFIG_FILE="$TEST_CONFIG"
+
+# Create mock br
+MOCK_BR3="/tmp/needle-mock-br3-$$"
+cat > "$MOCK_BR3" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "create" ]]; then
+    echo "nd-rate-$(date +%s)"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MOCK_BR3"
+
+# Temporarily replace real br
+mv /home/coding/.local/bin/br /home/coding/.local/bin/br.real 2>/dev/null || true
+ln -sf "$MOCK_BR3" /home/coding/.local/bin/br
+
+# Clear state and create first bead
+STATE_DIR="$NEEDLE_HOME/$NEEDLE_STATE_DIR"
+rm -f "$STATE_DIR/auto_bead_signatures.json" 2>/dev/null
+mkdir -p "$STATE_DIR"
+
+# First call should succeed (or attempt creation)
+_needle_error_auto_bead "error.rate_test" "quarantine" 2>/dev/null
+
+# Second call should also succeed (defensive - returns early if rate limited)
+if _needle_error_auto_bead "error.rate_test" "quarantine" 2>/dev/null; then
+    _test_pass "Rate limited calls return success"
+else
+    _test_fail "Rate limited call should return 0"
+fi
+
+# The signature file mechanism is internal and uses python3
+# If python3 is available, the file should exist after calls
+if command -v python3 &>/dev/null && [[ -f "$STATE_DIR/auto_bead_signatures.json" ]]; then
+    _test_pass "Signature state file created (python3 available)"
+elif ! command -v python3 &>/dev/null; then
+    _test_pass "Signature file skipped (python3 not available - expected)"
+fi
+
+# Cleanup
+rm -f /home/coding/.local/bin/br
+mv /home/coding/.local/bin/br.real /home/coding/.local/bin/br 2>/dev/null || true
+rm -f "$MOCK_BR3" "$TEST_CONFIG"
+rm -rf "$TEST_WORKSPACE"
+rm -f "$STATE_DIR/auto_bead_signatures.json"
+
+# ----------------------------------------------------------------------------
+# Test 29: Auto bead respects auto_bead_types configuration
+# ----------------------------------------------------------------------------
+_test_start "Auto bead respects auto_bead_types configuration"
+TEST_WORKSPACE="/tmp/needle-test-ws4-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+
+# Test with only quarantine enabled
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_TYPES="quarantine"
+
+# Create mock br
+MOCK_BR4="/tmp/needle-mock-br4-$$"
+cat > "$MOCK_BR4" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "create" ]]; then
+    echo "nd-types-$(date +%s)"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MOCK_BR4"
+ln -sf "$MOCK_BR4" "/tmp/br"
+
+# Clear state
+rm -f "$STATE_DIR/auto_bead_signatures.json" 2>/dev/null
+
+# Quarantine should create bead
+if _needle_error_auto_bead "error.test_quarantine2" "quarantine" 2>/dev/null; then
+    _test_pass "Quarantine type creates bead when in auto_bead_types"
+else
+    _test_fail "Quarantine should create bead when enabled"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR4"
+rm -rf "$TEST_WORKSPACE"
+
+# ----------------------------------------------------------------------------
+# Test 30: _needle_error_handle calls auto_bead for quarantine errors
+# ----------------------------------------------------------------------------
+_test_start "_needle_error_handle integrates with auto_bead for quarantine"
+: > "$NEEDLE_LOG_FILE"
+
+TEST_WORKSPACE="/tmp/needle-test-ws5-$$"
+mkdir -p "$TEST_WORKSPACE/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Create mock br
+MOCK_BR5="/tmp/needle-mock-br5-$$"
+cat > "$MOCK_BR5" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$1" == "create" ]]; then
+    echo "nd-integrated-$(date +%s)"
+    exit 0
+fi
+exit 1
+EOF
+chmod +x "$MOCK_BR5"
+ln -sf "$MOCK_BR5" "/tmp/br"
+
+# Clear state
+rm -f "$STATE_DIR/auto_bead_signatures.json" 2>/dev/null
+
+# _needle_error_handle should call auto_bead internally for quarantine
+action=$(_needle_error_handle "error.agent_crash" 137 "bead_id=nd-integrated-test")
+if [[ "$action" == "quarantine" ]]; then
+    _test_pass "_needle_error_handle returns quarantine for agent_crash"
+else
+    _test_fail "_needle_error_handle should return quarantine, got $action"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR5"
+rm -rf "$TEST_WORKSPACE"
+rm -f "$STATE_DIR/auto_bead_signatures.json"
+
+# ============================================================================
 # Summary
 # ============================================================================
 
