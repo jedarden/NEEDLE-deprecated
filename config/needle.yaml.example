@@ -25,31 +25,8 @@ billing:
   #   - unlimited: Maximum throughput, no budget enforcement
   model: pay_per_token
 
-  # Per-provider billing overrides
-  providers:
-    anthropic: pay_per_token    # API billing
-    openai: pay_per_token       # API billing
-    alibaba: use_or_lose        # Monthly subscription with quota
-    zai: use_or_lose            # Monthly subscription with quota
-    ollama: unlimited           # Local inference
-
-# ============================================================================
-# Effort & Budget
-# ============================================================================
-# Tracks token usage and enforces spending limits to control API costs.
-effort:
-  # log_dir: Directory where effort tracking logs are stored
-  log_dir: ~/.needle/logs
-
-  budget:
-    # daily_limit_usd: Stop spawning workers when daily spend exceeds this amount
-    daily_limit_usd: 50.0
-
-    # warning_threshold: Warn when daily spend reaches this fraction of limit (0.0-1.0)
-    warning_threshold: 0.8        # Warn at 80% of daily limit
-
-    # per_bead_limit_usd: Maximum spend for a single bead execution
-    per_bead_limit_usd: 5.0
+  # daily_budget_usd: Daily budget in USD (used by use_or_lose model)
+  daily_budget_usd: 10.0
 
 # ============================================================================
 # Concurrency Limits
