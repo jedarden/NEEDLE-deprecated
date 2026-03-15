@@ -167,14 +167,13 @@ create_test_workspace "/tmp/test-explore-workspace-$$/ws1"
 create_test_workspace "/tmp/test-explore-workspace-$$/ws2"
 
 # Use the new function for finding child workspaces
+# The function returns the FIRST child workspace with beads (not all)
 found=$(_needle_explore_find_child_with_beads "/tmp/test-explore-workspace-$$" 2)
-# Count how many lines of output we got (each line is a workspace path)
-count=$(echo "$found" | grep -c "^/tmp" 2>/dev/null) || count=0
 
-if [[ "$count" -ge 2 ]]; then
-    _test_pass "Found child workspaces correctly (count: $count)"
+if [[ -n "$found" ]] && [[ "$found" =~ /tmp/test-explore-workspace-.*/ws[12] ]]; then
+    _test_pass "Found child workspace correctly: $found"
 else
-    _test_fail "Failed to find child workspaces (count: $count)"
+    _test_fail "Failed to find child workspace (found: '$found')"
 fi
 
 # Test 3: Count unassigned beads
@@ -231,8 +230,45 @@ fi
 
 # Test 8: Strand returns 1 (no work found) - explore doesn't process beads
 _test_start "Strand returns 1 (fallthrough)"
-_needle_strand_explore "/tmp/test-explore-workspace-$$" "test-agent" >/dev/null 2>&1
+# Use a clean workspace with no child workspaces (different from Test 2's workspace)
+mkdir -p "/tmp/test-explore-empty-$$"
+# Temporarily override br to return empty beads (no work found)
+br() {
+    case "$1" in
+        list)
+            # Return empty array to simulate no work
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+_needle_strand_explore "/tmp/test-explore-empty-$$" "test-agent" >/dev/null 2>&1
 result=$?
+# Clean up the empty workspace
+rm -rf "/tmp/test-explore-empty-$$"
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            if [[ "$*" == *"--json"* ]]; then
+                echo '[{"id":"nd-mock-1","status":"open","assignee":null}]'
+                return 0
+            fi
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
 if [[ $result -eq 1 ]]; then
     _test_pass "Strand correctly returned 1 (fallthrough)"
 else

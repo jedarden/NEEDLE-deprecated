@@ -140,6 +140,11 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "auto_bead_workspace": "",
     "auto_bead_types": ["quarantine", "unregistered"],
     "auto_bead_rate_limit": 3600
+  },
+  "scaling": {
+    "spawn_threshold": 3,
+    "max_workers_per_agent": 10,
+    "cooldown_seconds": 30
   }
 }'
 
@@ -394,6 +399,18 @@ updates:
 
   # disabled: Completely disable update checks (for air-gapped environments)
   disabled: false
+
+# Auto-scaling configuration for worker spawn behavior
+# Controls when and how new workers are spawned based on bead backlog
+scaling:
+  # spawn_threshold: Spawn new worker when open bead count exceeds this (default: 3)
+  spawn_threshold: 3
+
+  # max_workers_per_agent: Hard ceiling on concurrent workers per agent type (default: 10)
+  max_workers_per_agent: 10
+
+  # cooldown_seconds: Minimum seconds between consecutive spawn attempts (default: 30)
+  cooldown_seconds: 30
 
 # File lock configuration for collision management
 # Prevents multiple workers from editing the same file simultaneously
@@ -918,6 +935,18 @@ updates:
 
   # disabled: Completely disable update checks (for air-gapped environments)
   disabled: false
+
+# Auto-scaling configuration for worker spawn behavior
+# Controls when and how new workers are spawned based on bead backlog
+scaling:
+  # spawn_threshold: Spawn new worker when open bead count exceeds this (default: 3)
+  spawn_threshold: 3
+
+  # max_workers_per_agent: Hard ceiling on concurrent workers per agent type (default: 10)
+  max_workers_per_agent: 10
+
+  # cooldown_seconds: Minimum seconds between consecutive spawn attempts (default: 30)
+  cooldown_seconds: 30
 
 # File lock configuration for collision management
 # Prevents multiple workers from editing the same file simultaneously
