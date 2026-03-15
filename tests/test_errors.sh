@@ -1562,6 +1562,76 @@ unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT
 export NEEDLE_SESSION="test-session-errors"
 export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
 
+# ----------------------------------------------------------------------------
+# Test 38: Test session guard works even when NEEDLE_WORKER_ID is inherited
+# from parent worker environment (nd-tcqg regression)
+# ----------------------------------------------------------------------------
+# Bug: nd-tcqg was auto-created with Worker: `alpha` and Session: `test-session-errors`.
+# The Worker field showing `alpha` (not the full worker string) indicates NEEDLE_WORKER_ID
+# was inherited from the real worker process that ran the tests. The bead was created
+# because the test session safeguard had not yet been applied. This test verifies that
+# the session guard prevents bead creation even when NEEDLE_WORKER_ID is exported from
+# a parent worker environment (e.g., the worker that runs the test suite).
+_test_start "Session guard blocks auto-bead when NEEDLE_WORKER_ID is inherited from parent worker (nd-tcqg regression)"
+
+# Simulate the real worker environment: NEEDLE_WORKER_ID is exported (inherited)
+# but NEEDLE_SESSION is the test session value set by the test file
+export NEEDLE_WORKER_ID="alpha"
+export NEEDLE_SESSION="test-session-errors"
+
+# Enable auto-bead (simulating production config with debug.auto_bead_on_error=true)
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+
+# Create a test workspace
+TEST_WORKSPACE_TCQG="/tmp/needle-test-ws-tcqg-$$"
+mkdir -p "$TEST_WORKSPACE_TCQG/.beads"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE_TCQG"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Mock br to detect any bead creation
+BR_CALLED_TCQG="/tmp/needle-br-called-tcqg-$$"
+MOCK_BR_TCQG="/tmp/needle-mock-br-tcqg-$$"
+rm -f "$BR_CALLED_TCQG"
+cat > "$MOCK_BR_TCQG" <<EOF
+#!/usr/bin/env bash
+echo "called" > "$BR_CALLED_TCQG"
+echo "nd-should-not-exist-tcqg"
+exit 0
+EOF
+chmod +x "$MOCK_BR_TCQG"
+ln -sf "$MOCK_BR_TCQG" "/tmp/br"
+export PATH="/tmp:$PATH"
+
+# Replicate the exact multi-error sequence from nd-tcqg bug report
+action_tcqg_1=$(_needle_error_handle "error.claim_failed" 1 "bead_id=bead-1" 2>/dev/null)
+action_tcqg_2=$(_needle_error_handle "error.agent_crash" 137 "bead_id=bead-2" 2>/dev/null)
+
+# Escalations must still be correct
+if [[ "$action_tcqg_1" == "retry" ]] && [[ "$action_tcqg_2" == "quarantine" ]]; then
+    _test_pass "Escalation actions correct: claim_failed=retry, agent_crash=quarantine (nd-tcqg regression)"
+else
+    _test_fail "Unexpected escalations: claim_failed=$action_tcqg_1, agent_crash=$action_tcqg_2"
+fi
+
+# No bead must be created despite auto-bead being enabled and NEEDLE_WORKER_ID being set
+if [[ -f "$BR_CALLED_TCQG" ]]; then
+    _test_fail "br was called for test session 'test-session-errors' with inherited NEEDLE_WORKER_ID — session safeguard failed (nd-tcqg regression)"
+else
+    _test_pass "No bead created for test session 'test-session-errors' even with inherited NEEDLE_WORKER_ID='alpha' (nd-tcqg regression)"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR_TCQG" "$BR_CALLED_TCQG"
+rm -rf "$TEST_WORKSPACE_TCQG"
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE
+unset NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT
+
+# Reset state
+export NEEDLE_SESSION="test-session-errors"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+# Restore test worker ID (was set by test 31, reset here for safety)
+export NEEDLE_WORKER_ID="alpha"
+
 # ============================================================================
 # Summary
 # ============================================================================
