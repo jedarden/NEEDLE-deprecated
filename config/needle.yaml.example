@@ -217,6 +217,18 @@ mitosis:
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60
 
+  # force_on_failure: Enable forced mitosis when a bead fails repeatedly
+  # When true, beads that fail multiple times are forced to split rather than
+  # being quarantined. This transforms persistent failures into diagnostic
+  # signals for decomposition rather than permanent losses.
+  force_on_failure: true
+
+  # force_failure_threshold: Number of failures before forced mitosis is triggered
+  # When a bead fails this many times, forced mitosis is attempted instead of
+  # marking the bead as failed. If mitosis cannot decompose the bead, it is
+  # quarantined as truly atomic but consistently failing.
+  force_failure_threshold: 3
+
 # ============================================================================
 # Knot Strand Configuration
 # ============================================================================
