@@ -9,11 +9,12 @@ Usage:
     python3 server.py [--port PORT] [--buffer-size N] [--seed-file events.jsonl]
 
 Endpoints:
-    POST /ingest      - Receive events from fabric.sh
-    GET  /stream      - SSE endpoint for browser clients
-    GET  /            - Dashboard HTML
-    GET  /api/summary - Aggregate stats JSON (includes bead_costs for per-bead drill-down)
-    GET  /api/costs   - Per-bead cost breakdown (effort.recorded events, sorted by cost desc)
+    POST /ingest       - Receive a single event from fabric.sh
+    POST /ingest/batch - Receive a JSON array of events (FABRIC batching mode)
+    GET  /stream       - SSE endpoint for browser clients
+    GET  /             - Dashboard HTML
+    GET  /api/summary  - Aggregate stats JSON (includes bead_costs for per-bead drill-down)
+    GET  /api/costs    - Per-bead cost breakdown (effort.recorded events, sorted by cost desc)
 """
 
 import argparse
@@ -112,6 +113,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
         """Handle POST requests."""
         if self.path == "/ingest":
             self._handle_ingest()
+        elif self.path == "/ingest/batch" or self.path == "/batch":
+            self._handle_ingest_batch()
         else:
             self._send_json({"error": "Not found"}, 404)
 
@@ -142,6 +145,58 @@ class DashboardHandler(BaseHTTPRequestHandler):
             broadcast_event(event)
 
             self._send_json({"status": "ok"})
+
+        except json.JSONDecodeError as e:
+            self._send_json({"error": f"Invalid JSON: {e}"}, 400)
+        except Exception as e:
+            self._send_json({"error": str(e)}, 500)
+
+    def _handle_ingest_batch(self) -> None:
+        """Receive and buffer a batch of events from fabric.sh (batching mode).
+
+        Accepts a JSON array of event objects. Each event is processed
+        identically to a single /ingest POST — buffered and broadcast to SSE
+        clients.  Responds with {"status": "ok", "count": N}.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length == 0:
+                self._send_json({"error": "Empty body"}, 400)
+                return
+
+            body = self.rfile.read(length)
+            payload = json.loads(body.decode("utf-8"))
+
+            # Accept both a JSON array and a single object (graceful fallback)
+            if isinstance(payload, dict):
+                events_list = [payload]
+            elif isinstance(payload, list):
+                events_list = payload
+            else:
+                self._send_json({"error": "Expected JSON array or object"}, 400)
+                return
+
+            count = 0
+            for event in events_list:
+                if not isinstance(event, dict):
+                    continue
+
+                # Add server timestamp if missing
+                if "ts" not in event:
+                    event["ts"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+                events_buffer.append(event)
+                count += 1
+
+                # Track per-minute throughput for sparkline
+                event_type = event.get("type", event.get("event", ""))
+                if event_type == "bead.completed":
+                    _update_throughput(event.get("ts", ""))
+
+                # Broadcast to SSE clients
+                broadcast_event(event)
+
+            self._send_json({"status": "ok", "count": count})
 
         except json.JSONDecodeError as e:
             self._send_json({"error": f"Invalid JSON: {e}"}, 400)
@@ -306,9 +361,17 @@ def get_summary() -> dict:
                 workers[worker]["cost"] = workers[worker].get("cost", 0.0) + float(cost)
                 total_cost += float(cost)
 
-            # Strand tracking
-            if "strand" in event_type:
-                strand = event_type.split(".")[0] if "." in event_type else event_type
+            # Strand tracking: two cases
+            # 1) strand.started/completed/fallthrough/skipped — strand name in data.strand
+            # 2) weave.*, knot.*, pluck.*, mend.*, pulse.* — prefix is the strand name
+            _STRAND_PREFIXES = {"pluck", "weave", "knot", "mend", "pulse", "unravel"}
+            if event_type.startswith("strand."):
+                strand = data.get("strand", "")
+                if strand:
+                    strand_counts[strand] = strand_counts.get(strand, 0) + 1
+                    strand_last_run[strand] = event.get("ts", "")
+            elif "." in event_type and event_type.split(".")[0] in _STRAND_PREFIXES:
+                strand = event_type.split(".")[0]
                 strand_counts[strand] = strand_counts.get(strand, 0) + 1
                 strand_last_run[strand] = event.get("ts", "")
 

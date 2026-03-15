@@ -265,22 +265,34 @@ else
 fi
 echo ""
 
-# Test 15: Summary includes strand_last_run field
-echo "Test 15: Summary includes strand_last_run field"
-# Ingest a strand-type event
+# Test 15: Strand tracking — both strand.* events (data.strand) and prefixed events (weave.*, pluck.*)
+echo "Test 15: Strand tracking by name — strand.* events and strand-prefixed events"
+# Ingest a strand.started event with strand name in data
 curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
     -H "Content-Type: application/json" \
-    -d "{\"type\":\"pluck.started\",\"ts\":\"$NOW_TS\",\"worker\":\"test-worker\",\"data\":{}}" \
+    -d "{\"type\":\"strand.started\",\"ts\":\"$NOW_TS\",\"worker\":\"test-worker\",\"data\":{\"strand\":\"pluck\",\"bead_id\":\"nd-strand-test\"}}" \
+    &>/dev/null || true
+# Ingest a weave-prefixed event (strand name from prefix)
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d "{\"type\":\"weave.bead_created\",\"ts\":\"$NOW_TS\",\"worker\":\"test-worker\",\"data\":{\"bead_id\":\"nd-weave-test\"}}" \
     &>/dev/null || true
 summary5=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
 if echo "$summary5" | python3 -c "
 import sys, json
 d = json.load(sys.stdin)
 assert 'strand_last_run' in d, 'missing strand_last_run in summary'
+assert 'strand_counts' in d, 'missing strand_counts in summary'
+sc = d['strand_counts']
+slr = d['strand_last_run']
+assert 'pluck' in sc, f'pluck not tracked in strand_counts: {list(sc.keys())}'
+assert 'weave' in sc, f'weave not tracked in strand_counts: {list(sc.keys())}'
+assert 'pluck' in slr, f'pluck not tracked in strand_last_run: {list(slr.keys())}'
+assert 'weave' in slr, f'weave not tracked in strand_last_run: {list(slr.keys())}'
 " 2>/dev/null; then
-    _pass "Summary includes strand_last_run field"
+    _pass "Strand tracking correctly names strands from strand.* events and prefixed events"
 else
-    _fail "Summary missing strand_last_run (got: ${summary5:0:200})"
+    _fail "Strand tracking incorrect (got strand_counts=$(echo $summary5 | python3 -c 'import sys,json; d=json.load(sys.stdin); print(list(d.get(\"strand_counts\",{}).keys()))' 2>/dev/null))"
 fi
 echo ""
 
