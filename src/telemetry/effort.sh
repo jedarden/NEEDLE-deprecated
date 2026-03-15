@@ -679,7 +679,7 @@ _needle_get_bead_effort() {
             ' 2>/dev/null || echo "0|0|0|0"
     else
         # Fallback: python3
-        python3 - "$bead_id" "$log_dir" << 'PYEOF' 2>/dev/null
+        python3 - "$bead_id" "$log_dir" << 'PYEOF' 2>/dev/null || echo "0|0|0|0"
 import json, sys, glob, os
 
 bead_id = sys.argv[1]
@@ -713,7 +713,6 @@ for log_file in glob.glob(os.path.join(log_dir, '*.jsonl')):
 
 print(f'{total_input}|{total_output}|{total_cost:.6f}|{attempts}')
 PYEOF
-        echo "0|0|0|0"
     fi
 }
 

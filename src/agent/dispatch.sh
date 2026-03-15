@@ -44,16 +44,20 @@ _needle_start_heartbeat_background() {
     local bead_id="$1"
     local interval="${NEEDLE_HEARTBEAT_INTERVAL:-30}"
 
-    # Start background process that emits heartbeats
-    # Redirect stdout to stderr so heartbeat JSON doesn't pollute
-    # the dispatch_result captured via $() subshells
+    # Start background process that emits heartbeats with explicit bead state.
+    # Previous implementation used _needle_heartbeat_keepalive which read-then-rewrote
+    # the heartbeat file, preserving stale status=starting/current_bead=null.
+    # Now we always write status=executing with the active bead_id so the watchdog
+    # can detect stuck agents via bead_started age.
     (
+        local _bg_bead_started
+        _bg_bead_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         while true; do
-            # Check if heartbeat functions are available
-            if declare -f _needle_heartbeat_keepalive &>/dev/null; then
-                _needle_heartbeat_keepalive
-            elif declare -f _needle_emit_heartbeat &>/dev/null; then
-                _needle_emit_heartbeat "executing" "$bead_id"
+            if declare -f _needle_emit_heartbeat &>/dev/null; then
+                _needle_emit_heartbeat "executing" "$bead_id" "$_bg_bead_started"
+            fi
+            if declare -f renew_lock_leases &>/dev/null; then
+                renew_lock_leases 2>/dev/null || true
             fi
             sleep "$interval"
         done

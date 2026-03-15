@@ -68,6 +68,7 @@ NEEDLE_CONFIG_SCHEMA=(
     # runner
     ["runner.polling_interval"]="duration|false|||"
     ["runner.idle_timeout"]="duration|false|||"
+    ["runner.agent_timeout"]="integer|false|0||"
 
     # mend
     ["mend.heartbeat_max_age"]="integer|false|1||"

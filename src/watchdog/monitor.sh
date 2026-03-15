@@ -325,6 +325,29 @@ _needle_watchdog_check_single_heartbeat() {
             fi
         fi
     fi
+
+    # Check for stuck "starting" status — normal startup takes seconds,
+    # so a worker stuck in "starting" for longer than BEAD_TIMEOUT is hung
+    # (e.g. claude --print hanging on API timeout before emitting any output)
+    if [[ "$status" == "starting" ]]; then
+        local worker_started
+        worker_started=$(echo "$hb_data" | jq -r '.started // empty')
+        if [[ -n "$worker_started" ]]; then
+            local worker_started_ts
+            worker_started_ts=$(date -d "$worker_started" +%s 2>/dev/null || echo 0)
+            if [[ "$worker_started_ts" -gt 0 ]]; then
+                local starting_age=$((now - worker_started_ts))
+                if ((starting_age > NEEDLE_WATCHDOG_BEAD_TIMEOUT)); then
+                    _needle_watchdog_log "$log_file" "heartbeat.stuck_starting" \
+                        "Worker $worker stuck in starting state (${starting_age}s > ${NEEDLE_WATCHDOG_BEAD_TIMEOUT}s)" \
+                        "worker=$worker" "reason=stuck_starting" "age=$starting_age" "pid=$pid"
+
+                    _needle_watchdog_recover_worker "$worker" "$pid" "$current_bead" "stuck_starting" "$hb_file" "$log_file"
+                    return 0
+                fi
+            fi
+        fi
+    fi
 }
 
 # Check if there are any active workers

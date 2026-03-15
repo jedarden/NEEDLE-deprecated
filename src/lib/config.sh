@@ -25,7 +25,8 @@ _NEEDLE_CONFIG_DEFAULTS='{
   },
   "runner": {
     "polling_interval": "2s",
-    "idle_timeout": "300s"
+    "idle_timeout": "300s",
+    "agent_timeout": 1800
   },
   "strands": [
     "strands/pluck.sh",
