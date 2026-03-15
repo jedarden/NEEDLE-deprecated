@@ -667,6 +667,113 @@ test_record_effort_no_strand() {
 }
 
 # =============================================================================
+# Test: record_effort accumulates cost/tokens for same bead (retry scenario)
+# =============================================================================
+test_record_effort_same_bead_accumulates() {
+    local test_name="record_effort accumulates for same bead across attempts"
+
+    echo '{}' > "$NEEDLE_DAILY_SPEND_FILE"
+
+    # First attempt: 1000 in, 500 out, $0.015
+    record_effort "nd-retry-bead" "0.015" "agent-a" 1000 500 "pluck" "task"
+    # Second attempt (retry by different agent): 800 in, 400 out, $0.010
+    record_effort "nd-retry-bead" "0.010" "agent-b" 800 400 "pluck" "task"
+
+    if ! command -v jq &>/dev/null; then
+        _test_pass "$test_name - skipped (jq not available)"
+        return
+    fi
+
+    local today
+    today=$(date +%Y-%m-%d)
+
+    # Cost should be accumulated: 0.015 + 0.010 = 0.025
+    local bead_cost
+    bead_cost=$(jq -r ".[\"$today\"].beads[\"nd-retry-bead\"].cost // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    local cost_ok
+    cost_ok=$(awk "BEGIN {print ($bead_cost >= 0.0249 && $bead_cost <= 0.0251) ? 1 : 0}")
+    if [[ "$cost_ok" == "1" ]]; then
+        _test_pass "$test_name - bead cost accumulated (got $bead_cost)"
+    else
+        _test_fail "$test_name - expected bead cost ~0.025, got: $bead_cost"
+    fi
+
+    # input_tokens should be accumulated: 1000 + 800 = 1800
+    local in_tok
+    in_tok=$(jq -r ".[\"$today\"].beads[\"nd-retry-bead\"].input_tokens // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    if [[ "$in_tok" -eq 1800 ]]; then
+        _test_pass "$test_name - input_tokens accumulated correctly"
+    else
+        _test_fail "$test_name - expected input_tokens=1800, got: $in_tok"
+    fi
+
+    # output_tokens should be accumulated: 500 + 400 = 900
+    local out_tok
+    out_tok=$(jq -r ".[\"$today\"].beads[\"nd-retry-bead\"].output_tokens // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    if [[ "$out_tok" -eq 900 ]]; then
+        _test_pass "$test_name - output_tokens accumulated correctly"
+    else
+        _test_fail "$test_name - expected output_tokens=900, got: $out_tok"
+    fi
+
+    # attempts counter should be 2
+    local attempts
+    attempts=$(jq -r ".[\"$today\"].beads[\"nd-retry-bead\"].attempts // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    if [[ "$attempts" -eq 2 ]]; then
+        _test_pass "$test_name - attempts counter is 2"
+    else
+        _test_fail "$test_name - expected attempts=2, got: $attempts"
+    fi
+
+    # agent should be updated to the last one (agent-b)
+    local agent_val
+    agent_val=$(jq -r ".[\"$today\"].beads[\"nd-retry-bead\"].agent // empty" "$NEEDLE_DAILY_SPEND_FILE")
+    if [[ "$agent_val" == "agent-b" ]]; then
+        _test_pass "$test_name - agent updated to last attempt's agent"
+    else
+        _test_fail "$test_name - expected agent=agent-b, got: $agent_val"
+    fi
+
+    # total spend should still be correct (both attempts counted): 0.025
+    local total
+    total=$(jq -r ".[\"$today\"].total // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    local total_ok
+    total_ok=$(awk "BEGIN {print ($total >= 0.0249 && $total <= 0.0251) ? 1 : 0}")
+    if [[ "$total_ok" == "1" ]]; then
+        _test_pass "$test_name - daily total includes both attempts"
+    else
+        _test_fail "$test_name - expected daily total ~0.025, got: $total"
+    fi
+}
+
+# =============================================================================
+# Test: record_effort initial attempt gets attempts=1
+# =============================================================================
+test_record_effort_first_attempt_count() {
+    local test_name="record_effort first attempt sets attempts=1"
+
+    echo '{}' > "$NEEDLE_DAILY_SPEND_FILE"
+
+    record_effort "nd-first-only" "0.005" "agent-x" 500 250
+
+    if ! command -v jq &>/dev/null; then
+        _test_pass "$test_name - skipped (jq not available)"
+        return
+    fi
+
+    local today
+    today=$(date +%Y-%m-%d)
+
+    local attempts
+    attempts=$(jq -r ".[\"$today\"].beads[\"nd-first-only\"].attempts // 0" "$NEEDLE_DAILY_SPEND_FILE")
+    if [[ "$attempts" -eq 1 ]]; then
+        _test_pass "$test_name - first attempt sets attempts=1"
+    else
+        _test_fail "$test_name - expected attempts=1, got: $attempts"
+    fi
+}
+
+# =============================================================================
 # Main test runner
 # =============================================================================
 main() {
@@ -690,6 +797,8 @@ main() {
     test_record_effort_missing_bead_id
     test_record_effort_strand_and_type
     test_record_effort_no_strand
+    test_record_effort_same_bead_accumulates
+    test_record_effort_first_attempt_count
     test_get_bead_effort_no_logs
     test_get_bead_effort_from_logs
     test_get_bead_effort_filters_bead

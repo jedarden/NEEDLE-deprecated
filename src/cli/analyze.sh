@@ -440,16 +440,19 @@ for date, entry in sorted(data.items()):
             types[bead_type_val]['output_tokens'] += bead_out
             types[bead_type_val]['bead_count'] += 1
 
+        bead_attempts = bead_data.get('attempts', 1) or 1
         if bead_id in beads:
             beads[bead_id]['cost'] += bead_cost
             beads[bead_id]['input_tokens'] += bead_in
             beads[bead_id]['output_tokens'] += bead_out
+            beads[bead_id]['attempts'] += bead_attempts
         else:
             beads[bead_id] = {
                 'cost': bead_cost,
                 'agent': bead_agent,
                 'input_tokens': bead_in,
                 'output_tokens': bead_out,
+                'attempts': bead_attempts,
                 'date': date,
                 'strand': bead_strand,
                 'type': bead_type_val,
@@ -507,6 +510,7 @@ if json_out:
                 'agent': d['agent'],
                 'input_tokens': d['input_tokens'],
                 'output_tokens': d['output_tokens'],
+                'attempts': d['attempts'],
                 'date': d['date'],
                 'strand': d['strand'],
                 'type': d['type'],
@@ -543,7 +547,8 @@ else:
     if sorted_beads:
         print(f"Top {min(top, len(sorted_beads))} beads by cost:")
         for bead_id, d in sorted_beads:
-            print(f"  {bead_id:<12}  ${d['cost']:.6f}  {d['agent']:<40}  {d['input_tokens']:>8,}in/{d['output_tokens']:>8,}out  {d['date']}")
+            attempts_str = f"  x{d['attempts']}" if d['attempts'] > 1 else ""
+            print(f"  {bead_id:<12}  ${d['cost']:.6f}  {d['agent']:<40}  {d['input_tokens']:>8,}in/{d['output_tokens']:>8,}out  {d['date']}{attempts_str}")
 
 PYEOF
     )

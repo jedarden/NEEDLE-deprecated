@@ -396,11 +396,12 @@ record_effort() {
             .[$date].beads = (.[$date].beads // {}) |
             .[$date].beads[$bead] = (
                 {
-                    cost: ($cost | tonumber),
+                    cost: (((.[$date].beads[$bead].cost // 0) + ($cost | tonumber))),
                     agent: $agent,
-                    input_tokens: $in_tok,
-                    output_tokens: $out_tok,
-                    timestamp: (now | todate)
+                    input_tokens: (((.[$date].beads[$bead].input_tokens // 0) + $in_tok)),
+                    output_tokens: (((.[$date].beads[$bead].output_tokens // 0) + $out_tok)),
+                    attempts: (((.[$date].beads[$bead].attempts // 0) + 1)),
+                    last_updated: (now | todate)
                 }
                 + (if $strand != "" then {strand: $strand} else {} end)
                 + (if $bead_type != "" then {type: $bead_type} else {} end)
@@ -446,13 +447,15 @@ try:
     data[date]['total'] = data[date].get('total', 0) + cost_val
     data[date]['agents'][agent] = data[date]['agents'].get(agent, 0) + cost_val
 
-    # Record bead details
+    # Record bead details — accumulate across multiple attempts on the same bead
+    existing_bead = data[date]['beads'].get(bead, {})
     bead_record = {
-        'cost': cost_val,
+        'cost': existing_bead.get('cost', 0) + cost_val,
         'agent': agent,
-        'input_tokens': in_tok,
-        'output_tokens': out_tok,
-        'timestamp': datetime.utcnow().isoformat() + 'Z'
+        'input_tokens': existing_bead.get('input_tokens', 0) + in_tok,
+        'output_tokens': existing_bead.get('output_tokens', 0) + out_tok,
+        'attempts': existing_bead.get('attempts', 0) + 1,
+        'last_updated': datetime.utcnow().isoformat() + 'Z'
     }
     if strand:
         bead_record['strand'] = strand

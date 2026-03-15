@@ -884,8 +884,95 @@ else
     fail "_needle_analyze_cost --json: by_bead entries missing strand/type fields"
 fi
 
+# by_bead entries should include attempts field
+if echo "$STRAND_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+for b in d.get('by_bead', []):
+    assert 'attempts' in b, f'attempts missing from {b}'
+    assert b['attempts'] >= 1, f'attempts should be >= 1, got {b[\"attempts\"]}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_bead entries include attempts field"
+else
+    fail "_needle_analyze_cost --json: by_bead entries missing attempts field"
+fi
+
 # Restore original spend file for remaining tests
 export NEEDLE_DAILY_SPEND_FILE="$SPEND_FILE"
+
+echo ""
+
+# ============================================================================
+# Test: needle analyze cost — bead retry accumulation (same bead, 2 attempts)
+# ============================================================================
+
+echo "=== analyze cost Retry Accumulation Tests ==="
+
+RETRY_SPEND_FILE="$TEST_DIR/retry_spend.json"
+TODAY=$(date +%Y-%m-%d)
+
+# Write a spend file where nd-retry was attempted twice (accumulated)
+cat > "$RETRY_SPEND_FILE" << RETRY_EOF
+{
+  "$TODAY": {
+    "total": 0.025,
+    "agents": {
+      "agent-first": 0.015,
+      "agent-second": 0.010
+    },
+    "beads": {
+      "nd-retry": {
+        "cost": 0.025,
+        "agent": "agent-second",
+        "input_tokens": 1800,
+        "output_tokens": 900,
+        "attempts": 2,
+        "last_updated": "${TODAY}T12:00:00Z",
+        "strand": "pluck",
+        "type": "task"
+      }
+    }
+  }
+}
+RETRY_EOF
+
+export NEEDLE_DAILY_SPEND_FILE="$RETRY_SPEND_FILE"
+
+RETRY_JSON=$(_needle_analyze_cost --json 2>&1 || true)
+
+if echo "$RETRY_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+beads = {b['bead_id']: b for b in d.get('by_bead', [])}
+b = beads.get('nd-retry', {})
+assert b.get('attempts') == 2, f'expected attempts=2, got {b.get(\"attempts\")}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_bead reflects accumulated attempts count"
+else
+    fail "_needle_analyze_cost --json: by_bead wrong attempts count for retried bead"
+fi
+
+if echo "$RETRY_JSON" | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+beads = {b['bead_id']: b for b in d.get('by_bead', [])}
+b = beads.get('nd-retry', {})
+assert abs(b.get('cost_usd', 0) - 0.025) < 0.0001, f'expected cost=0.025, got {b.get(\"cost_usd\")}'
+assert b.get('input_tokens') == 1800, f'expected input=1800, got {b.get(\"input_tokens\")}'
+assert b.get('output_tokens') == 900, f'expected output=900, got {b.get(\"output_tokens\")}'
+" >/dev/null 2>&1; then
+    pass "_needle_analyze_cost --json: by_bead shows accumulated cost/tokens for retried bead"
+else
+    fail "_needle_analyze_cost --json: by_bead wrong cost/tokens for retried bead"
+fi
+
+# Text output should show x2 for multi-attempt beads
+RETRY_TEXT=$(_needle_analyze_cost 2>&1 || true)
+if echo "$RETRY_TEXT" | grep -q "x2"; then
+    pass "_needle_analyze_cost text: shows 'x2' annotation for retried bead"
+else
+    fail "_needle_analyze_cost text: missing 'x2' annotation for retried bead (got: $RETRY_TEXT)"
+fi
 
 echo ""
 
