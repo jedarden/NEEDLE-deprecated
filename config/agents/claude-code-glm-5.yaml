@@ -46,7 +46,7 @@ output:
 # Rate limits (GLM-5 - reasonable concurrency)
 limits:
   requests_per_minute: 60
-  max_concurrent: 5
+  max_concurrent: 8
 
 # Cost configuration (pay-per-token)
 cost:
