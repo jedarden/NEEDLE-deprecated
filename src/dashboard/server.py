@@ -348,10 +348,12 @@ def run_server(port: int, buffer_size: int, seed_file: str | None = None) -> Non
     print(f"SSE stream: http://localhost:{port}/stream", file=sys.stderr)
     print(f"API summary: http://localhost:{port}/api/summary", file=sys.stderr)
 
-    # Handle shutdown gracefully
+    # Handle shutdown gracefully — sys.exit() raises SystemExit which
+    # propagates cleanly out of serve_forever(); calling httpd.shutdown()
+    # from the signal handler itself would deadlock since shutdown() waits
+    # for serve_forever() to stop, but serve_forever() is what was interrupted.
     def shutdown_handler(signum: int, frame: Any) -> None:
         print("\nShutting down...", file=sys.stderr)
-        httpd.shutdown()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, shutdown_handler)

@@ -417,6 +417,19 @@ file_locks:
     grace_period: 1m
 
 # ============================================================================
+# Dashboard
+# ============================================================================
+# Configuration for the FABRIC real-time telemetry dashboard server.
+# Start with: needle dashboard start
+dashboard:
+  # port: Port the dashboard server listens on
+  port: 7842
+
+  # host: Network interface to bind to
+  # Use "0.0.0.0" to expose on all interfaces (e.g. for Tailscale access)
+  host: localhost
+
+# ============================================================================
 # FABRIC Telemetry
 # ============================================================================
 # Forwards stream-json events to FABRIC dashboard for live visualization.

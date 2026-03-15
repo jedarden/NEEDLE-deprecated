@@ -1,34 +1,86 @@
 # FABRIC Telemetry Integration
 
-NEEDLE supports real-time event forwarding to FABRIC dashboards for live visualization of worker activity.
+NEEDLE includes a built-in real-time dashboard that receives and visualizes worker events as they happen. The dashboard is a self-contained Python process — no Prometheus, no Grafana, no external dependencies.
 
-## Overview
-
-When enabled, NEEDLE parses stream-json output from agents and forwards structured events to a FABRIC endpoint via HTTP POST. This enables:
-
-- Live visualization of worker activity
-- Real-time monitoring of bead processing
-- Tool invocation tracking
-- Token usage and cost analysis
-- Performance metrics and debugging
-
-## Configuration
-
-### Option 1: Environment Variable (Recommended for Testing)
+## Quick Start
 
 ```bash
-export FABRIC_ENDPOINT=http://localhost:3000/api/events
+# Start the dashboard server
+needle dashboard start
+
+# Open http://localhost:7842/ in a browser
+# (or use --open to open automatically)
+needle dashboard start --open
+
+# Configure NEEDLE to forward events to it
+# In needle.yaml:
+#   fabric:
+#     enabled: true
+#     endpoint: http://localhost:7842/ingest
+```
+
+## Dashboard
+
+The dashboard is served at `http://localhost:7842/` (configurable) and shows:
+
+- **Active workers**: name, current bead, tokens this session
+- **Strand activity**: counts and last-run per strand (pluck/weave/pulse/etc.)
+- **Summary stats**: events today, beads/min, cost today, uptime
+- **Failure alerts**: highlighted rows for `bead.failed` events
+- **Recent events**: live tail with type-based coloring
+
+The dashboard connects to the server via SSE (`/stream`) and updates in real time.
+
+### CLI Commands
+
+```bash
+needle dashboard start              # Start in background (default)
+needle dashboard start --foreground # Start in foreground
+needle dashboard start --port 3000  # Custom port
+needle dashboard status             # Check if running
+needle dashboard stop               # Stop the server
+needle dashboard restart            # Restart
+needle dashboard logs               # View logs
+needle dashboard logs --follow      # Tail logs
+```
+
+### Configuration
+
+```yaml
+dashboard:
+  port: 7842        # Port to listen on
+  host: localhost   # Bind address (use 0.0.0.0 for Tailscale/remote access)
+```
+
+### Architecture
+
+```
+NEEDLE workers
+  → FABRIC (fabric.sh): POST events to http://localhost:7842/ingest
+      → Dashboard server: buffers in memory ring (last 10k events)
+          → SSE /stream ← browser clients
+              → Dashboard HTML/JS rendered at /
+```
+
+The server is at `src/dashboard/server.py` and is pure stdlib Python 3 — no pip dependencies.
+
+## Event Forwarding Configuration
+
+### Option 1: Environment Variable (Testing)
+
+```bash
+export FABRIC_ENDPOINT=http://localhost:7842/ingest
 needle run
 ```
 
-### Option 2: Configuration File (Recommended for Production)
+### Option 2: Configuration File (Production)
 
 Add to `~/.needle/config.yaml`:
 
 ```yaml
 fabric:
   enabled: true
-  endpoint: http://localhost:3000/api/events
+  endpoint: http://localhost:7842/ingest
   timeout: 2        # HTTP request timeout in seconds
   batching: false   # Enable event batching (future)
 ```
