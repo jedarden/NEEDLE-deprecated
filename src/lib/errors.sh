@@ -549,7 +549,14 @@ PYEOF
     # Try to get worker log excerpt if available
     # Use NEEDLE_SESSION for log file lookup (logs are named by session, not worker_id)
     local session_name="${NEEDLE_SESSION:-unknown}"
-    local worker_id="${NEEDLE_WORKER_ID:-unknown}"
+    # Use the same worker string construction as events for consistency
+    local worker_id
+    if declare -f _needle_telemetry_worker_string &>/dev/null; then
+        worker_id=$(_needle_telemetry_worker_string)
+    else
+        # Fallback to NEEDLE_WORKER_ID if events module not loaded (shouldn't happen in normal flow)
+        worker_id="${NEEDLE_WORKER_ID:-unknown}"
+    fi
     body+=$'\n'"## Worker Log (last 20 lines)
 
 Worker: \`${worker_id}\`

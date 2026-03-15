@@ -1324,6 +1324,112 @@ rm -rf "$TEST_WORKSPACE_WGBF"
 # Reset to disabled for remaining tests
 export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
 
+# ----------------------------------------------------------------------------
+# Test 35: Auto-bead Worker field uses same worker string as event (nd-7h82 regression)
+# ----------------------------------------------------------------------------
+# Bug: The auto-bead Worker field used NEEDLE_WORKER_ID (e.g., "golf") while
+# the event worker field used _needle_telemetry_worker_string (e.g.,
+# "claude-anthropic-sonnet-alpha"). This caused inconsistency between the
+# Worker field in bug bead descriptions and the worker field in JSONL events.
+# This test verifies that the Worker field uses _needle_telemetry_worker_string
+# for consistency with events.
+_test_start "Auto-bead Worker field uses _needle_telemetry_worker_string for consistency"
+
+# Set up a production-like environment with all worker components
+export NEEDLE_RUNNER="claude"
+export NEEDLE_PROVIDER="anthropic"
+export NEEDLE_MODEL="sonnet"
+export NEEDLE_IDENTIFIER="alpha"
+export NEEDLE_WORKER_ID="golf"  # This is the short ID, should NOT be used for Worker field
+# NOTE: session name must NOT match test-*, needle-test-*, or perf-* patterns,
+# as those trigger the test session guard and prevent auto-bead creation.
+export NEEDLE_SESSION="needle-worker-7h82"
+
+# The expected worker string from _needle_telemetry_worker_string
+EXPECTED_WORKER_STRING="claude-anthropic-sonnet-alpha"
+
+# Verify _needle_telemetry_worker_string returns expected value
+ACTUAL_WORKER_STRING=$(_needle_telemetry_worker_string)
+if [[ "$ACTUAL_WORKER_STRING" == "$EXPECTED_WORKER_STRING" ]]; then
+    _test_pass "_needle_telemetry_worker_string returns expected format"
+else
+    _test_fail "_needle_telemetry_worker_string returned '$ACTUAL_WORKER_STRING', expected '$EXPECTED_WORKER_STRING'"
+fi
+
+# Now verify that the auto-bead function uses this worker string
+# We can't test the actual Worker field without creating a real bead,
+# but we can verify that _needle_telemetry_worker_string is called
+# when _needle_error_auto_bead is invoked.
+
+# Set up a minimal environment for auto-bead
+TEST_WORKSPACE_7H82="/tmp/needle-test-ws-7h82-$$"
+mkdir -p "$TEST_WORKSPACE_7H82/.beads"
+
+# Create a mock br that captures the bead description
+DESC_FILE_7H82="/tmp/needle-desc-7h82-$$"
+MOCK_BR_7H82="/tmp/needle-mock-br-7h82-$$"
+cat > "$MOCK_BR_7H82" <<BREOF
+#!/usr/bin/env bash
+# Capture the bead description from the --description argument to verify the Worker field
+if [[ "\$1" == "create" ]]; then
+    desc_capture=""
+    in_desc=false
+    for arg in "\$@"; do
+        if [[ "\$arg" == "--description" ]]; then
+            in_desc=true
+            continue
+        fi
+        if [[ "\$arg" == --* ]] && [[ "\$in_desc" == "true" ]]; then
+            in_desc=false
+        fi
+        if [[ "\$in_desc" == "true" ]]; then
+            desc_capture+="\$arg"
+        fi
+    done
+    printf '%s' "\$desc_capture" > "$DESC_FILE_7H82" 2>/dev/null
+    echo "nd-test-7h82"
+    exit 0
+fi
+exit 1
+BREOF
+chmod +x "$MOCK_BR_7H82"
+ln -sf "$MOCK_BR_7H82" "/tmp/br"
+export PATH="/tmp:$PATH"
+
+# Enable auto-bead with test workspace
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="true"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_WORKSPACE="$TEST_WORKSPACE_7H82"
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_RATE_LIMIT="0"
+
+# Need to set NEEDLE_LOG_FILE for the log excerpt to work
+LOG_FILE_7H82="/tmp/needle-log-7h82-$$.jsonl"
+echo '{"ts":"2026-03-15T15:04:45.228Z","event":"error.agent_crash","level":"error","session":"needle-worker-7h82","worker":"claude-anthropic-sonnet-alpha","data":{"exit_code":137,"bead_id":"bead-2"}}' > "$LOG_FILE_7H82"
+export NEEDLE_LOG_FILE="$LOG_FILE_7H82"
+
+# Call the auto-bead function
+_needle_error_auto_bead "error.agent_crash" "quarantine" "bead_id=test-7h82" 2>/dev/null
+
+# Check if the Worker field in the bead description uses the expected worker string
+if [[ -f "$DESC_FILE_7H82" ]]; then
+    if grep -q "Worker: \`$EXPECTED_WORKER_STRING\`" "$DESC_FILE_7H82"; then
+        _test_pass "Auto-bead Worker field uses _needle_telemetry_worker_string (claude-anthropic-sonnet-alpha)"
+    elif grep -q "Worker: \`golf\`" "$DESC_FILE_7H82"; then
+        _test_fail "Auto-bead Worker field incorrectly uses NEEDLE_WORKER_ID (golf) instead of _needle_telemetry_worker_string"
+    else
+        _test_fail "Auto-bead Worker field not found or has unexpected value in bead description"
+    fi
+else
+    _test_fail "Bead description file not created by mock br"
+fi
+
+# Cleanup
+rm -f "/tmp/br" "$MOCK_BR_7H82" "$DESC_FILE_7H82" "$LOG_FILE_7H82"
+rm -rf "$TEST_WORKSPACE_7H82"
+unset NEEDLE_LOG_FILE
+
+# Reset to disabled for remaining tests
+export NEEDLE_CONFIG_OVERRIDE_DEBUG_AUTO_BEAD_ON_ERROR="false"
+
 # ============================================================================
 # Summary
 # ============================================================================
