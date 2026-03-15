@@ -145,11 +145,13 @@ _needle_run_tee() {
     local output_file="$1"
 
     if [[ -n "$_NEEDLE_FABRIC_PIPE" ]] && [[ -p "$_NEEDLE_FABRIC_PIPE" ]]; then
-        # Tee to both output file and FABRIC pipe (output visible in terminal)
-        tee "$output_file" "$_NEEDLE_FABRIC_PIPE"
+        # Tee to both output file and FABRIC pipe; suppress stdout so agent
+        # output does not leak into command-substitution return values
+        tee "$output_file" "$_NEEDLE_FABRIC_PIPE" >/dev/null
     else
-        # Tee to output file (output visible in terminal)
-        tee "$output_file"
+        # Write to output file only; suppress stdout so agent output does not
+        # leak into command-substitution return values
+        tee "$output_file" >/dev/null
     fi
 }
 

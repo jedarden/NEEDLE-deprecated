@@ -581,7 +581,6 @@ touch "$LD_PRELOAD_LIB"
 pushd "$TEST_DIR" >/dev/null
 
 # Test: LD_PRELOAD NOT set when config is false (default)
-# Agent output is embedded in the result string (dispatch tee's stdout)
 test_case "LD_PRELOAD not set for non-Claude agent when config is false"
 # Write config with ld_preload: false
 mkdir -p "$NEEDLE_HOME"
@@ -592,11 +591,13 @@ EOF
 # Clear config cache to ensure fresh load
 unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-opencode" "$TEST_DIR" "test" "nd-ldtest1" "Title" 0 2>/dev/null)
-# Agent output is embedded in result string; check it directly
-if echo "$result" | grep -q "LD_PRELOAD=UNSET"; then
+output_file=$(echo "$result" | cut -d'|' -f3)
+output=$(cat "$output_file" 2>/dev/null)
+rm -f "$output_file"
+if echo "$output" | grep -q "LD_PRELOAD=UNSET"; then
     test_pass
 else
-    test_fail "Expected LD_PRELOAD=UNSET in result, got: $(echo "$result" | grep LD_PRELOAD)"
+    test_fail "Expected LD_PRELOAD=UNSET in result, got: $(echo "$output" | grep LD_PRELOAD)"
 fi
 
 # Test: LD_PRELOAD set for non-Claude agent when config is true and lib exists
@@ -606,12 +607,15 @@ file_locks:
   ld_preload: true
   ld_preload_lib: $LD_PRELOAD_LIB
 EOF
+unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-opencode" "$TEST_DIR" "test" "nd-ldtest2" "Title" 0 2>/dev/null)
-# Agent output is embedded in result string
-if echo "$result" | grep -q "LD_PRELOAD=" && ! echo "$result" | grep -q "LD_PRELOAD=UNSET"; then
+output_file=$(echo "$result" | cut -d'|' -f3)
+output=$(cat "$output_file" 2>/dev/null)
+rm -f "$output_file"
+if echo "$output" | grep -q "LD_PRELOAD=" && ! echo "$output" | grep -q "LD_PRELOAD=UNSET"; then
     test_pass
 else
-    test_fail "Expected LD_PRELOAD to be set in result, got: $(echo "$result" | grep LD_PRELOAD)"
+    test_fail "Expected LD_PRELOAD to be set in result, got: $(echo "$output" | grep LD_PRELOAD)"
 fi
 
 # Test: NEEDLE_BEAD_ID set alongside LD_PRELOAD
@@ -621,11 +625,15 @@ file_locks:
   ld_preload: true
   ld_preload_lib: $LD_PRELOAD_LIB
 EOF
+unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-opencode" "$TEST_DIR" "test" "nd-ldtest3" "Title" 0 2>/dev/null)
-if echo "$result" | grep -q "NEEDLE_BEAD_ID=nd-ldtest3"; then
+output_file=$(echo "$result" | cut -d'|' -f3)
+output=$(cat "$output_file" 2>/dev/null)
+rm -f "$output_file"
+if echo "$output" | grep -q "NEEDLE_BEAD_ID=nd-ldtest3"; then
     test_pass
 else
-    test_fail "Expected NEEDLE_BEAD_ID=nd-ldtest3 in result, got: $(echo "$result" | grep NEEDLE_BEAD_ID)"
+    test_fail "Expected NEEDLE_BEAD_ID=nd-ldtest3 in result, got: $(echo "$output" | grep NEEDLE_BEAD_ID)"
 fi
 
 # Test: LD_PRELOAD NOT set for Claude agents even when config is true
@@ -659,11 +667,16 @@ file_locks:
   ld_preload: true
   ld_preload_lib: $LD_PRELOAD_LIB
 EOF
+# Clear config cache to ensure fresh load
+unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-claude" "$TEST_DIR" "test" "nd-ldtest4" "Title" 0 2>/dev/null)
-if echo "$result" | grep -q "LD_PRELOAD=UNSET"; then
+output_file=$(echo "$result" | cut -d'|' -f3)
+output=$(cat "$output_file" 2>/dev/null)
+rm -f "$output_file"
+if echo "$output" | grep -q "LD_PRELOAD=UNSET"; then
     test_pass
 else
-    test_fail "Expected LD_PRELOAD=UNSET for Claude agent, got: $(echo "$result" | grep LD_PRELOAD)"
+    test_fail "Expected LD_PRELOAD=UNSET for Claude agent, got: $(echo "$output" | grep LD_PRELOAD)"
 fi
 
 # Test: LD_PRELOAD uses default lib path when ld_preload_lib not specified
@@ -673,11 +686,16 @@ cat > "$NEEDLE_CONFIG_FILE" << 'EOF'
 file_locks:
   ld_preload: true
 EOF
+# Clear config cache to ensure fresh load
+unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-opencode" "$TEST_DIR" "test" "nd-ldtest5" "Title" 0 2>/dev/null)
-if echo "$result" | grep -q "LD_PRELOAD=" && ! echo "$result" | grep -q "LD_PRELOAD=UNSET"; then
+output_file=$(echo "$result" | cut -d'|' -f3)
+output=$(cat "$output_file" 2>/dev/null)
+rm -f "$output_file"
+if echo "$output" | grep -q "LD_PRELOAD=" && ! echo "$output" | grep -q "LD_PRELOAD=UNSET"; then
     test_pass
 else
-    test_fail "Expected LD_PRELOAD set via default path, got: $(echo "$result" | grep LD_PRELOAD)"
+    test_fail "Expected LD_PRELOAD set via default path, got: $(echo "$output" | grep LD_PRELOAD)"
 fi
 
 # Clean up config file
