@@ -8,7 +8,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEEDLE_ROOT="$(dirname "$SCRIPT_DIR")"
 SERVER_SCRIPT="$NEEDLE_ROOT/src/dashboard/server.py"
 
-TEST_PORT=17842
+# Use a per-process port to avoid collisions when multiple test runs execute
+# simultaneously (e.g., parallel mitosis agents).  $$ is the PID of this bash
+# process, so each run gets its own port in the range 20000-29999.
+TEST_PORT=$(( 20000 + ($$ % 10000) ))
 SERVER_PID=""
 
 pass=0
@@ -446,7 +449,7 @@ echo ""
 
 _stop_server
 
-SEED_PORT=17843
+SEED_PORT=$(( TEST_PORT + 1 ))
 SEED_PID=""
 
 _start_seed_server() {

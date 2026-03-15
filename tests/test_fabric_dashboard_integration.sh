@@ -13,7 +13,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 NEEDLE_ROOT="$(dirname "$SCRIPT_DIR")"
 SERVER_SCRIPT="$NEEDLE_ROOT/src/dashboard/server.py"
 
-TEST_PORT=17845
+# Use a per-process port to avoid collisions with parallel test runs.
+TEST_PORT=$(( 20002 + ($$ % 10000) ))
 SERVER_PID=""
 
 pass=0
