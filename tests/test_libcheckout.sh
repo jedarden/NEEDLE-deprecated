@@ -11,6 +11,7 @@
 #   4. Write operations work without locks
 #   5. Write operations blocked when locked by another bead
 #   6. Write operations allowed for own bead's lock
+#   7. openat() with dirfd blocks writes to locked relative paths
 
 set -euo pipefail
 
@@ -35,10 +36,12 @@ info() { echo -e "${YELLOW}INFO${NC}: $1"; }
 TESTS_PASSED=0
 TESTS_FAILED=0
 
+TEST_OPENAT_PROGRAM="/tmp/libcheckout_test_openat"
+
 cleanup() {
     rm -f "$TEST_FILE" 2>/dev/null || true
-    rm -f "$TEST_PROGRAM" 2>/dev/null || true
-    rm -f /tmp/libcheckout_test_open.c 2>/dev/null || true
+    rm -f "$TEST_PROGRAM" "$TEST_OPENAT_PROGRAM" 2>/dev/null || true
+    rm -f /tmp/libcheckout_test_open.c /tmp/libcheckout_test_openat.c 2>/dev/null || true
     rm -f "$LOCK_DIR"/*-c8619219 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -88,6 +91,49 @@ int main(int argc, char *argv[]) {
 }
 EOF
     gcc -o "$TEST_PROGRAM" /tmp/libcheckout_test_open.c
+}
+
+# Build test helper using openat() with dirfd
+build_openat_program() {
+    cat > /tmp/libcheckout_test_openat.c << 'EOF'
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <string.h>
+
+int main(int argc, char *argv[]) {
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <dir> <filename>\n", argv[0]);
+        return 1;
+    }
+
+    const char *dir = argv[1];
+    const char *filename = argv[2];
+
+    /* Open the directory to get a dirfd */
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (dirfd < 0) {
+        perror("open dir failed");
+        return 1;
+    }
+
+    /* Use openat with relative path (just the filename) */
+    int fd = openat(dirfd, filename, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    close(dirfd);
+
+    if (fd < 0) {
+        perror("openat failed");
+        return 1;
+    }
+
+    write(fd, "test\n", 5);
+    close(fd);
+    printf("success\n");
+    return 0;
+}
+EOF
+    gcc -o "$TEST_OPENAT_PROGRAM" /tmp/libcheckout_test_openat.c
 }
 
 # Test 1: Library loads successfully
@@ -195,6 +241,41 @@ test_write_blocked_with_lock() {
     rm -f "$lock_file" "$TEST_FILE"
 }
 
+# Test 7: openat() with dirfd properly enforces locks on relative paths
+test_openat_with_dirfd_blocked() {
+    info "Test 7: openat() with dirfd blocks write to locked relative path"
+
+    local test_dir
+    test_dir=$(mktemp -d /tmp/libcheckout_test_dir_XXXXXX)
+    local filename="target_file.txt"
+    local abs_path="$test_dir/$filename"
+    touch "$abs_path"
+
+    # Compute path UUID for the absolute path
+    local path_uuid
+    path_uuid=$(echo -n "$abs_path" | md5sum | cut -c1-8)
+
+    # Create a lock file for another bead
+    mkdir -p "$LOCK_DIR"
+    local lock_file="$LOCK_DIR/nd-other-$path_uuid"
+    echo '{"bead":"nd-other"}' > "$lock_file"
+
+    # Try to write via openat with dirfd - should fail because lock is held
+    local output exit_code=0
+    output=$(LD_PRELOAD="$LIB_PATH" "$TEST_OPENAT_PROGRAM" "$test_dir" "$filename" 2>&1) || exit_code=$?
+
+    if [[ $exit_code -ne 0 ]] && echo "$output" | grep -q "Permission denied"; then
+        pass "openat() with dirfd blocked when file locked by another bead"
+        TESTS_PASSED=$((TESTS_PASSED + 1))
+    else
+        fail "openat() with dirfd allowed write despite lock (exit: $exit_code, output: $output)"
+        TESTS_FAILED=$((TESTS_FAILED + 1))
+    fi
+
+    rm -f "$lock_file"
+    rm -rf "$test_dir"
+}
+
 # Test 6: Write allowed for own bead's lock
 test_write_allowed_own_lock() {
     info "Test 6: Write allowed for own bead's lock"
@@ -240,8 +321,9 @@ if [[ ! -f "$LIB_PATH" ]]; then
     "$ROOT_DIR/scripts/build-native.sh" --lib-only || { echo "Build failed!"; exit 1; }
 fi
 
-# Build test helper
+# Build test helpers
 build_test_program
+build_openat_program
 
 echo "Library: $LIB_PATH"
 echo "Lock dir: $LOCK_DIR"
@@ -254,6 +336,7 @@ test_read_operations
 test_write_no_lock
 test_write_blocked_with_lock
 test_write_allowed_own_lock
+test_openat_with_dirfd_blocked
 
 echo ""
 echo "=========================================="

@@ -460,8 +460,30 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
 
     /* Check write operations against lock */
     if (is_write_operation(flags)) {
-        if (is_file_locked(pathname)) {
-            DEBUG_LOG("Blocking write to locked file: %s", pathname);
+        const char *check_path = pathname;
+        char resolved_path[PATH_MAX];
+
+        /* If dirfd is not AT_FDCWD and path is relative, resolve via /proc/self/fd */
+        if (dirfd != AT_FDCWD && pathname[0] != '/') {
+            char fd_link[32];
+            char dir_buf[PATH_MAX];
+            snprintf(fd_link, sizeof(fd_link), "/proc/self/fd/%d", dirfd);
+            ssize_t len = readlink(fd_link, dir_buf, sizeof(dir_buf) - 1);
+            if (len > 0) {
+                dir_buf[len] = '\0';
+                size_t dir_len = (size_t)len;
+                size_t path_len = strlen(pathname);
+                if (dir_len + 1 + path_len < sizeof(resolved_path)) {
+                    memcpy(resolved_path, dir_buf, dir_len);
+                    resolved_path[dir_len] = '/';
+                    memcpy(resolved_path + dir_len + 1, pathname, path_len + 1);
+                    check_path = resolved_path;
+                }
+            }
+        }
+
+        if (is_file_locked(check_path)) {
+            DEBUG_LOG("Blocking write to locked file: %s", check_path);
             errno = EACCES;
             return -1;
         }

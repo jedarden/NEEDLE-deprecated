@@ -493,7 +493,7 @@ NEEDLE_HB_EOF
                 [[ -n "$cfg_lib" ]] && lib_path="$cfg_lib"
             fi
             if [[ -f "$lib_path" ]]; then
-                export LD_PRELOAD="$lib_path"
+                export LD_PRELOAD="${LD_PRELOAD:+$LD_PRELOAD:}$lib_path"
                 export NEEDLE_BEAD_ID="$bead_id"
                 _ld_preload_set=true
                 _needle_debug "LD_PRELOAD enabled for non-Claude agent ($agent_runner): $lib_path"
