@@ -725,15 +725,12 @@ _needle_handle_exit_code() {
             if _needle_check_forced_mitosis "$bead_id" "$workspace"; then
                 if _needle_handle_forced_mitosis "$bead_id" "$workspace" "$agent"; then
                     # Mitosis succeeded - bead is now released as blocked-by-children
-                    _needle_increment_backoff
-                    _needle_apply_backoff
-                    return 0
-                else
-                    # Mitosis failed - task is atomic and cannot be decomposed; quarantine it
-                    _needle_quarantine_bead "$bead_id" "repeated_failure_atomic"
-                    NEEDLE_FAILURE_COUNT=0
+                    # Reset per-session backoff since mitosis is a different recovery path
+                    _needle_reset_backoff
                     return 0
                 fi
+                # Mitosis failed - task is atomic and cannot be decomposed
+                # Fall through to normal release/retry flow
             fi
 
             _needle_release_bead "$bead_id" "agent_failed"
@@ -744,7 +741,7 @@ _needle_handle_exit_code() {
             _needle_telemetry_emit "bead.failed" "error" \
                 "bead_id=$bead_id" \
                 "exit_code=$exit_code" \
-                "failure_count=$NEEDLE_FAILURE_COUNT" \
+                "bead_failure_count=$bead_fail_count" \
                 "session=$NEEDLE_SESSION"
 
             # Apply backoff if needed
