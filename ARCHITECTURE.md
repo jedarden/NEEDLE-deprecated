@@ -551,6 +551,29 @@ fabric:
   endpoint: http://localhost:7842/ingest
 ```
 
+**Cluster deployment (persistent access):**
+
+The dashboard can also run as a container in ardenone-cluster for persistent
+access at `https://needle-dashboard.ardenone.com`. Manifests live at:
+
+```
+ardenone-cluster/cluster-configuration/ardenone-cluster/needle-dashboard/
+├── namespace.yml                    # needle namespace
+├── configmap.yml                    # server.py (stdlib only, no extra deps)
+├── deployment.yml                   # python:3.12-slim + mounted ConfigMap
+├── service.yml                      # ClusterIP port 80 → 7842
+├── ingressroute.yml                 # Traefik + Let's Encrypt TLS
+└── needle-dashboard-application.yml # ArgoCD Application (auto-sync)
+```
+
+Workers forward events to the cluster deployment with:
+
+```yaml
+fabric:
+  enabled: true
+  endpoint: https://needle-dashboard.ardenone.com/ingest
+```
+
 ### File Layout
 
 ```
