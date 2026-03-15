@@ -9,10 +9,11 @@ Usage:
     python3 server.py [--port PORT] [--buffer-size N] [--seed-file events.jsonl]
 
 Endpoints:
-    POST /ingest     - Receive events from fabric.sh
-    GET  /stream     - SSE endpoint for browser clients
-    GET  /           - Dashboard HTML
-    GET  /api/summary - Aggregate stats JSON
+    POST /ingest      - Receive events from fabric.sh
+    GET  /stream      - SSE endpoint for browser clients
+    GET  /            - Dashboard HTML
+    GET  /api/summary - Aggregate stats JSON (includes bead_costs for per-bead drill-down)
+    GET  /api/costs   - Per-bead cost breakdown (effort.recorded events, sorted by cost desc)
 """
 
 import argparse
@@ -95,6 +96,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
             self._send_json(get_summary())
         elif self.path == "/api/throughput":
             self._send_json({"history": get_throughput_history(), "window_minutes": THROUGHPUT_WINDOW_MINUTES})
+        elif self.path == "/api/costs":
+            self._send_json(get_bead_costs())
         elif self.path == "/api/events":
             # Return last N events
             limit = int(self.headers.get("X-Limit", "100"))
@@ -351,6 +354,9 @@ def get_summary() -> dict:
             except (ValueError, TypeError):
                 pass
 
+    # Per-bead cost drill-down: aggregate effort.recorded events by bead_id
+    bead_costs_data = get_bead_costs()
+
     return {
         "uptime": str(now - server_start_time),
         "events_total": len(events_buffer),
@@ -364,6 +370,66 @@ def get_summary() -> dict:
         "cost_today": round(total_cost, 4),
         "daily_budget": DAILY_BUDGET_USD,
         "failures": failures[-10:],  # Last 10 failures
+        "bead_costs": bead_costs_data,
+    }
+
+
+def get_bead_costs() -> dict:
+    """Aggregate per-bead cost data from effort.recorded events in the buffer.
+
+    Returns a dict with 'by_bead' list (sorted by cost descending) and totals,
+    enabling per-bead cost drill-down on the dashboard.
+    """
+    bead_costs: dict[str, dict] = {}  # bead_id -> {cost, input_tokens, output_tokens, attempts, agent, strand, type}
+
+    for event in events_buffer:
+        event_type = event.get("type", event.get("event", ""))
+        if event_type not in ("effort.recorded", "bead.effort_recorded"):
+            continue
+
+        data = event.get("data", {})
+        bead_id = data.get("bead_id")
+        if not bead_id:
+            continue
+
+        try:
+            cost = float(data.get("cost", 0) or 0)
+        except (ValueError, TypeError):
+            cost = 0.0
+
+        in_tok = int(data.get("input_tokens", 0) or 0)
+        out_tok = int(data.get("output_tokens", 0) or 0)
+        agent = data.get("agent", event.get("worker", ""))
+        strand = data.get("strand", "")
+        bead_type = data.get("type", "")
+
+        if bead_id not in bead_costs:
+            bead_costs[bead_id] = {
+                "bead_id": bead_id,
+                "cost": 0.0,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "attempts": 0,
+                "agents": [],
+                "strand": strand,
+                "type": bead_type,
+            }
+
+        rec = bead_costs[bead_id]
+        rec["cost"] += cost
+        rec["input_tokens"] += in_tok
+        rec["output_tokens"] += out_tok
+        rec["attempts"] += 1
+        if agent and agent not in rec["agents"]:
+            rec["agents"].append(agent)
+
+    sorted_beads = sorted(bead_costs.values(), key=lambda x: x["cost"], reverse=True)
+    total_cost = sum(b["cost"] for b in sorted_beads)
+
+    return {
+        "by_bead": sorted_beads,
+        "total_cost_usd": round(total_cost, 6),
+        "bead_count": len(sorted_beads),
     }
 
 

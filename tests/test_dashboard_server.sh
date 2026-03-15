@@ -284,6 +284,97 @@ else
 fi
 echo ""
 
+# Test 16: effort.recorded event populates /api/costs per-bead drill-down
+echo "Test 16: effort.recorded event populates /api/costs per-bead drill-down"
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"effort.recorded","ts":"2026-03-15T12:00:10.000Z","worker":"pluck-worker","event":"effort.recorded","data":{"bead_id":"nd-cost-drill","cost":"0.042","input_tokens":14000,"output_tokens":7000,"agent":"pluck-worker","strand":"pluck","type":"task"}}' \
+    &>/dev/null || true
+sleep 0.2
+costs_result=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/costs" 2>/dev/null || echo "")
+if echo "$costs_result" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'by_bead' in d, f'missing by_bead key: {list(d.keys())}'
+assert 'total_cost_usd' in d, 'missing total_cost_usd'
+assert 'bead_count' in d, 'missing bead_count'
+beads = {b['bead_id']: b for b in d['by_bead']}
+assert 'nd-cost-drill' in beads, f'nd-cost-drill not found in {list(beads.keys())}'
+b = beads['nd-cost-drill']
+assert b['input_tokens'] == 14000, f'expected 14000 input_tokens, got {b[\"input_tokens\"]}'
+assert b['output_tokens'] == 7000, f'expected 7000 output_tokens, got {b[\"output_tokens\"]}'
+assert b['strand'] == 'pluck', f'expected strand=pluck, got {b[\"strand\"]}'
+assert b['type'] == 'task', f'expected type=task, got {b[\"type\"]}'
+assert b['attempts'] == 1, f'expected 1 attempt, got {b[\"attempts\"]}'
+" 2>/dev/null; then
+    _pass "/api/costs returns per-bead cost breakdown with correct fields"
+else
+    _fail "/api/costs missing expected per-bead data (got: ${costs_result:0:400})"
+fi
+echo ""
+
+# Test 17: /api/summary includes bead_costs field
+echo "Test 17: /api/summary includes bead_costs field"
+summary6=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
+if echo "$summary6" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'bead_costs' in d, f'missing bead_costs in summary: {list(d.keys())}'
+bc = d['bead_costs']
+assert 'by_bead' in bc, 'bead_costs missing by_bead'
+assert 'total_cost_usd' in bc, 'bead_costs missing total_cost_usd'
+assert 'bead_count' in bc, 'bead_costs missing bead_count'
+" 2>/dev/null; then
+    _pass "Summary includes bead_costs with by_bead drill-down"
+else
+    _fail "Summary missing bead_costs field (got: ${summary6:0:300})"
+fi
+echo ""
+
+# Test 18: /api/costs aggregates multiple effort events for same bead
+echo "Test 18: /api/costs aggregates multiple effort events for same bead"
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"effort.recorded","ts":"2026-03-15T12:00:11.000Z","worker":"pluck-worker","event":"effort.recorded","data":{"bead_id":"nd-cost-drill","cost":"0.008","input_tokens":2000,"output_tokens":1000,"agent":"pluck-worker","strand":"pluck","type":"task"}}' \
+    &>/dev/null || true
+sleep 0.2
+costs2=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/costs" 2>/dev/null || echo "")
+if echo "$costs2" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+beads = {b['bead_id']: b for b in d['by_bead']}
+b = beads.get('nd-cost-drill', {})
+assert b.get('attempts', 0) == 2, f'expected 2 attempts, got {b.get(\"attempts\")}'
+assert b.get('input_tokens', 0) == 16000, f'expected 16000 input_tokens, got {b.get(\"input_tokens\")}'
+" 2>/dev/null; then
+    _pass "/api/costs aggregates multiple effort events for same bead"
+else
+    _fail "/api/costs failed to aggregate multiple effort events (got: ${costs2:0:300})"
+fi
+echo ""
+
+# Test 19: /api/costs by_bead is sorted by cost descending
+echo "Test 19: /api/costs by_bead sorted by cost descending"
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"effort.recorded","ts":"2026-03-15T12:00:12.000Z","worker":"weave-worker","event":"effort.recorded","data":{"bead_id":"nd-cheap-bead","cost":"0.001","input_tokens":100,"output_tokens":50,"agent":"weave-worker","strand":"weave","type":"feature"}}' \
+    &>/dev/null || true
+sleep 0.2
+costs3=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/costs" 2>/dev/null || echo "")
+if echo "$costs3" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+beads = d.get('by_bead', [])
+assert len(beads) >= 2, f'expected at least 2 beads, got {len(beads)}'
+costs_list = [b['cost'] for b in beads]
+assert costs_list == sorted(costs_list, reverse=True), f'by_bead not sorted desc: {costs_list}'
+" 2>/dev/null; then
+    _pass "/api/costs by_bead is sorted by cost descending"
+else
+    _fail "/api/costs by_bead not sorted correctly (got: ${costs3:0:300})"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $pass passed, $fail failed ==="
 if [[ $fail -gt 0 ]]; then
