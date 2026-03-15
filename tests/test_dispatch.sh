@@ -589,6 +589,8 @@ cat > "$NEEDLE_CONFIG_FILE" << 'EOF'
 file_locks:
   ld_preload: false
 EOF
+# Clear config cache to ensure fresh load
+unset NEEDLE_CONFIG_CACHE
 result=$(_needle_dispatch_agent "test-opencode" "$TEST_DIR" "test" "nd-ldtest1" "Title" 0 2>/dev/null)
 # Agent output is embedded in result string; check it directly
 if echo "$result" | grep -q "LD_PRELOAD=UNSET"; then
