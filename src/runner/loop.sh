@@ -1071,6 +1071,8 @@ _needle_process_bead() {
     bead_json=$(br show "$bead_id" --json 2>/dev/null)
     local bead_title
     bead_title=$(echo "$bead_json" | jq -r '.title // "Untitled"' 2>/dev/null)
+    local bead_type
+    bead_type=$(echo "$bead_json" | jq -r '.issue_type // ""' 2>/dev/null || echo "")
 
     # Emit prompt built event
     local prompt_length=${#prompt}
@@ -1155,7 +1157,7 @@ _needle_process_bead() {
 
     # Record effort for this bead
     if [[ "$input_tokens" -gt 0 ]] || [[ "$output_tokens" -gt 0 ]]; then
-        record_effort "$bead_id" "$cost" "$agent" "$input_tokens" "$output_tokens"
+        record_effort "$bead_id" "$cost" "$agent" "$input_tokens" "$output_tokens" "loop" "$bead_type"
         _needle_debug "Recorded effort: bead=$bead_id, cost=\$$cost, agent=$agent"
     fi
 

@@ -142,6 +142,8 @@ _needle_pluck_process_bead() {
     fi
 
     bead_title=$(echo "$bead_object" | jq -r '.title // "Untitled Task"')
+    local bead_type
+    bead_type=$(echo "$bead_object" | jq -r '.issue_type // ""' 2>/dev/null || echo "")
 
     # Emit bead claimed event
     _needle_event_bead_claimed "$bead_id" \
@@ -236,7 +238,7 @@ _needle_pluck_process_bead() {
     fi
 
     if [[ "$input_tokens" -gt 0 ]] || [[ "$output_tokens" -gt 0 ]]; then
-        record_effort "$bead_id" "$cost" "$agent" "$input_tokens" "$output_tokens"
+        record_effort "$bead_id" "$cost" "$agent" "$input_tokens" "$output_tokens" "pluck" "$bead_type"
         _needle_debug "Recorded effort: bead=$bead_id, cost=\$$cost, agent=$agent"
     fi
 

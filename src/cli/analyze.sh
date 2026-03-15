@@ -385,12 +385,14 @@ except Exception as e:
     print(f"Error reading spend file: {e}", file=sys.stderr)
     sys.exit(1)
 
-# Aggregate across date range — derive all agent costs from bead-level records
+# Aggregate across date range — derive all costs from bead-level records
 total_cost = 0.0
 total_input_tokens = 0
 total_output_tokens = 0
 agents = {}   # agent -> {cost, input_tokens, output_tokens, bead_count}
-beads = {}    # bead_id -> {cost, agent, input_tokens, output_tokens, date}
+strands = {}  # strand -> {cost, input_tokens, output_tokens, bead_count}
+types = {}    # bead_type -> {cost, input_tokens, output_tokens, bead_count}
+beads = {}    # bead_id -> {cost, agent, input_tokens, output_tokens, date, strand, type}
 days_seen = set()
 
 for date, entry in sorted(data.items()):
@@ -407,6 +409,8 @@ for date, entry in sorted(data.items()):
         bead_cost = bead_data.get('cost', 0) or 0
         bead_in = bead_data.get('input_tokens', 0) or 0
         bead_out = bead_data.get('output_tokens', 0) or 0
+        bead_strand = bead_data.get('strand', '')
+        bead_type_val = bead_data.get('type', '')
 
         days_seen.add(date)
         total_cost += bead_cost
@@ -420,6 +424,22 @@ for date, entry in sorted(data.items()):
         agents[bead_agent]['output_tokens'] += bead_out
         agents[bead_agent]['bead_count'] += 1
 
+        if bead_strand:
+            if bead_strand not in strands:
+                strands[bead_strand] = {'cost': 0.0, 'input_tokens': 0, 'output_tokens': 0, 'bead_count': 0}
+            strands[bead_strand]['cost'] += bead_cost
+            strands[bead_strand]['input_tokens'] += bead_in
+            strands[bead_strand]['output_tokens'] += bead_out
+            strands[bead_strand]['bead_count'] += 1
+
+        if bead_type_val:
+            if bead_type_val not in types:
+                types[bead_type_val] = {'cost': 0.0, 'input_tokens': 0, 'output_tokens': 0, 'bead_count': 0}
+            types[bead_type_val]['cost'] += bead_cost
+            types[bead_type_val]['input_tokens'] += bead_in
+            types[bead_type_val]['output_tokens'] += bead_out
+            types[bead_type_val]['bead_count'] += 1
+
         if bead_id in beads:
             beads[bead_id]['cost'] += bead_cost
             beads[bead_id]['input_tokens'] += bead_in
@@ -430,12 +450,16 @@ for date, entry in sorted(data.items()):
                 'agent': bead_agent,
                 'input_tokens': bead_in,
                 'output_tokens': bead_out,
-                'date': date
+                'date': date,
+                'strand': bead_strand,
+                'type': bead_type_val,
             }
 
 # Sort beads by cost descending
 sorted_beads = sorted(beads.items(), key=lambda x: x[1]['cost'], reverse=True)[:top]
 sorted_agents = sorted(agents.items(), key=lambda x: x[1]['cost'], reverse=True)
+sorted_strands = sorted(strands.items(), key=lambda x: x[1]['cost'], reverse=True)
+sorted_types = sorted(types.items(), key=lambda x: x[1]['cost'], reverse=True)
 
 if json_out:
     result = {
@@ -456,6 +480,26 @@ if json_out:
             }
             for a, d in sorted_agents
         ],
+        'by_strand': [
+            {
+                'strand': s,
+                'cost_usd': round(d['cost'], 6),
+                'input_tokens': d['input_tokens'],
+                'output_tokens': d['output_tokens'],
+                'bead_count': d['bead_count'],
+            }
+            for s, d in sorted_strands
+        ],
+        'by_type': [
+            {
+                'type': t,
+                'cost_usd': round(d['cost'], 6),
+                'input_tokens': d['input_tokens'],
+                'output_tokens': d['output_tokens'],
+                'bead_count': d['bead_count'],
+            }
+            for t, d in sorted_types
+        ],
         'by_bead': [
             {
                 'bead_id': bid,
@@ -464,6 +508,8 @@ if json_out:
                 'input_tokens': d['input_tokens'],
                 'output_tokens': d['output_tokens'],
                 'date': d['date'],
+                'strand': d['strand'],
+                'type': d['type'],
             }
             for bid, d in sorted_beads
         ],
@@ -480,6 +526,18 @@ else:
         print("By agent:")
         for agent_name, d in sorted_agents:
             print(f"  {agent_name:<45}  ${d['cost']:.6f}  ({d['bead_count']} beads, {d['input_tokens']:,}in/{d['output_tokens']:,}out)")
+        print()
+
+    if sorted_strands:
+        print("By strand:")
+        for strand_name, d in sorted_strands:
+            print(f"  {strand_name:<20}  ${d['cost']:.6f}  ({d['bead_count']} beads, {d['input_tokens']:,}in/{d['output_tokens']:,}out)")
+        print()
+
+    if sorted_types:
+        print("By type:")
+        for type_name, d in sorted_types:
+            print(f"  {type_name:<20}  ${d['cost']:.6f}  ({d['bead_count']} beads, {d['input_tokens']:,}in/{d['output_tokens']:,}out)")
         print()
 
     if sorted_beads:
