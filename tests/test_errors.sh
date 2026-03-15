@@ -1166,6 +1166,9 @@ fi
 exit 1
 BRSCRIPT
 chmod +x "$MOCK_BR7"
+
+# Temporarily add mock to PATH
+export PATH="/tmp:$PATH"
 ln -sf "$MOCK_BR7" "/tmp/br"
 
 # Clear state
