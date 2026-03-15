@@ -133,13 +133,9 @@ runner:
   polling_interval: 2s
   idle_timeout: 300s
 strands:
-  pluck: true
-  explore: auto
-  mend: false
-  weave: auto
-  unravel: false
-  pulse: auto
-  knot: true
+  - src/strands/pluck.sh
+  - src/strands/explore.sh
+  - src/strands/mend.sh
 mend:
   heartbeat_max_age: 3600
   max_log_files: 100
@@ -366,15 +362,11 @@ echo "========================================"
 
 _write_config <<'EOF'
 strands:
-  pluck: true
-  explore: auto
-  mend: false
-  weave: auto
-  unravel: false
-  pulse: auto
-  knot: true
+  - src/strands/pluck.sh
+  - src/strands/explore.sh
+  - src/strands/mend.sh
 EOF
-_assert_ok "all valid strand names and values pass" \
+_assert_ok "strands as list of script paths passes" \
     validate_strand_config "$NEEDLE_CONFIG_FILE"
 
 _write_config <<'EOF'
@@ -415,30 +407,30 @@ EOF
 _assert_ok "config without strands section passes strand validation" \
     validate_strand_config "$NEEDLE_CONFIG_FILE"
 
-# Error message quality: unknown strand error should name the invalid key and list valid strands
-_t "error for unknown strand mentions strand name and valid strands"
+# Error message quality: map format rejected with helpful message
+_t "strand map format rejected with 'expected a list' message"
 _write_config <<'EOF'
 strands:
   bogus: true
 EOF
 err_msg=$(validate_strand_config "$NEEDLE_CONFIG_FILE" 2>&1)
-if echo "$err_msg" | grep -q "bogus" && echo "$err_msg" | grep -q "pluck"; then
+if echo "$err_msg" | grep -q "expected a list"; then
     _pass
 else
-    _fail "Error should name 'bogus' and list implemented strands. Got: $err_msg"
+    _fail "Error should say 'expected a list'. Got: $err_msg"
 fi
 
-# Error message quality: invalid value error should name the field and valid values
-_t "error for invalid strand flag mentions field and valid values"
+# Error message quality: any map rejected even with known strand names
+_t "strand map with valid name rejected with 'expected a list' message"
 _write_config <<'EOF'
 strands:
-  pluck: enabled
+  pluck: true
 EOF
 err_msg=$(validate_strand_config "$NEEDLE_CONFIG_FILE" 2>&1)
-if echo "$err_msg" | grep -q "pluck" && echo "$err_msg" | grep -q "auto"; then
+if echo "$err_msg" | grep -q "expected a list"; then
     _pass
 else
-    _fail "Error should name 'pluck' and list valid values. Got: $err_msg"
+    _fail "Error should say 'expected a list'. Got: $err_msg"
 fi
 
 # ============================================================================
@@ -513,8 +505,8 @@ _write_config <<'EOF'
 billing:
   model: pay_per_token
 strands:
-  pluck: true
-  explore: auto
+  - src/strands/pluck.sh
+  - src/strands/explore.sh
 EOF
 _assert_ok "validate_config_on_load returns 0 for valid config" \
     validate_config_on_load "$NEEDLE_CONFIG_FILE"
@@ -554,7 +546,7 @@ strands:
   pluck: true
   nonexistent_strand: auto
 EOF
-_assert_fail "validate_config fails for unknown strand" \
+_assert_fail "validate_config fails for strands in old map format" \
     validate_config "$NEEDLE_CONFIG_FILE"
 
 _write_config <<'EOF'
@@ -613,11 +605,11 @@ _assert_ok "billing.model=unlimited is valid" \
 
 _write_config <<'EOF'
 strands:
-  pluck: true
-  explore: false
-  mend: auto
+  - src/strands/pluck.sh
+  - src/strands/explore.sh
+  - src/strands/mend.sh
 EOF
-_assert_ok "strand values true/false/auto are all valid" \
+_assert_ok "strands list with multiple entries is valid" \
     validate_strand_config "$NEEDLE_CONFIG_FILE"
 
 _write_config <<'EOF'
