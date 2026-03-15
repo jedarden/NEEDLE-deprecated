@@ -12,6 +12,7 @@ This document describes the internal design of NEEDLE's core subsystems: how the
 6. [Worker Coordination Protocol](#6-worker-coordination-protocol)
 7. [Telemetry Pipeline](#7-telemetry-pipeline)
 8. [Hook Error Handling Specification](#8-hook-error-handling-specification)
+9. [Bead Verification System](#9-bead-verification-system)
 
 ---
 
@@ -710,3 +711,92 @@ The hook runner emits structured events for observability:
 | `hook.failed` | After hook exits `2` or exceeds timeout with `fail_action=abort` |
 
 All events carry `hook_name`, `bead_id`, `exit_code`, and `duration_ms` fields.
+
+---
+
+## 9. Bead Verification System
+
+**Source:** `src/bead/verify.sh`, `src/strands/pluck.sh`
+
+### Overview
+
+Beads can carry an optional `verification_cmd` field — a shell command that NEEDLE runs after agent execution to independently verify the definition of done. This allows the done condition to live in the bead itself rather than in NEEDLE, keeping NEEDLE stateless.
+
+- Absence of `verification_cmd` = current behavior (no change, no regression).
+- Presence of `verification_cmd` = NEEDLE runs the command after agent exits `0`.
+
+### Storing verification_cmd
+
+`verification_cmd` is stored in one of two locations:
+
+1. **`metadata.verification_cmd`** (preferred) — set by the Weave strand when generating beads from documentation gaps.
+2. **Label `verification_cmd:<command>`** — used by the mitosis module when propagating the parent's `verification_cmd` to child beads.
+
+`claim.sh` extracts the command during bead claim and caches it in `NEEDLE_CLAIMED_BEAD_VERIFICATION_CMD` so that `verify.sh` can use it without an additional `br show` call.
+
+### Execution Flow
+
+```
+agent exits 0
+  → _needle_verify_bead (src/bead/verify.sh)
+      → no verification_cmd → skip (exit 2) → close bead [current behavior]
+      → has verification_cmd → run up to 3x with NEEDLE_VERIFY_RETRY_DELAY between attempts
+          → passes → close bead
+          → fails consistently → self-correction re-dispatch
+              → re-dispatch to same agent with original prompt + failure context appended
+                  → agent exits 0 → re-verify
+                      → passes → close bead
+                      → fails → release bead to queue (retry/mitosis path)
+                  → agent exits non-0 → release bead to queue
+
+agent exits non-0
+  → mark bead failed (unchanged behavior)
+```
+
+### Retry and Flakiness
+
+- Retry delay: `NEEDLE_VERIFY_RETRY_DELAY` (default: `2` seconds).
+- Max retries: `NEEDLE_VERIFY_MAX_RETRIES` (default: `3`).
+- If the command passes after retries (not on first attempt), the bead is labeled `verification-flaky` for human review.
+
+### Self-Correction Re-Dispatch
+
+When the `verification_cmd` fails consistently:
+
+1. `_needle_format_verification_failure_context` formats the failure (command, exit code, output) into a Markdown block.
+2. The block is appended to the original agent prompt and the agent is re-dispatched once.
+3. After the correction agent exits `0`, NEEDLE re-runs `_needle_verify_bead`.
+4. If re-verification passes, the bead closes normally.
+5. If it fails again, `_needle_release_bead` releases the bead with reason `verification_failed_after_correction`.
+
+### verification_cmd in Mitosis
+
+When a bead with `verification_cmd` is split by the mitosis module:
+
+- If the LLM-generated child description includes an `affected_files` field, `_needle_perform_mitosis` attempts to adapt a pytest-style command to target that file.
+- If no adaptation is possible, the parent's command is inherited as-is.
+- The inherited command is stored in the child bead as a `verification_cmd:<cmd>` label, which `claim.sh` picks up.
+
+### verification_cmd in Weave
+
+The Weave strand's bead-generation prompt instructs the LLM to include a `verification_cmd` in generated beads when the done condition can be expressed as a shell command. Examples are provided in the prompt:
+
+```
+- pytest tests/test_foo.py -q 2>&1 | grep -q passed
+- grep -q 'def new_function' src/module.py
+- [[ $(wc -l < docs/api.md) -gt 50 ]]
+```
+
+Weave stores the command in `metadata.verification_cmd` when creating beads via `br create --metadata`.
+
+### Telemetry Events
+
+| Event | When emitted |
+|-------|-------------|
+| `bead.verification_passed` | Verification command passed |
+| `bead.verification_retry` | Verification attempt failed, will retry |
+| `bead.verification_failed` | All retries exhausted — verification failed |
+| `bead.verified` | Canonical event: bead verified and ready to close |
+| `bead.verify_self_correct` | Self-correction re-dispatch initiated |
+| `bead.verify_self_correct_passed` | Self-correction succeeded |
+| `bead.verify_self_correct_failed` | Self-correction also failed — releasing bead |
