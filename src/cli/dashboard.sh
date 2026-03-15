@@ -17,6 +17,24 @@ _needle_dashboard_get_port() {
     fi
 }
 
+# Get configured dashboard host (config takes precedence over default)
+_needle_dashboard_get_host() {
+    if declare -f get_config &>/dev/null; then
+        get_config "dashboard.host" ""
+    else
+        echo ""
+    fi
+}
+
+# Get configured daily budget (for cost tracker display)
+_needle_dashboard_get_daily_budget() {
+    if declare -f get_config &>/dev/null; then
+        get_config "billing.daily_budget_usd" "0"
+    else
+        echo "0"
+    fi
+}
+
 _needle_dashboard_help() {
     _needle_print "Start the FABRIC real-time dashboard server
 
@@ -35,8 +53,10 @@ COMMANDS:
 
 OPTIONS:
     -p, --port <PORT>          Port to listen on (default: $NEEDLE_DASHBOARD_DEFAULT_PORT)
+        --host <HOST>          Interface to bind to (default: from config or all interfaces)
     -b, --buffer-size <N>      Event buffer size (default: $NEEDLE_DASHBOARD_DEFAULT_BUFFER_SIZE)
     -s, --seed-file <FILE>     JSONL file to seed event buffer from
+        --daily-budget <USD>   Daily budget in USD (shown in cost tracker; from billing config if unset)
     -f, --foreground           Run in foreground (don't daemonize)
     -o, --open                 Open dashboard in browser after starting
     -h, --help                 Print help information
@@ -104,6 +124,10 @@ _needle_dashboard() {
 _needle_dashboard_start() {
     local port
     port="$(_needle_dashboard_get_port)"
+    local host
+    host="$(_needle_dashboard_get_host)"
+    local daily_budget
+    daily_budget="$(_needle_dashboard_get_daily_budget)"
     local buffer_size="$NEEDLE_DASHBOARD_DEFAULT_BUFFER_SIZE"
     local seed_file=""
     local foreground=false
@@ -116,12 +140,20 @@ _needle_dashboard_start() {
                 port="$2"
                 shift 2
                 ;;
+            --host)
+                host="$2"
+                shift 2
+                ;;
             -b|--buffer-size)
                 buffer_size="$2"
                 shift 2
                 ;;
             -s|--seed-file)
                 seed_file="$2"
+                shift 2
+                ;;
+            --daily-budget)
+                daily_budget="$2"
                 shift 2
                 ;;
             -f|--foreground)
@@ -162,8 +194,14 @@ _needle_dashboard_start() {
 
     # Build command args array (avoids eval and nohup-eval issues)
     local cmd_args=(python3 "$server_script" --port "$port" --buffer-size "$buffer_size")
+    if [[ -n "$host" ]]; then
+        cmd_args+=(--host "$host")
+    fi
     if [[ -n "$seed_file" ]]; then
         cmd_args+=(--seed-file "$seed_file")
+    fi
+    if [[ -n "$daily_budget" && "$daily_budget" != "0" ]]; then
+        cmd_args+=(--daily-budget "$daily_budget")
     fi
 
     if [[ "$foreground" == "true" ]]; then

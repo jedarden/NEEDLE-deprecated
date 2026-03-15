@@ -167,6 +167,58 @@ else
 fi
 echo ""
 
+# Test 10: Summary includes per-worker cost and daily_budget fields
+echo "Test 10: Summary includes per-worker cost breakdown and daily_budget"
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"result","ts":"2026-03-15T12:00:02.000Z","worker":"cost-worker","data":{"usage":{"input_tokens":200,"output_tokens":80},"cost":0.0123}}' \
+    &>/dev/null || true
+summary3=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
+if echo "$summary3" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+assert 'daily_budget' in d, 'missing daily_budget'
+assert 'workers_all' in d, 'missing workers_all'
+workers = d.get('workers_all', {})
+cw = workers.get('cost-worker', {})
+assert cw.get('cost', 0) > 0, f'expected cost > 0 for cost-worker, got {cw}'
+" 2>/dev/null; then
+    _pass "Summary includes daily_budget and per-worker cost"
+else
+    _fail "Summary missing daily_budget or per-worker cost (got: ${summary3:0:200})"
+fi
+echo ""
+
+# Test 11: budget.warning event appears in failures
+echo "Test 11: budget.warning event appears in failures list"
+curl -sf --max-time 5 -X POST "http://localhost:$TEST_PORT/ingest" \
+    -H "Content-Type: application/json" \
+    -d '{"type":"budget.warning","ts":"2026-03-15T12:00:03.000Z","worker":"cost-worker","data":{"message":"Daily budget 80% consumed","spent":40.0,"budget":50.0}}' \
+    &>/dev/null || true
+summary4=$(curl -sf --max-time 5 "http://localhost:$TEST_PORT/api/summary" 2>/dev/null || echo "")
+if echo "$summary4" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+failures = d.get('failures', [])
+budget_warns = [f for f in failures if f.get('type') == 'budget_warning']
+assert len(budget_warns) > 0, f'no budget_warning in failures: {failures}'
+" 2>/dev/null; then
+    _pass "budget.warning event appears in failures list"
+else
+    _fail "budget.warning not in failures (got: ${summary4:0:300})"
+fi
+echo ""
+
+# Test 12: --host flag accepted (server binds to specified interface)
+echo "Test 12: Server accepts --host flag"
+python3 src/dashboard/server.py --help 2>&1 | grep -q "\-\-host"
+if [[ $? -eq 0 ]]; then
+    _pass "--host flag is documented in server --help"
+else
+    _fail "--host flag not found in server --help"
+fi
+echo ""
+
 # Summary
 echo "=== Results: $pass passed, $fail failed ==="
 if [[ $fail -gt 0 ]]; then

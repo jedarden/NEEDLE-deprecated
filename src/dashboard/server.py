@@ -38,6 +38,7 @@ events_buffer: deque[dict[str, Any]] = deque(maxlen=DEFAULT_BUFFER_SIZE)
 clients: list[Any] = []  # List of client queues for SSE
 clients_lock = threading.Lock()
 server_start_time = datetime.utcnow()
+DAILY_BUDGET_USD: float = 0.0  # Set via --daily-budget CLI arg
 
 
 class DashboardHandler(BaseHTTPRequestHandler):
@@ -210,7 +211,7 @@ def get_summary() -> dict:
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
     # Track workers
-    workers: dict[str, dict] = {}  # worker_name -> {bead_id, started, tokens_in, tokens_out}
+    workers: dict[str, dict] = {}  # worker_name -> {bead_id, started, tokens_in, tokens_out, cost}
     strand_counts: dict[str, int] = {}
     strand_last_run: dict[str, str] = {}
     bead_events: list[dict] = []
@@ -235,26 +236,26 @@ def get_summary() -> dict:
             worker = event.get("worker", data.get("worker", "unknown"))
 
             # Worker tracking
-            if "worker" in event_type or "bead" in event_type:
-                if worker not in workers:
-                    workers[worker] = {"bead_id": None, "started": None, "tokens_in": 0, "tokens_out": 0}
+            if worker not in workers:
+                workers[worker] = {"bead_id": None, "started": None, "tokens_in": 0, "tokens_out": 0, "cost": 0.0}
 
-                if event_type == "bead.claimed" or event_type == "bead.agent_started":
-                    workers[worker]["bead_id"] = data.get("bead_id", data.get("id"))
-                    workers[worker]["started"] = event.get("ts")
-                elif event_type in ("bead.completed", "bead.failed", "bead.released"):
-                    workers[worker]["bead_id"] = None
-                    workers[worker]["started"] = None
+            if event_type in ("bead.claimed", "bead.agent_started"):
+                workers[worker]["bead_id"] = data.get("bead_id", data.get("id"))
+                workers[worker]["started"] = event.get("ts")
+            elif event_type in ("bead.completed", "bead.failed", "bead.released"):
+                workers[worker]["bead_id"] = None
+                workers[worker]["started"] = None
 
-                # Token tracking from result events
-                if event_type == "result":
-                    usage = data.get("usage", {})
-                    workers[worker]["tokens_in"] += usage.get("input_tokens", 0)
-                    workers[worker]["tokens_out"] += usage.get("output_tokens", 0)
-                    cost = data.get("cost", 0)
-                    if isinstance(cost, str):
-                        cost = float(cost.replace("$", ""))
-                    total_cost += cost
+            # Token + cost tracking from result events
+            if event_type == "result":
+                usage = data.get("usage", {})
+                workers[worker]["tokens_in"] += usage.get("input_tokens", 0)
+                workers[worker]["tokens_out"] += usage.get("output_tokens", 0)
+                cost = data.get("cost", 0)
+                if isinstance(cost, str):
+                    cost = float(cost.replace("$", ""))
+                workers[worker]["cost"] = workers[worker].get("cost", 0.0) + cost
+                total_cost += cost
 
             # Strand tracking
             if "strand" in event_type:
@@ -266,13 +267,22 @@ def get_summary() -> dict:
             if event_type.startswith("bead."):
                 bead_events.append({"type": event_type, "ts": event.get("ts")})
 
-            # Failure tracking
+            # Failure tracking: bead failures and budget warnings
             if event_type == "bead.failed" or "fail" in event_type.lower():
                 failures.append({
+                    "type": "bead_failure",
                     "bead_id": data.get("bead_id", data.get("id")),
                     "worker": worker,
                     "ts": event.get("ts"),
                     "reason": data.get("reason", data.get("error", "unknown"))
+                })
+            elif event_type == "budget.warning":
+                failures.append({
+                    "type": "budget_warning",
+                    "bead_id": None,
+                    "worker": worker,
+                    "ts": event.get("ts"),
+                    "reason": data.get("message", f"Budget warning: spent ${data.get('spent', '?')} of ${data.get('budget', '?')} limit")
                 })
 
         except Exception:
@@ -286,8 +296,15 @@ def get_summary() -> dict:
                            datetime.fromisoformat(e["ts"].replace("Z", "+00:00")).replace(tzinfo=None) >= one_hour_ago])
     throughput = completed_recent / 60.0 if completed_recent > 0 else 0
 
-    # Active workers (those with current bead)
+    # Active workers (those with current bead), with elapsed time
     active_workers = {k: v for k, v in workers.items() if v.get("bead_id")}
+    for w in active_workers.values():
+        if w.get("started"):
+            try:
+                started_ts = datetime.fromisoformat(w["started"].replace("Z", "+00:00")).replace(tzinfo=None)
+                w["elapsed_seconds"] = max(0, int((now - started_ts).total_seconds()))
+            except (ValueError, TypeError):
+                pass
 
     return {
         "uptime": str(now - server_start_time),
@@ -295,10 +312,12 @@ def get_summary() -> dict:
         "events_today": events_today,
         "workers_active": len(active_workers),
         "workers": active_workers,
+        "workers_all": workers,
         "strand_counts": strand_counts,
         "strand_last_run": strand_last_run,
         "beads_per_minute": round(throughput, 2),
         "cost_today": round(total_cost, 4),
+        "daily_budget": DAILY_BUDGET_USD,
         "failures": failures[-10:],  # Last 10 failures
     }
 
@@ -330,7 +349,7 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def run_server(port: int, buffer_size: int, seed_file: str | None = None) -> None:
+def run_server(port: int, buffer_size: int, host: str = "", seed_file: str | None = None) -> None:
     """Run the dashboard server."""
     global events_buffer
     events_buffer = deque(maxlen=buffer_size)
@@ -340,10 +359,11 @@ def run_server(port: int, buffer_size: int, seed_file: str | None = None) -> Non
         count = seed_from_file(seed_file)
         print(f"Seeded {count} events from {seed_file}", file=sys.stderr)
 
-    server_address = ("", port)
+    server_address = (host, port)
     httpd = ThreadedHTTPServer(server_address, DashboardHandler)
 
-    print(f"FABRIC Dashboard server starting on port {port}", file=sys.stderr)
+    display_host = host if host else "0.0.0.0"
+    print(f"FABRIC Dashboard server starting on {display_host}:{port}", file=sys.stderr)
     print(f"Dashboard: http://localhost:{port}/", file=sys.stderr)
     print(f"SSE stream: http://localhost:{port}/stream", file=sys.stderr)
     print(f"API summary: http://localhost:{port}/api/summary", file=sys.stderr)
@@ -451,6 +471,10 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             border: 1px solid #f4212e;
             border-radius: 4px;
         }
+        .failure.budget-warn {
+            background: #1e1a0e;
+            border-color: #ffad1f;
+        }
         .failure .bead-id { color: #f4212e; font-weight: 500; }
         .failure .reason { color: #71767b; font-size: 0.875rem; margin-top: 4px; }
         .empty { color: #71767b; text-align: center; padding: 20px; }
@@ -476,6 +500,7 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             <div class="stat"><span class="stat-label">Events Today</span><span class="stat-value" id="events-today">0</span></div>
             <div class="stat"><span class="stat-label">Beads/min</span><span class="stat-value highlight" id="throughput">0</span></div>
             <div class="stat"><span class="stat-label">Cost Today</span><span class="stat-value" id="cost-today">$0.00</span></div>
+            <div class="stat" id="budget-row" style="display:none"><span class="stat-label">Daily Budget</span><span class="stat-value" id="daily-budget">-</span></div>
             <div class="stat"><span class="stat-label">Uptime</span><span class="stat-value" id="uptime">-</span></div>
         </div>
 
@@ -499,6 +524,15 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
         let eventSource = null;
         let events = [];
         const MAX_EVENTS = 50;
+
+        function fmtElapsed(isoTs) {
+            if (!isoTs) return '';
+            const start = new Date(isoTs);
+            const secs = Math.floor((Date.now() - start) / 1000);
+            if (secs < 60) return `${secs}s`;
+            if (secs < 3600) return `${Math.floor(secs/60)}m${secs%60}s`;
+            return `${Math.floor(secs/3600)}h${Math.floor((secs%3600)/60)}m`;
+        }
 
         function connect() {
             eventSource = new EventSource('/stream');
@@ -588,21 +622,32 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             document.getElementById('cost-today').textContent = '$' + (s.cost_today || 0).toFixed(2);
             document.getElementById('uptime').textContent = s.uptime || '-';
 
+            // Daily budget row
+            if (s.daily_budget > 0) {
+                document.getElementById('budget-row').style.display = '';
+                const pct = s.daily_budget > 0 ? Math.min(100, (s.cost_today / s.daily_budget * 100)).toFixed(1) : 0;
+                const cls = pct >= 90 ? 'warning' : pct >= 70 ? 'highlight' : '';
+                document.getElementById('daily-budget').innerHTML = `<span class="${cls}">$${(s.cost_today||0).toFixed(2)} / $${s.daily_budget.toFixed(2)} (${pct}%)</span>`;
+            }
+
             // Workers
             const workersDiv = document.getElementById('workers-list');
             const workers = s.workers || {};
             if (Object.keys(workers).length === 0) {
                 workersDiv.innerHTML = '<div class="empty">No active workers</div>';
             } else {
-                workersDiv.innerHTML = Object.entries(workers).map(([name, w]) => `
+                workersDiv.innerHTML = Object.entries(workers).map(([name, w]) => {
+                    const elapsed = w.started ? fmtElapsed(w.started) : '';
+                    const costStr = w.cost > 0 ? ` · $${w.cost.toFixed(4)}` : '';
+                    return `
                     <div class="worker">
                         <div>
-                            <div class="worker-name">${name}</div>
+                            <div class="worker-name">${name}${elapsed ? ` <span class="ts">${elapsed}</span>` : ''}</div>
                             <div class="worker-bead">${w.bead_id || 'idle'}</div>
                         </div>
-                        <div class="tokens">${w.tokens_in || 0} in / ${w.tokens_out || 0} out</div>
-                    </div>
-                `).join('');
+                        <div class="tokens">${w.tokens_in || 0} in / ${w.tokens_out || 0} out${costStr}</div>
+                    </div>`;
+                }).join('');
             }
 
             // Strands
@@ -622,12 +667,18 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
             if (failures.length === 0) {
                 failDiv.innerHTML = '<div class="empty">No failures</div>';
             } else {
-                failDiv.innerHTML = failures.map(f => `
-                    <div class="failure">
+                failDiv.innerHTML = failures.map(f => {
+                    if (f.type === 'budget_warning') {
+                        return `<div class="failure budget-warn">
+                            <div class="bead-id" style="color:#ffad1f">⚠ Budget Warning</div>
+                            <div class="reason">${f.reason || 'Budget limit approached'}</div>
+                        </div>`;
+                    }
+                    return `<div class="failure">
                         <div class="bead-id">${f.bead_id || 'unknown'}</div>
                         <div class="reason">${f.reason || 'unknown error'}</div>
-                    </div>
-                `).join('');
+                    </div>`;
+                }).join('');
             }
         }
 
@@ -643,11 +694,17 @@ DASHBOARD_HTML = '''<!DOCTYPE html>
 def main() -> None:
     parser = argparse.ArgumentParser(description="FABRIC Dashboard Server")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"Port to listen on (default: {DEFAULT_PORT})")
+    parser.add_argument("--host", type=str, default="", help="Host/interface to bind to (default: all interfaces)")
     parser.add_argument("--buffer-size", type=int, default=DEFAULT_BUFFER_SIZE, help=f"Event buffer size (default: {DEFAULT_BUFFER_SIZE})")
     parser.add_argument("--seed-file", type=str, help="JSONL file to seed event buffer from")
+    parser.add_argument("--daily-budget", type=float, default=0.0, help="Daily budget in USD (shown in dashboard cost tracker)")
     args = parser.parse_args()
 
-    run_server(port=args.port, buffer_size=args.buffer_size, seed_file=args.seed_file)
+    # Export daily budget as global so get_summary() can reference it
+    global DAILY_BUDGET_USD
+    DAILY_BUDGET_USD = args.daily_budget
+
+    run_server(port=args.port, host=args.host, buffer_size=args.buffer_size, seed_file=args.seed_file)
 
 
 if __name__ == "__main__":
