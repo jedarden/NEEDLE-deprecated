@@ -75,6 +75,9 @@ source "$NEEDLE_SRC/lib/config.sh"
 # Source telemetry/events module for event emission
 source "$NEEDLE_SRC/telemetry/events.sh"
 
+# Source error handling module for standardized error escalation and auto-bead creation
+source "$NEEDLE_SRC/lib/errors.sh"
+
 # Source heartbeat module for worker liveness tracking
 source "$NEEDLE_SRC/watchdog/heartbeat.sh"
 
@@ -573,11 +576,12 @@ _needle_handle_exit_code() {
             # This is unrecoverable; quarantine the bead per errors.sh escalation policy
             _needle_error "Exit code 137: Agent crash (SIGKILL/OOM) - quarantining bead"
 
-            # Emit error.agent_crash event (triggers auto-bug bead if configured)
-            _needle_event_error_agent_crash \
+            # Emit error.agent_crash event and trigger auto-bug bead if configured.
+            # Must use _needle_error_handle (not _needle_event_error_agent_crash) so
+            # that _needle_error_auto_bead is called per errors.sh escalation policy.
+            _needle_error_handle "error.agent_crash" "$exit_code" \
                 "bead_id=$bead_id" \
-                "exit_code=$exit_code" \
-                "session=$NEEDLE_SESSION"
+                "session=$NEEDLE_SESSION" >/dev/null
 
             # Quarantine the bead instead of releasing
             _needle_quarantine_bead "$bead_id" "agent_crash_sigkill"

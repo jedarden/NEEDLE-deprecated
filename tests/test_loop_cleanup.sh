@@ -477,6 +477,66 @@ test_backoff_config() {
     echo ""
 }
 
+# Test: Exit code 137 uses _needle_error_handle (auto-bead trigger)
+# Regression test for nd-6ys3: the 137 handler must use _needle_error_handle
+# so that _needle_error_auto_bead is called per errors.sh escalation policy.
+# Previously, _needle_event_error_agent_crash was used, which only emits a
+# telemetry event and does NOT trigger auto-bead creation.
+test_exit_137_uses_error_handle() {
+    echo "=== Testing exit code 137 uses _needle_error_handle (nd-6ys3 regression) ==="
+
+    setup_mock_environment
+
+    # Verify _needle_error_handle is available in the loop context
+    # (errors.sh must be sourced by loop.sh for auto-bead to work)
+    if declare -f _needle_error_handle &>/dev/null; then
+        echo "✓ _needle_error_handle is available in loop context (errors.sh sourced)"
+    else
+        echo "✗ _needle_error_handle not available - errors.sh not sourced in loop.sh"
+        exit 1
+    fi
+
+    # Track whether _needle_error_handle is called for exit code 137
+    local error_handle_called=false
+    _needle_error_handle() {
+        if [[ "$1" == "error.agent_crash" ]] && [[ "$2" == "137" ]]; then
+            error_handle_called=true
+        fi
+        printf 'quarantine'
+    }
+    export -f _needle_error_handle
+
+    # Mock br and quarantine function
+    br() { return 0; }
+    export -f br
+    _needle_quarantine_bead() { return 0; }
+    export -f _needle_quarantine_bead
+
+    NEEDLE_FAILURE_COUNT=3
+    _needle_handle_exit_code "test-bead-137" 137 "$NEEDLE_WORKSPACE" "test-agent"
+
+    if [[ "$error_handle_called" == "true" ]]; then
+        echo "✓ Exit code 137: _needle_error_handle called (auto-bead creation enabled)"
+    else
+        echo "✗ Exit code 137: _needle_error_handle NOT called - auto-bead will not be created"
+        exit 1
+    fi
+
+    # Verify failure count is reset (regression from nd-r8ie)
+    if [[ $NEEDLE_FAILURE_COUNT -eq 0 ]]; then
+        echo "✓ Exit code 137: Failure count reset to 0"
+    else
+        echo "✗ Exit code 137: Failure count not reset, got $NEEDLE_FAILURE_COUNT"
+        exit 1
+    fi
+
+    # Unset mocks
+    unset -f _needle_error_handle br _needle_quarantine_bead
+
+    cleanup_mock_environment
+    echo ""
+}
+
 # Run all tests
 echo "=========================================="
 echo "NEEDLE Worker Loop Cleanup/Recovery Tests"
@@ -492,6 +552,7 @@ test_cleanup_execution
 test_worker_cleanup
 test_crash_loop_alert
 test_backoff_config
+test_exit_137_uses_error_handle
 
 echo ""
 echo "=========================================="
