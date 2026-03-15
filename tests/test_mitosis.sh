@@ -192,7 +192,8 @@ else
 fi
 
 test_case "_needle_heuristic_mitosis_analysis detects multiple 'and' conjunctions"
-bead_obj='{"title":"Implement auth and add password reset and set up email verification","description":"Implement user authentication and add password reset and set up email notifications for the system"}'
+# This triggers 3+ indicators: multiple 'and' (1), multiple implementation verbs (1), numbered list (1)
+bead_obj='{"title":"Implement auth and add password reset and set up email verification","description":"Implement user authentication and add password reset and set up email notifications:\n1. Add login page\n2. Configure SMTP\n3. Test the flow"}'
 result=$(_needle_heuristic_mitosis_analysis "$bead_obj")
 mitosis_val=$(echo "$result" | jq -r '.mitosis' 2>/dev/null)
 if [[ "$mitosis_val" == "true" ]]; then

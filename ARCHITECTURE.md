@@ -977,7 +977,7 @@ Score ≥ 2 triggers mitosis. Child titles are extracted from the description st
 | `mitosis.skip_labels` | `no-mitosis,atomic` | Labels that opt a bead out of mitosis |
 | `mitosis.max_children` | `5` | Maximum child beads per mitosis event |
 | `mitosis.min_children` | `2` | Minimum children required (else aborted) |
-| `mitosis.min_complexity` | `3` | Minimum description lines to consider mitosis |
+| `mitosis.min_complexity` | `15` | Minimum description lines to consider mitosis |
 | `mitosis.timeout` | `60` | Agent analysis timeout in seconds |
 | `mitosis.force_on_failure` | `true` | Enable forced mitosis on repeated failure |
 | `mitosis.force_failure_threshold` | `3` | Failures before forced mitosis triggers |

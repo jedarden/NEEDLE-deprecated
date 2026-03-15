@@ -60,7 +60,7 @@ _NEEDLE_CONFIG_DEFAULTS='{
     "skip_labels": "no-mitosis,atomic",
     "max_children": 5,
     "min_children": 2,
-    "min_complexity": 3,
+    "min_complexity": 15,
     "timeout": 60,
     "force_on_failure": true,
     "force_failure_threshold": 3

@@ -211,8 +211,10 @@ mitosis:
   # min_children: Minimum children required to perform mitosis
   min_children: 2
 
-  # min_complexity: Minimum number of files/concerns before considering mitosis
-  min_complexity: 3
+  # min_complexity: Minimum description lines before considering mitosis
+  # Beads with fewer lines are considered atomic and not analyzed for splitting.
+  # Raising this value prevents over-aggressive splitting of small tasks.
+  min_complexity: 15
 
   # timeout: Timeout in seconds for mitosis analysis
   timeout: 60

@@ -53,7 +53,7 @@ NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
 NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
-NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-3}"
+NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
 NEEDLE_MITOSIS_TIMEOUT="${NEEDLE_MITOSIS_TIMEOUT:-60}"
 NEEDLE_MITOSIS_FORCE_ON_FAILURE="${NEEDLE_MITOSIS_FORCE_ON_FAILURE:-true}"
 NEEDLE_MITOSIS_FORCE_FAILURE_THRESHOLD="${NEEDLE_MITOSIS_FORCE_FAILURE_THRESHOLD:-3}"
@@ -397,6 +397,9 @@ A task should be split (mitosis = true) if it meets ANY of these criteria:
 - Minimum number of child tasks: 2 (if mitosis is triggered)
 - Each child should be independently actionable
 - Children may have sequential dependencies (blocked_by)
+- **CRITICAL: Never use generic titles like "Task part 1", "Task part 2", "Subtask N", or "Part N"**
+  Every child title must be a specific action phrase derived from the description content.
+  If you cannot produce a specific, meaningful title for each child, return mitosis: false.
 
 ## Output Format
 Respond with ONLY a JSON object (no markdown, no code blocks):
@@ -672,7 +675,7 @@ _needle_heuristic_mitosis_analysis() {
     fi
 
     # Determine if mitosis should occur
-    if [[ $split_indicators -ge 2 ]]; then
+    if [[ $split_indicators -ge 3 ]]; then
         local max_children
         max_children=$(_needle_mitosis_config "max_children" "$NEEDLE_MITOSIS_MAX_CHILDREN" "$workspace")
 
