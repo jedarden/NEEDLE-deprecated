@@ -17,7 +17,19 @@ fail=0
 _pass() { echo "PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "FAIL: $1"; fail=$((fail + 1)); }
 
+_kill_port() {
+    # Kill any process already listening on the given port to avoid stale-server test pollution.
+    local port="$1"
+    local pids
+    pids=$(lsof -ti:"$port" 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+        echo "$pids" | xargs kill 2>/dev/null || true
+        sleep 0.3
+    fi
+}
+
 _start_server() {
+    _kill_port "$TEST_PORT"
     python3 "$SERVER_SCRIPT" --port "$TEST_PORT" 2>/dev/null &
     SERVER_PID=$!
     # Wait for server to be ready (up to 4 seconds)
@@ -39,6 +51,8 @@ _stop_server() {
         wait "$SERVER_PID" 2>/dev/null || true
         SERVER_PID=""
     fi
+    # Belt-and-suspenders: also kill by port in case SERVER_PID was wrong
+    _kill_port "$TEST_PORT"
 }
 
 trap '_stop_server' EXIT
@@ -436,6 +450,7 @@ SEED_PORT=17843
 SEED_PID=""
 
 _start_seed_server() {
+    _kill_port "$SEED_PORT"
     python3 "$SERVER_SCRIPT" --port "$SEED_PORT" --seed-file "$1" 2>/dev/null &
     SEED_PID=$!
     local retries=20
@@ -456,6 +471,7 @@ _stop_seed_server() {
         wait "$SEED_PID" 2>/dev/null || true
         SEED_PID=""
     fi
+    _kill_port "$SEED_PORT"
 }
 
 # Build a temp seed file

@@ -22,7 +22,18 @@ fail=0
 _pass() { echo "PASS: $1"; pass=$((pass + 1)); }
 _fail() { echo "FAIL: $1"; fail=$((fail + 1)); }
 
+_kill_port() {
+    local port="$1"
+    local pids
+    pids=$(lsof -ti:"$port" 2>/dev/null || true)
+    if [[ -n "$pids" ]]; then
+        echo "$pids" | xargs kill 2>/dev/null || true
+        sleep 0.3
+    fi
+}
+
 _start_server() {
+    _kill_port "$TEST_PORT"
     python3 "$SERVER_SCRIPT" --port "$TEST_PORT" 2>/dev/null &
     SERVER_PID=$!
     local retries=20
@@ -43,6 +54,7 @@ _stop_server() {
         wait "$SERVER_PID" 2>/dev/null || true
         SERVER_PID=""
     fi
+    _kill_port "$TEST_PORT"
 }
 
 trap '_stop_server' EXIT
