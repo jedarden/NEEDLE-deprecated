@@ -220,39 +220,41 @@ create_test_config
 # Remove workspaces config
 sed -i '/^workspaces:/d' "$NEEDLE_CONFIG_FILE" 2>/dev/null || true
 
-result=$(_needle_pluck_get_workspaces "/home/coder/NEEDLE" 2>/dev/null | head -1)
-if [[ "$result" == "/home/coder/NEEDLE" ]]; then
+result=$(_needle_pluck_get_workspaces "$TEST_DIR/workspace" 2>/dev/null | head -1)
+if [[ "$result" == "$TEST_DIR/workspace" ]]; then
     test_pass
 else
-    test_fail "Expected /home/coder/NEEDLE, got $result"
+    test_fail "Expected $TEST_DIR/workspace, got $result"
 fi
 
-test_case "_needle_pluck_get_workspaces returns fallback even for non-existent paths"
-# The function returns the fallback as-is (validation happens downstream)
+test_case "_needle_pluck_get_workspaces returns non-existent path as-is"
+# The function returns the path without validating existence — validation happens downstream
 result=$(_needle_pluck_get_workspaces "/nonexistent/path" 2>/dev/null | head -1)
 if [[ "$result" == "/nonexistent/path" ]]; then
     test_pass
 else
-    test_fail "Expected fallback to be returned, got $result"
+    test_fail "Expected /nonexistent/path to be returned as-is, got: $result"
 fi
 
-test_case "_needle_pluck_is_enabled returns true when enabled"
+test_case "_needle_pluck_is_enabled returns true when enabled in config"
 create_test_config
 if _needle_pluck_is_enabled; then
     test_pass
 else
-    test_fail "Expected pluck to be enabled"
+    test_fail "Expected pluck to be enabled when strands.pluck is true"
 fi
 
-test_case "_needle_pluck_is_enabled returns false when disabled"
+test_case "_needle_pluck_is_enabled returns false when disabled in config"
 cat > "$NEEDLE_CONFIG_FILE" << EOF
 strands:
   pluck: false
+  explore: false
 EOF
+NEEDLE_CONFIG_CACHE=""
 if ! _needle_pluck_is_enabled; then
     test_pass
 else
-    test_fail "Expected pluck to be disabled"
+    test_fail "Expected pluck to be disabled when strands.pluck is false"
 fi
 
 # ============================================================================

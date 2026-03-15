@@ -93,15 +93,36 @@ _needle_pluck_get_workspaces() {
 
     if [[ -n "$fallback" ]]; then
         local expanded="${fallback/#\~/$HOME}"
-        if [[ -d "$expanded" ]]; then
-            echo "$expanded"
-            return 0
-        fi
+        echo "$expanded"
+        return 0
     fi
 
     # No workspace provided — shouldn't happen, but be safe
     _needle_warn "pluck: no workspace configured"
     return 1
+}
+
+# Check if the pluck strand is enabled in config
+#
+# Reads strands.pluck from the YAML config file.
+# Defaults to enabled when config is absent or the key is not set.
+#
+# Usage: _needle_pluck_is_enabled
+# Returns: 0 if enabled, 1 if explicitly disabled
+_needle_pluck_is_enabled() {
+    local config_file="${NEEDLE_CONFIG_FILE:-}"
+
+    if [[ -z "$config_file" ]] || [[ ! -f "$config_file" ]]; then
+        return 0
+    fi
+
+    local pluck_value
+    pluck_value=$(awk '/^strands:/{in_strands=1; next} /^[^ \t]/{in_strands=0} in_strands && /pluck:/{gsub(/.*pluck: */, ""); print; exit}' "$config_file" 2>/dev/null)
+
+    if [[ "$pluck_value" == "false" ]]; then
+        return 1
+    fi
+    return 0
 }
 
 # ============================================================================
@@ -532,9 +553,6 @@ _needle_strand_pluck() {
 # ============================================================================
 # Utility Functions
 # ============================================================================
-
-# NOTE: _needle_pluck_is_enabled removed — strand enablement is now
-# controlled by presence in the config strand list
 
 # Get statistics about the pluck strand
 # Usage: _needle_pluck_stats
