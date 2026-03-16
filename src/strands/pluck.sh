@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # NEEDLE Strand: pluck (Priority 1)
-# Primary work from configured workspaces
+# Primary work from the assigned workspace
 #
 # Implementation: nd-2gc
 #
-# This strand searches for work in the configured primary workspaces.
+# This strand searches for work in the assigned workspace.
 # It is the highest priority strand and should be checked first.
 #
 # Flow:
-#   1. Get configured workspaces (or use provided workspace)
+#   1. Get the assigned workspace
 #   2. For each workspace, attempt to claim a bead atomically
 #   3. Run mitosis check on claimed bead
 #   4. If mitosis triggered, split and release (fallthrough)
@@ -103,7 +103,7 @@ _needle_pluck_get_workspaces() {
     fi
 
     # No workspace provided — shouldn't happen, but be safe
-    _needle_warn "pluck: no workspace configured"
+    _needle_warn "pluck: no workspace assigned"
     return 1
 }
 
@@ -595,7 +595,7 @@ _needle_mark_bead_failed() {
 # ============================================================================
 
 # Main pluck strand function
-# Searches for work in configured workspaces and processes it
+# Searches for work in the assigned workspace and processes it
 #
 # Usage: _needle_strand_pluck <workspace> <agent>
 # Arguments:
@@ -633,7 +633,7 @@ _needle_strand_pluck() {
         return 1
     fi
 
-    # Get configured workspaces (with fallback to provided workspace)
+    # Get assigned workspace
     local workspaces
     workspaces=$(_needle_pluck_get_workspaces "$workspace")
 
@@ -648,7 +648,7 @@ _needle_strand_pluck() {
     local ws_count
     ws_count=$(echo "$workspaces" | wc -l)
 
-    _needle_diag_strand "pluck" "Found configured workspaces" \
+    _needle_diag_strand "pluck" "Found assigned workspace" \
         "workspace_count=$ws_count" \
         "workspaces=${workspaces//$'\n'/,}"
 
@@ -717,7 +717,7 @@ _needle_strand_pluck() {
     fi
 
     # No work found in any workspace
-    _needle_debug "pluck strand: no work found in configured workspaces"
+    _needle_debug "pluck strand: no work found in assigned workspace"
     _needle_diag_strand "pluck" "No work found in any workspace" \
         "workspaces_processed=$ws_processed" \
         "workspaces_with_no_beads=$ws_with_no_beads"
@@ -747,7 +747,7 @@ _needle_pluck_stats() {
     fi
 
     _needle_json_object \
-        "configured_workspaces=$ws_count" \
+        "assigned_workspaces=$ws_count" \
         "strand=pluck" \
         "priority=1"
 }
@@ -785,12 +785,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo ""
             echo "Commands:"
             echo "  run <workspace> <agent>        Run the pluck strand"
-            echo "  workspaces [fallback]          List configured workspaces"
+            echo "  workspaces [fallback]          List assigned workspace"
             echo "  stats                          Show strand statistics"
             echo "  process <bead> <ws> <agent>    Process a specific bead"
             echo ""
             echo "The pluck strand:"
-            echo "  1. Claims beads atomically from configured workspaces"
+            echo "  1. Claims beads atomically from the assigned workspace"
             echo "  2. Checks for mitosis (splits complex beads)"
             echo "  3. Dispatches to agent for execution"
             echo "  4. Marks beads complete or failed"

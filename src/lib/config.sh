@@ -183,8 +183,8 @@ runner:
 # Ordered list of strand scripts. Position = priority. Presence = enabled.
 # Relative paths resolve against the NEEDLE installation directory.
 strands:
-  - strands/pluck.sh     # Primary work from configured workspaces
-  - strands/explore.sh   # Look for work in other workspaces
+  - strands/pluck.sh     # Primary work from the assigned workspace
+  - strands/explore.sh   # Look for work in other discovered workspaces
   - strands/mend.sh      # Maintenance and cleanup
   - strands/weave.sh     # Create beads from documentation gaps
   - strands/unravel.sh   # Create alternatives for blocked beads
@@ -816,8 +816,8 @@ runner:
 # Ordered list of strand scripts. Position = priority. Presence = enabled.
 # Relative paths resolve against the NEEDLE installation directory.
 strands:
-  - strands/pluck.sh     # Primary work from configured workspaces
-  - strands/explore.sh   # Look for work in other workspaces
+  - strands/pluck.sh     # Primary work from the assigned workspace
+  - strands/explore.sh   # Look for work in other discovered workspaces
   - strands/mend.sh      # Maintenance and cleanup
   - strands/weave.sh     # Create beads from documentation gaps
   - strands/unravel.sh   # Create alternatives for blocked beads

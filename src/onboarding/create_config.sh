@@ -420,7 +420,7 @@ runner:
 # Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
   pluck: auto    # Primary work from the auto-discovered workspace
-  explore: auto  # Look for work in other workspaces
+  explore: auto  # Look for work in other discovered workspaces
   mend: auto     # Maintenance and cleanup
   weave: auto    # Create beads from documentation gaps
   unravel: auto  # Create alternatives for blocked beads
