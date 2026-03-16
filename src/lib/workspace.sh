@@ -380,3 +380,320 @@ list_cached_workspaces() {
         echo "$workspace"
     done
 }
+
+# ============================================================================
+# Workspace Discovery (for auto-selection when --workspace is omitted)
+# ============================================================================
+
+# Discovery scan cache: timestamp of last scan + cached result
+_NEEDLE_DISCOVERY_CACHE_TIMESTAMP=0
+_NEEDLE_DISCOVERY_CACHE_RESULT=""
+
+# Discover all workspaces with .beads directories
+# Scans from root for directories containing .beads/, no maxdepth by default
+# (can be constrained via discovery.max_depth config or NEEDLE_DISCOVER_MAX_DEPTH env)
+# Usage: _needle_discover_all_workspaces [search_root]
+# Returns: List of workspace paths (one per line)
+_needle_discover_all_workspaces() {
+    local search_root="${1:-$HOME}"
+
+    # Check config for optional max depth override (default: unlimited)
+    local max_depth
+    max_depth=$(get_config "discovery.max_depth" "${NEEDLE_DISCOVER_MAX_DEPTH:-}")
+    local find_args=(-name ".beads" -type d
+        -not -path "*/node_modules/*"
+        -not -path "*/.git/*"
+        -not -path "*/vendor/*"
+        -not -path "*/.cache/*"
+        -not -path "*/.local/*"
+        -not -path "*/.npm/*"
+        -not -path "*/.cargo/*"
+        -not -path "*/.nvm/*"
+        -not -path "*/.rustup/*"
+    )
+
+    if [[ -n "$max_depth" ]] && [[ "$max_depth" =~ ^[0-9]+$ ]]; then
+        find_args=(-maxdepth "$max_depth" "${find_args[@]}")
+    fi
+
+    find "$search_root" "${find_args[@]}" 2>/dev/null | while IFS= read -r beads_dir; do
+        [[ -z "$beads_dir" ]] && continue
+        dirname "$beads_dir"
+    done
+}
+
+# Count open beads in a workspace
+# Usage: _needle_workspace_bead_count <workspace_path>
+# Returns: Number of open beads (0 if none or invalid)
+_needle_workspace_bead_count() {
+    local workspace="$1"
+
+    if [[ ! -d "$workspace/.beads" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    local count
+    count=$(cd "$workspace" && br list --status open --json 2>/dev/null | jq 'length' 2>/dev/null)
+
+    if [[ "$count" =~ ^[0-9]+$ ]]; then
+        echo "$count"
+        return 0
+    fi
+
+    # Fallback: JSONL-only mode (corrupted SQLite)
+    count=$(cd "$workspace" && br list --status open --no-db --json 2>/dev/null | jq 'length' 2>/dev/null)
+
+    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        echo "0"
+        return 0
+    fi
+
+    echo "$count"
+}
+
+# Get the most recently created open bead's timestamp in a workspace
+# Usage: _needle_workspace_freshest_time <workspace_path>
+# Returns: Unix timestamp of most recently created open bead (0 if none)
+_needle_workspace_freshest_time() {
+    local workspace="$1"
+
+    if [[ ! -d "$workspace/.beads" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    # Get the most recently created open bead's created_at timestamp
+    local freshest
+    freshest=$(cd "$workspace" && br list --status open --json --limit 1 --sort created_at --reverse 2>/dev/null | \
+        jq -r '.[0].created_at // empty' 2>/dev/null)
+
+    if [[ -z "$freshest" ]]; then
+        # Fallback: JSONL-only mode
+        freshest=$(cd "$workspace" && br list --status open --no-db --json --limit 1 --sort created_at --reverse 2>/dev/null | \
+            jq -r '.[0].created_at // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$freshest" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    # Convert ISO timestamp to unix epoch
+    date -d "$freshest" +%s 2>/dev/null || echo "0"
+}
+
+# Check if any active NEEDLE worker is assigned to a workspace
+# A heartbeat is "active" if its last_heartbeat is within the timeout window
+# Usage: _needle_workspace_has_active_worker <workspace_path>
+# Returns: 0 if an active worker is assigned, 1 otherwise
+_needle_workspace_has_active_worker() {
+    local workspace="$1"
+    local heartbeat_dir="${NEEDLE_HOME:-$HOME/.needle}/state/heartbeats"
+
+    if [[ ! -d "$heartbeat_dir" ]]; then
+        return 1
+    fi
+
+    # Get heartbeat timeout from config (default: 120s)
+    local timeout
+    timeout=$(get_config_int "watchdog.heartbeat_timeout" "120")
+    local cutoff
+    cutoff=$(date -d "$((${timeout%%[!0-9]*})) seconds ago" -u +%s 2>/dev/null)
+    [[ -z "$cutoff" ]] && cutoff=0
+
+    local hb_file
+    for hb_file in "$heartbeat_dir"/*.json; do
+        [[ -f "$hb_file" ]] || continue
+
+        # Extract workspace and last_heartbeat from heartbeat JSON
+        local hb_workspace hb_last
+        hb_workspace=$(jq -r '.workspace // empty' "$hb_file" 2>/dev/null)
+        hb_last=$(jq -r '.last_heartbeat // empty' "$hb_file" 2>/dev/null)
+
+        [[ -z "$hb_workspace" ]] && continue
+        [[ -z "$hb_last" ]] && continue
+
+        # Resolve both paths for comparison
+        # Normalize workspace path (heartbeat may store trailing slash or not)
+        local norm_ws norm_hb
+        norm_ws=$(cd "$workspace" 2>/dev/null && pwd)
+        norm_hb=$(cd "$hb_workspace" 2>/dev/null && pwd)
+        [[ -z "$norm_ws" ]] && continue
+        [[ "$norm_ws" != "$norm_hb" ]] && continue
+
+        # Check if heartbeat is fresh
+        local hb_epoch
+        hb_epoch=$(date -d "$hb_last" +%s 2>/dev/null)
+        [[ -z "$hb_epoch" ]] && continue
+        [[ "$hb_epoch" -ge "$cutoff" ]] && return 0
+    done
+
+    return 1
+}
+
+# Discover the best workspace to run in when --workspace is omitted.
+#
+# Selection logic:
+#   1. Scan for .beads/ directories under root (default $HOME or discovery.root config)
+#   2. For each workspace, get freshest open bead timestamp and open bead count
+#   3. Check heartbeats to see if any active worker is already assigned
+#   4. Return workspace with freshest unserviced bead (no active worker)
+#   5. If all workspaces have active workers, return the one with most open beads (work-stealing)
+#   6. If no workspaces have open beads, return empty (caller handles error)
+#
+# Results are cached for 60s to avoid repeated filesystem scans.
+#
+# Usage: _needle_discover_workspace [--root <path>] [--all]
+# Returns: workspace path on stdout (one per line if --all), exit 0 on success, exit 1 if none found
+_needle_discover_workspace() {
+    local root=""
+    local show_all=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --root)
+                root="${2:?--root requires a path}"
+                shift 2
+                ;;
+            --all)
+                show_all=true
+                shift
+                ;;
+            *)
+                _needle_warn "Unknown argument to _needle_discover_workspace: $1"
+                shift
+                ;;
+        esac
+    done
+
+    # Resolve search root: explicit arg > config > $HOME
+    if [[ -z "$root" ]]; then
+        root=$(get_config "discovery.root" "$HOME")
+    fi
+    root="$(cd "$root" 2>/dev/null && pwd)" || {
+        _needle_error "Discovery root not found: $root"
+        return 1
+    }
+
+    # Check cache (60s TTL)
+    local now
+    now=$(date +%s)
+    local cache_ttl=60
+    if [[ $((now - _NEEDLE_DISCOVERY_CACHE_TIMESTAMP)) -lt "$cache_ttl" ]] && \
+       [[ -n "$_NEEDLE_DISCOVERY_CACHE_RESULT" ]]; then
+        if $show_all; then
+            echo "$_NEEDLE_DISCOVERY_CACHE_RESULT"
+            return 0
+        else
+            echo "$_NEEDLE_DISCOVERY_CACHE_RESULT" | head -1
+            [[ -n "$(echo "$_NEEDLE_DISCOVERY_CACHE_RESULT" | head -1)" ]]
+            return $?
+        fi
+    fi
+
+    # Phase 1: Gather workspace metadata
+    # Format: "timestamp|count|has_worker|workspace"
+    local candidates=()
+    while IFS= read -r workspace; do
+        [[ -z "$workspace" ]] && continue
+
+        local count freshness has_worker
+        count=$(_needle_workspace_bead_count "$workspace")
+
+        # Skip workspaces with no open beads
+        [[ "$count" -eq 0 ]] && continue
+
+        freshness=$(_needle_workspace_freshest_time "$workspace")
+
+        if _needle_workspace_has_active_worker "$workspace"; then
+            has_worker=1
+        else
+            has_worker=0
+        fi
+
+        candidates+=("$freshness|$count|$has_worker|$workspace")
+    done < <(_needle_discover_all_workspaces "$root")
+
+    # No workspaces with open beads
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    # Phase 2: Rank workspaces
+    # Priority 1: unserviced workspaces (has_worker=0), sorted by freshest bead desc
+    # Priority 2: all-serviced workspaces, sorted by open bead count desc (work-stealing)
+    local unserviced=()
+    local serviced=()
+    local entry
+    for entry in "${candidates[@]}"; do
+        local has_worker="${entry#*|}"; has_worker="${has_worker%%|*}"
+        if [[ "$has_worker" -eq 0 ]]; then
+            unserviced+=("$entry")
+        else
+            serviced+=("$entry")
+        fi
+    done
+
+    local ranked=()
+    if [[ ${#unserviced[@]} -gt 0 ]]; then
+        # Sort unserviced by freshness desc (field 0), then by count desc (field 1)
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && ranked+=("$line")
+        done < <(printf '%s\n' "${unserviced[@]}" | sort -t'|' -k1 -nr -k2 -nr)
+    else
+        # All workspaces have active workers — work-stealing: sort by count desc
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && ranked+=("$line")
+        done < <(printf '%s\n' "${serviced[@]}" | sort -t'|' -k2 -nr)
+    fi
+
+    # Extract workspace paths from ranked entries
+    local result=()
+    for entry in "${ranked[@]}"; do
+        result+=("${entry##*|}")
+    done
+
+    # Cache the result
+    _NEEDLE_DISCOVERY_CACHE_TIMESTAMP="$now"
+    _NEEDLE_DISCOVERY_CACHE_RESULT=$(printf '%s\n' "${result[@]}")
+
+    # Output
+    if $show_all; then
+        printf '%s\n' "${result[@]}"
+        return 0
+    else
+        echo "${result[0]}"
+        return 0
+    fi
+}
+
+# Discover top-N workspaces with the most open beads for round-robin distribution.
+# Usage: _needle_discover_top_workspaces <count> [search_root]
+# Returns: List of workspace paths (one per line), sorted by bead count desc
+_needle_discover_top_workspaces() {
+    local count="${1:-3}"
+    local search_root="${2:-$HOME}"
+
+    # Build list of workspace:count pairs, sort by count desc, take top N
+    local workspaces=()
+    while IFS= read -r workspace; do
+        [[ -z "$workspace" ]] && continue
+
+        local ws_count
+        ws_count=$(_needle_workspace_bead_count "$workspace")
+
+        [[ "$ws_count" -eq 0 ]] && continue
+
+        workspaces+=("$ws_count:$workspace")
+    done < <(_needle_discover_all_workspaces "$search_root")
+
+    # Sort by count (descending) and extract workspace paths
+    if [[ ${#workspaces[@]} -gt 0 ]]; then
+        printf '%s\n' "${workspaces[@]}" | \
+            sort -t: -k1 -nr | \
+            head -n "$count" | \
+            cut -d: -f2-
+    fi
+}
