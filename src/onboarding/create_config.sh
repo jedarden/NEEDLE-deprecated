@@ -419,7 +419,7 @@ runner:
 # Strand configuration
 # Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
-  pluck: auto    # Primary work from configured workspaces
+  pluck: auto    # Primary work from the auto-discovered workspace
   explore: auto  # Look for work in other workspaces
   mend: auto     # Maintenance and cleanup
   weave: auto    # Create beads from documentation gaps

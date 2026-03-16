@@ -69,7 +69,7 @@ WORKSPACE DISCOVERY:
       workspace independently.
 
 STRANDS:
-    1. pluck     - Process beads from configured workspaces
+    1. pluck     - Process beads from the assigned workspace
     2. explore   - Look for work in other workspaces
     3. mend      - Maintenance and cleanup tasks
     4. weave     - Create beads from documentation gaps (opt-in)
@@ -137,8 +137,9 @@ _needle_validate_workspace() {
             export NEEDLE_WORKSPACE_AUTO_SELECTED
             _needle_info "Auto-selected workspace: $workspace (freshest unserviced beads)"
         else
-            # Fallback to current directory if discovery not available
-            workspace="$(pwd)"
+            _needle_error "Workspace discovery unavailable (workspace.sh not loaded)"
+            _needle_info "Specify a workspace with --workspace"
+            return 1
         fi
     fi
 
