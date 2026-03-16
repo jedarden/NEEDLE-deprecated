@@ -29,7 +29,7 @@ The strand engine is a **priority waterfall dispatcher**. It tries each strand i
 
 | Priority | Strand   | Purpose |
 |----------|----------|---------|
-| 1        | Pluck    | Primary work from configured workspaces |
+| 1        | Pluck    | Primary work from the assigned workspace |
 | 2        | Explore  | Discover work in other workspaces |
 | 3        | Mend     | Maintenance: heartbeat checks, log rotation |
 | 4        | Weave    | Create beads from documentation gaps |

@@ -95,7 +95,7 @@ workspace: /path/to/project
 workers: 1
 
 strands:
-  pluck: true        # Primary work from configured workspaces
+  pluck: true        # Primary work from the assigned workspace
   explore: auto      # Discover work in other workspaces
   mend: auto         # Heartbeat checks, log rotation
   weave: auto        # Create beads from documentation gaps
@@ -160,7 +160,7 @@ NEEDLE has seven work-finding strategies called **strands**, tried in priority o
 
 | Priority | Strand | Purpose |
 |----------|--------|---------|
-| 1 | Pluck | Claim and execute beads from configured workspaces |
+| 1 | Pluck | Claim and execute beads from the assigned workspace |
 | 2 | Explore | Discover work in other workspaces |
 | 3 | Mend | Maintenance: heartbeat checks, log rotation |
 | 4 | Weave | Create beads from documentation gaps |

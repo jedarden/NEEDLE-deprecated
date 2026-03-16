@@ -814,7 +814,7 @@ OPTIONS:
     -h, --help               Print help information
 
 STRANDS:
-    1. pluck     - Process beads from configured workspaces
+    1. pluck     - Process beads from the assigned workspace
     2. explore   - Look for work in other workspaces
     3. mend      - Maintenance and cleanup tasks
     4. weave     - Create beads from documentation gaps (opt-in)
@@ -1675,7 +1675,7 @@ NEEDLE implements a 7-strand system for finding work. The needle follows each st
 
 | Strand | Name | Invokes Agent | Purpose |
 |--------|------|---------------|---------|
-| **Strand 1** | `pluck` | **Yes** | Pluck beads from configured workspaces |
+| **Strand 1** | `pluck` | **Yes** | Pluck beads from the assigned workspace |
 | **Strand 2** | `explore` | No | Look for work in other workspaces |
 | **Strand 3** | `mend` | No | Maintenance and cleanup |
 | **Strand 4** | `weave` | **Yes** | Create beads from documentation gaps (opt-in) |
@@ -1687,7 +1687,7 @@ NEEDLE implements a 7-strand system for finding work. The needle follows each st
 
 **Invokes Agent:** Yes - executes the bead's task
 
-**Purpose:** Pluck beads from configured workspaces
+**Purpose:** Pluck beads from the assigned workspace
 
 - Collect unassigned OPEN beads via `br ready --unassigned`
 - Apply weighted selection: P0=10x, P1=5x, P2=2x, P3+=1x
@@ -3939,7 +3939,7 @@ All events share a common envelope:
 The needle follows strands 1→6 to find work. These events track which strand is active:
 
 ```jsonl
-{"ts":"...","event":"strand.started","session":"...","worker":{...},"data":{"strand":1,"name":"pluck","description":"Plucking beads from configured workspaces"}}
+{"ts":"...","event":"strand.started","session":"...","worker":{...},"data":{"strand":1,"name":"pluck","description":"Plucking beads from the assigned workspace"}}
 {"ts":"...","event":"strand.completed","session":"...","worker":{...},"data":{"strand":1,"name":"pluck","result":"work_found","beads_processed":3}}
 {"ts":"...","event":"strand.skipped","session":"...","worker":{...},"data":{"strand":4,"name":"weave","reason":"disabled_in_config"}}
 {"ts":"...","event":"strand.fallthrough","session":"...","worker":{...},"data":{"from":1,"to":2,"from_name":"pluck","to_name":"explore","reason":"no_work_found"}}
@@ -3947,7 +3947,7 @@ The needle follows strands 1→6 to find work. These events track which strand i
 
 | Strand | Name | Invokes Agent | Description |
 |--------|------|---------------|-------------|
-| `1` | `pluck` | Yes | Pluck beads from configured workspaces |
+| `1` | `pluck` | Yes | Pluck beads from the assigned workspace |
 | `2` | `explore` | No | Look for work in other workspaces |
 | `3` | `mend` | No | Maintenance and cleanup |
 | `4` | `weave` | Yes | Create beads from documentation (opt-in) |

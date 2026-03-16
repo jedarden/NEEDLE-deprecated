@@ -90,7 +90,7 @@ naming:
 # Relative paths resolve against the NEEDLE installation directory.
 #
 # Built-in strands:
-#   pluck    — Claim OPEN beads from configured workspaces (always on)
+#   pluck    — Claim OPEN beads from the assigned workspace (always on)
 #   explore  — Discover work in adjacent workspaces (low overhead)
 #   mend     — Maintenance: clean logs, recover stale heartbeats
 #   weave    — Create beads from documentation gaps (opt-in)
@@ -98,7 +98,7 @@ naming:
 #   pulse    — Codebase health monitoring, auto-generate fix beads (opt-in)
 #   knot     — Alert the human when workers are stuck
 strands:
-  - strands/pluck.sh     # Primary work from configured workspaces
+  - strands/pluck.sh     # Primary work from the auto-discovered workspace
   - strands/explore.sh   # Look for work in other workspaces
   - strands/mend.sh      # Maintenance and cleanup
   # - strands/weave.sh   # Create beads from documentation gaps (opt-in)

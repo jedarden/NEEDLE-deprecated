@@ -64,7 +64,7 @@ billing:
 
 strands:
   # Values: true (always enabled), false (always disabled), auto (follows billing model)
-  pluck: auto    # Primary work from configured workspaces
+  pluck: auto    # Primary work from the assigned workspace
   explore: auto  # Look for work in other workspaces
   mend: auto     # Maintenance and cleanup
   weave: auto    # Create beads from documentation gaps
