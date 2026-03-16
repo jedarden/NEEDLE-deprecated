@@ -179,6 +179,7 @@ NEEDLE_CONFIG_SCHEMA=(
 
     # discovery
     ["discovery.root"]="string|false|||"
+    ["discovery.max_depth"]="integer|false|1||"
 )
 
 # ============================================================================

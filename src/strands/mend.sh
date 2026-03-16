@@ -43,14 +43,12 @@ _needle_strand_mend() {
     local heartbeat_count=0
     local log_count=0
 
-    # Collect all configured workspaces to check for orphaned/stale claims
+    # Collect all workspaces to check for orphaned/stale claims
     local workspaces=()
     workspaces+=("$workspace")
 
-    # Add all configured workspaces from config
-    local config
-    config=$(load_config 2>/dev/null)
-    if [[ -n "$config" ]]; then
+    # Add all dynamically discovered workspaces
+    if declare -f _needle_discover_all_workspaces &>/dev/null; then
         while IFS= read -r ws; do
             [[ -z "$ws" ]] && continue
             # Deduplicate — skip if already in list
@@ -64,7 +62,7 @@ _needle_strand_mend() {
             if ! $already && [[ -d "$ws/.beads" ]]; then
                 workspaces+=("$ws")
             fi
-        done < <(echo "$config" | jq -r '.workspaces[]? // empty' 2>/dev/null)
+        done < <(_needle_discover_all_workspaces 2>/dev/null)
     fi
 
     # 1. Clean orphaned claims across all workspaces
