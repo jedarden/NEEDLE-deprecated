@@ -28,7 +28,7 @@ USAGE:
 
 OPTIONS:
     -w, --workspace <PATH>   Workspace directory to process beads from
-                             [default: current directory or config default]
+                             [default: auto-discovered - see WORKSPACE DISCOVERY]
 
     -a, --agent <NAME>       Agent adapter to use for execution
                              [default: from config]
@@ -58,6 +58,16 @@ OPTIONS:
     -v, --verbose            Enable verbose output
     -h, --help               Print help information
 
+WORKSPACE DISCOVERY:
+    When --workspace is omitted, NEEDLE automatically discovers the best
+    workspace by scanning for .beads/ directories and selecting the one
+    with the most unassigned beads (ties broken by recent activity).
+
+    Multi-worker distribution (--count=N):
+      Workers are distributed round-robin across the top-N workspaces
+      with the most claimable beads. Each worker processes its assigned
+      workspace independently.
+
 STRANDS:
     1. pluck     - Process beads from configured workspaces
     2. explore   - Look for work in other workspaces
@@ -68,14 +78,14 @@ STRANDS:
     7. knot      - Alert human when stuck
 
 EXAMPLES:
-    # Start a worker with defaults
-    needle run
+    # Start a worker - workspace auto-discovered
+    needle run --agent=claude-anthropic-sonnet
 
-    # Start with explicit workspace and agent
+    # Start with explicit workspace (disables distribution)
     needle run --workspace=/home/coder/project --agent=claude-anthropic-sonnet
 
-    # Start 3 workers
-    needle run --count=3
+    # Start 3 workers - distributed across workspaces with most work
+    needle run --count=3 --agent=claude-anthropic-sonnet
 
     # Start with custom identifier
     needle run --id=primary
@@ -107,12 +117,29 @@ SEE ALSO:
 # Usage: _needle_validate_workspace <path>
 # Returns: 0 if valid, 1 if invalid
 # Sets: NEEDLE_VALIDATED_WORKSPACE to absolute path
+#       NEEDLE_WORKSPACE_AUTO_SELECTED to "true" if auto-discovered
 _needle_validate_workspace() {
     local workspace="$1"
+    local auto_selected=false
 
-    # If not specified, use current directory
+    # If not specified, discover dynamically
     if [[ -z "$workspace" ]]; then
-        workspace="$(pwd)"
+        # Check if discovery function is available
+        if declare -f _needle_discover_workspace &>/dev/null; then
+            workspace=$(_needle_discover_workspace)
+            if [[ -z "$workspace" ]]; then
+                _needle_error "No workspace with open beads found"
+                _needle_info "Specify a workspace with --workspace or create beads in a project"
+                return 1
+            fi
+            auto_selected=true
+            NEEDLE_WORKSPACE_AUTO_SELECTED="true"
+            export NEEDLE_WORKSPACE_AUTO_SELECTED
+            _needle_info "Auto-selected workspace: $workspace (freshest unserviced beads)"
+        else
+            # Fallback to current directory if discovery not available
+            workspace="$(pwd)"
+        fi
     fi
 
     # Resolve to absolute path
@@ -133,6 +160,20 @@ _needle_validate_workspace() {
         _needle_error "Workspace missing .beads/ directory: $abs_path"
         _needle_info "Run 'needle init' in the workspace to initialize it"
         return 1
+    fi
+
+    # Emit telemetry event if auto-selected
+    if [[ "$auto_selected" == "true" ]]; then
+        # Get bead count for context
+        local bead_count=0
+        if declare -f _needle_workspace_bead_count &>/dev/null; then
+            bead_count=$(_needle_workspace_bead_count "$abs_path")
+        fi
+        _needle_emit_event "workspace.auto_selected" \
+            "Workspace auto-discovered for run" \
+            "workspace=$abs_path" \
+            "bead_count=$bead_count" \
+            "reason=freshest_unserviced"
     fi
 
     # Valid - store and export
@@ -859,9 +900,9 @@ _needle_spawn_single_worker() {
     fi
 }
 
-# Spawn multiple workers in parallel
+# Spawn multiple workers in parallel, distributing across workspaces
 # Arguments:
-#   $1 - Workspace path
+#   $1 - Workspace path (primary workspace, may be auto-selected)
 #   $2 - Agent name
 #   $3 - Provider name
 #   $4 - Number of workers to spawn
@@ -869,8 +910,12 @@ _needle_spawn_single_worker() {
 #   $6 - No hooks flag (true/false)
 # Returns: Array of session names (newline-separated)
 # Usage: sessions=$(_needle_spawn_multiple_workers "/workspace" "claude-anthropic-sonnet" "anthropic" 5 "10.00" "false")
+#
+# Round-robin distribution (when workspace was auto-selected):
+#   If NEEDLE_WORKSPACE_AUTO_SELECTED=true, workers are distributed across
+#   the top-N workspaces with the most claimable beads.
 _needle_spawn_multiple_workers() {
-    local workspace="$1"
+    local primary_workspace="$1"
     local agent="$2"
     local provider="$3"
     local count="$4"
@@ -897,11 +942,43 @@ _needle_spawn_multiple_workers() {
         used="$used $next_id"
     done
 
-    # Spawn workers in parallel (non-blocking)
+    # Determine workspaces for round-robin distribution
+    local -a workspaces=()
+    if [[ "${NEEDLE_WORKSPACE_AUTO_SELECTED:-}" == "true" ]] && declare -f _needle_discover_top_workspaces &>/dev/null; then
+        # Auto-selected: distribute across top workspaces with most work
+        while IFS= read -r ws; do
+            [[ -n "$ws" ]] && workspaces+=("$ws")
+        done < <(_needle_discover_top_workspaces "$count")
+
+        # Ensure primary workspace is included if discovery didn't return enough
+        if [[ ${#workspaces[@]} -lt $count ]]; then
+            # Check if primary is already in the list
+            local primary_in_list=false
+            for ws in "${workspaces[@]}"; do
+                [[ "$ws" == "$primary_workspace" ]] && primary_in_list=true && break
+            done
+            if [[ "$primary_in_list" == "false" ]]; then
+                workspaces=("$primary_workspace" "${workspaces[@]}")
+            fi
+        fi
+
+        _needle_info "Distributing $count workers across ${#workspaces[@]} workspace(s)"
+    else
+        # Explicit workspace: all workers go to same workspace
+        for ((i = 0; i < count; i++)); do
+            workspaces+=("$primary_workspace")
+        done
+    fi
+
+    # Spawn workers in round-robin across workspaces
     local spawned_sessions=()
-    local pids=()
+    local workspace_index=0
 
     for identifier in "${identifiers[@]}"; do
+        # Round-robin: cycle through available workspaces
+        local workspace="${workspaces[$((workspace_index % ${#workspaces[@]}))]}"
+        ((workspace_index++))
+
         # Generate session name
         local session
         session=$(_needle_generate_session_name "" "$runner" "$provider" "$model" "$identifier")
@@ -920,7 +997,16 @@ _needle_spawn_multiple_workers() {
         # Create tmux session (non-blocking)
         if _needle_create_session "$session" "${cmd_args[*]}"; then
             spawned_sessions+=("$session")
-            _needle_debug "Spawned worker: $session"
+            _needle_debug "Spawned worker: $session in $workspace"
+
+            # Emit telemetry for distributed spawn
+            if [[ "${NEEDLE_WORKSPACE_AUTO_SELECTED:-}" == "true" ]] && [[ "$workspace" != "$primary_workspace" ]]; then
+                _needle_emit_event "worker.distributed_spawn" \
+                    "Worker spawned in discovered workspace" \
+                    "session=$session" \
+                    "workspace=$workspace" \
+                    "primary_workspace=$primary_workspace"
+            fi
         else
             _needle_warn "Failed to spawn worker: $session"
         fi
