@@ -98,10 +98,14 @@ _needle_status_display() {
     local workspace
     workspace=$(_needle_status_get_workspace)
 
+    # Discover all workspaces with their worker/bead status
+    local workspaces_json
+    workspaces_json=$(_needle_status_get_all_workspaces "$workers_json")
+
     if [[ "$json_output" == "true" ]]; then
-        _needle_status_output_json "$workers_json" "$beads_json" "$strands_json" "$effort_json" "$workspace"
+        _needle_status_output_json "$workers_json" "$beads_json" "$strands_json" "$effort_json" "$workspace" "$workspaces_json"
     else
-        _needle_status_output_dashboard "$workers_json" "$workers_count" "$beads_json" "$strands_json" "$effort_json" "$workspace"
+        _needle_status_output_dashboard "$workers_json" "$workers_count" "$beads_json" "$strands_json" "$effort_json" "$workspace" "$workspaces_json"
     fi
 }
 
@@ -224,6 +228,71 @@ _needle_status_get_workspace() {
     fi
 }
 
+# Collect data for all dynamically discovered workspaces.
+# Workers JSON is passed in to avoid re-reading the workers file.
+#
+# Usage: _needle_status_get_all_workspaces <workers_json>
+# Returns: JSON array [{path, open, workers}]
+_needle_status_get_all_workspaces() {
+    local workers_json="${1:-[]}"
+
+    if ! command -v br &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Determine discovery root from config
+    local discovery_root="$HOME"
+    if declare -f get_config &>/dev/null; then
+        local configured_root
+        configured_root=$(get_config "discovery.root" "" 2>/dev/null)
+        configured_root="${configured_root/#\~/$HOME}"
+        if [[ -n "$configured_root" && -d "$configured_root" ]]; then
+            discovery_root="$configured_root"
+        fi
+    fi
+
+    # Discover all workspaces
+    local workspaces_list=""
+    if declare -f _needle_discover_all_workspaces &>/dev/null; then
+        workspaces_list=$(_needle_discover_all_workspaces "$discovery_root" 2>/dev/null)
+    fi
+
+    if [[ -z "$workspaces_list" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local workspace_entries="[]"
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+        [[ ! -d "$ws/.beads" ]] && continue
+
+        # Count open (unassigned) beads in this workspace
+        local open_count
+        open_count=$(cd "$ws" && br list --status open --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+        [[ ! "$open_count" =~ ^[0-9]+$ ]] && open_count=0
+
+        # Count active workers for this workspace
+        local worker_count
+        worker_count=$(echo "$workers_json" | jq --arg ws "$ws" '[.[] | select(.workspace == $ws)] | length' 2>/dev/null || echo "0")
+        [[ ! "$worker_count" =~ ^[0-9]+$ ]] && worker_count=0
+
+        # Include workspace if it has open beads or active workers
+        if [[ "$open_count" -gt 0 ]] || [[ "$worker_count" -gt 0 ]]; then
+            local entry
+            entry=$(jq -n \
+                --arg path "$ws" \
+                --argjson open "$open_count" \
+                --argjson workers "$worker_count" \
+                '{path: $path, open: $open, workers: $workers}')
+            workspace_entries=$(echo "$workspace_entries" | jq ". + [$entry]" 2>/dev/null || echo "$workspace_entries")
+        fi
+    done <<< "$workspaces_list"
+
+    echo "$workspace_entries"
+}
+
 # Output JSON format
 _needle_status_output_json() {
     local workers_json="$1"
@@ -231,6 +300,7 @@ _needle_status_output_json() {
     local strands_json="$3"
     local effort_json="$4"
     local workspace="$5"
+    local workspaces_json="${6:-[]}"
 
     local initialized="false"
     local config_exists="false"
@@ -251,6 +321,7 @@ _needle_status_output_json() {
         --arg workspace "$workspace" \
         --argjson workers "$workers_json" \
         --argjson beads "$beads_json" \
+        --argjson workspaces "$workspaces_json" \
         --argjson strands "$strands_json" \
         --argjson effort "$effort_json" \
         '{
@@ -260,6 +331,7 @@ _needle_status_output_json() {
             workspace: $workspace,
             workers: $workers,
             beads: $beads,
+            workspaces: $workspaces,
             strands: $strands,
             effort: $effort
         }'
@@ -273,6 +345,7 @@ _needle_status_output_dashboard() {
     local strands_json="$4"
     local effort_json="$5"
     local workspace="$6"
+    local workspaces_json="${7:-[]}"
 
     # Header
     local header_width=63
@@ -284,6 +357,9 @@ _needle_status_output_dashboard() {
 
     # WORKERS section
     _needle_status_display_workers "$workers_json" "$workers_count"
+
+    # WORKSPACES section (dynamically discovered)
+    _needle_status_display_workspaces "$workspaces_json"
 
     # BEADS section
     _needle_status_display_beads "$beads_json" "$workspace"
@@ -327,6 +403,46 @@ _needle_status_display_workers() {
             _needle_print "  $display_session  $runtime"
         done
     fi
+
+    _needle_print ""
+}
+
+# Display workspaces section (dynamically discovered)
+_needle_status_display_workspaces() {
+    local workspaces_json="$1"
+
+    local count
+    count=$(echo "$workspaces_json" | jq 'length' 2>/dev/null || echo "0")
+
+    _needle_print_color "$NEEDLE_COLOR_BOLD" "WORKSPACES (discovered: $count)"
+
+    if [[ "$count" -eq 0 ]]; then
+        _needle_print "  No workspaces with active work found"
+        _needle_print ""
+        return
+    fi
+
+    echo "$workspaces_json" | jq -c '.[]' 2>/dev/null | while IFS= read -r ws_entry; do
+        local path open workers
+        path=$(echo "$ws_entry" | jq -r '.path')
+        open=$(echo "$ws_entry" | jq -r '.open')
+        workers=$(echo "$ws_entry" | jq -r '.workers')
+
+        # Shorten path for display
+        local display_path="${path/#$HOME/\~}"
+
+        # Build annotation
+        local annotation=""
+        if [[ "$workers" -gt 0 ]] && [[ "$open" -gt 0 ]]; then
+            annotation="  active: $workers worker(s), open: $open"
+        elif [[ "$workers" -gt 0 ]]; then
+            annotation="  active: $workers worker(s)"
+        elif [[ "$open" -gt 0 ]]; then
+            annotation="  open: $open  (unserviced)"
+        fi
+
+        printf "  %-40s%s\n" "$display_path" "$annotation"
+    done
 
     _needle_print ""
 }

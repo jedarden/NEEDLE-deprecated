@@ -42,6 +42,7 @@ NEEDLE_DEPRECATED_KEYS=(
     ["strands.weave.max_beads_per_run"]="Deprecated flat key: use 'weave.max_beads_per_run' instead"
     ["runner.max_workers"]="Deprecated: use 'limits.global_max_concurrent' instead"
     ["global_max_concurrent"]="Deprecated top-level key: use 'limits.global_max_concurrent' instead"
+    ["workspaces"]="Deprecated: 'workspaces' config key is no longer used; workspaces are now discovered dynamically"
 )
 
 # ============================================================================
@@ -175,6 +176,9 @@ NEEDLE_CONFIG_SCHEMA=(
     ["debug.auto_bead_workspace"]="string|false|||"
     ["debug.auto_bead_types"]="string|false|||"
     ["debug.auto_bead_rate_limit"]="integer|false|0||"
+
+    # discovery
+    ["discovery.root"]="string|false|||"
 )
 
 # ============================================================================

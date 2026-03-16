@@ -292,17 +292,6 @@ _needle_init() {
         _needle_config_set "editor" "\"$editor\""
         _needle_config_set "timezone" "\"$timezone\""
 
-        # Add workspace to config if we have one
-        if [[ -n "$NEEDLE_CONFIG_WORKSPACE" ]]; then
-            # Check if workspaces section exists, if not create it
-            if ! grep -q "^workspaces:" "$config_file" 2>/dev/null; then
-                echo "" >> "$config_file"
-                echo "workspaces:" >> "$config_file"
-            fi
-            # Add the workspace path
-            echo "  - \"$NEEDLE_CONFIG_WORKSPACE\"" >> "$config_file"
-        fi
-
         _needle_success "Updated configuration settings"
     fi
 
