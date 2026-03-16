@@ -228,8 +228,9 @@ else
     _test_fail "Stats function missing expected fields"
 fi
 
-# Test 8: Strand returns 1 (no work found) - explore doesn't process beads
-_test_start "Strand returns 1 (fallthrough)"
+# Test 8: Strand returns 2 (workspace switch) when no work in children but can cascade up
+# With the new Phase 2 behavior, explore returns 2 to signal upward cascade when no work found
+_test_start "Strand returns 2 (workspace switch) when no work found in children"
 # Use a clean workspace with no child workspaces (different from Test 2's workspace)
 mkdir -p "/tmp/test-explore-empty-$$"
 # Temporarily override br to return empty beads (no work found)
@@ -269,10 +270,10 @@ br() {
             ;;
     esac
 }
-if [[ $result -eq 1 ]]; then
-    _test_pass "Strand correctly returned 1 (fallthrough)"
+if [[ $result -eq 2 ]]; then
+    _test_pass "Strand correctly returned 2 (workspace switch signal)"
 else
-    _test_fail "Strand should have returned 1, got $result"
+    _test_fail "Strand should have returned 2 (workspace switch), got $result"
 fi
 
 # Test 9: Max depth is respected
@@ -456,103 +457,11 @@ br() {
     esac
 }
 
-# Test 21: Phase 0 checks configured workspaces (regression for nd-ivhs)
-# Before the fix, explore only discovered workspaces by filesystem walking.
-# Workspaces listed in config.yaml but not filesystem neighbors were never found.
-_test_start "Phase 0 checks configured workspaces from config.yaml (nd-ivhs regression)"
+# Test 21 (removed): Phase 0 configured workspaces discovery has been deprecated.
+# The workspaces: config key is no longer used - workspaces are now discovered dynamically
+# via filesystem scanning. Tests for this functionality have been removed.
 
-# Create a workspace that is NOT a filesystem neighbor of the primary workspace
-mkdir -p "/tmp/test-remote-workspace-$$/.beads"
-# Create a mock issues.jsonl file
-echo '{"id":"nd-ivhs-test","status":"open","title":"Test remote workspace bead"}' > "/tmp/test-remote-workspace-$$/.beads/issues.jsonl"
-
-# Create a config with workspaces list that includes the remote workspace
-cat > "$NEEDLE_HOME/config-with-workspaces.yaml" << 'EOFCFG'
-strands:
-  pluck: true
-  explore: true
-
-workspaces:
-  - "/tmp/test-remote-workspace-NONEXISTENT"
-  - "/tmp/test-remote-workspace-WS"
-  - "/tmp/test-remote-workspace-ANOTHER"
-EOFCFG
-
-# Substitute the actual workspace path into the config
-sed -i "s|/tmp/test-remote-workspace-WS|/tmp/test-remote-workspace-$$|g" "$NEEDLE_HOME/config-with-workspaces.yaml"
-
-# Clear the config cache and override the config file path
-NEEDLE_CONFIG_CACHE=""
-NEEDLE_CONFIG_FILE="$NEEDLE_HOME/config-with-workspaces.yaml"
-export NEEDLE_CONFIG_CACHE NEEDLE_CONFIG_FILE
-
-# Override br to return beads for our remote workspace
-# Note: _needle_explore_count_unassigned uses "br list --status open --unassigned --json"
-br() {
-    case "$1" in
-        list)
-            if [[ "$*" == *"--status open"* ]] && [[ "$*" == *"--unassigned"* ]] && [[ "$*" == *"--json"* ]]; then
-                # Return a bead when checking our test workspace
-                echo '[{"id":"nd-ivhs-test","status":"open","assignee":null}]'
-                return 0
-            fi
-            # Fallback for other list commands
-            echo '[]'
-            return 0
-            ;;
-        *)
-            return 0
-            ;;
-    esac
-}
-
-# Test the configured workspaces discovery function directly
-# Use a non-neighbor workspace as the "current" one
-found_ws=$(_needle_explore_find_configured_workspace_with_beads "/tmp/test-primary-workspace-$$")
-
-if [[ "$found_ws" == "/tmp/test-remote-workspace-$$" ]]; then
-    _test_pass "Phase 0 correctly discovered configured workspace even though not a filesystem neighbor"
-else
-    _test_fail "Phase 0 failed to find configured workspace (found: '$found_ws', expected: '/tmp/test-remote-workspace-$$')"
-fi
-
-# Test 22: Configured workspaces phase skips current workspace
-_test_start "Phase 0 skips the current workspace when checking configured list"
-
-# Use the same workspace as both current and in the config
-# It should be skipped and not returned
-cat > "$NEEDLE_HOME/config-skip-current.yaml" << 'EOFCFG'
-workspaces:
-  - "/tmp/test-skip-current-WS"
-EOFCFG
-sed -i "s|/tmp/test-skip-current-WS|/tmp/test-skip-current-$$|g" "$NEEDLE_HOME/config-skip-current.yaml"
-
-# Clear cache and update config file path
-NEEDLE_CONFIG_CACHE=""
-NEEDLE_CONFIG_FILE="$NEEDLE_HOME/config-skip-current.yaml"
-export NEEDLE_CONFIG_CACHE NEEDLE_CONFIG_FILE
-
-# Create the workspace
-mkdir -p "/tmp/test-skip-current-$$/.beads"
-echo '{"id":"nd-skip-test","status":"open","title":"Test"}' > "/tmp/test-skip-current-$$/.beads/issues.jsonl"
-
-# When the current workspace is the same as the configured one, it should be skipped
-found_ws=$(_needle_explore_find_configured_workspace_with_beads "/tmp/test-skip-current-$$")
-
-if [[ -z "$found_ws" ]]; then
-    _test_pass "Phase 0 correctly skipped the current workspace"
-else
-    _test_fail "Phase 0 should skip current workspace but returned: '$found_ws'"
-fi
-
-# Clean up test remote workspace
-rm -rf "/tmp/test-remote-workspace-$$"
-rm -rf "/tmp/test-skip-current-$$"
-
-# Reset config environment
-NEEDLE_CONFIG_CACHE=""
-NEEDLE_CONFIG_FILE="$NEEDLE_HOME/config.yaml"
-export NEEDLE_CONFIG_CACHE NEEDLE_CONFIG_FILE
+# Test 22 (removed): Same as above - Phase 0 tests removed.
 
 # Test 23: count_unassigned uses br list not br ready for blockers (regression for nd-ivhs)
 # br ready incorrectly filters out beads with "blocks" dependencies (the blockers)

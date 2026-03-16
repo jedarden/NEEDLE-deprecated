@@ -49,7 +49,12 @@ _needle_start_heartbeat_background() {
     # the heartbeat file, preserving stale status=starting/current_bead=null.
     # Now we always write status=executing with the active bead_id so the watchdog
     # can detect stuck agents via bead_started age.
+    # CRITICAL: Close stdout (fd1) explicitly so this background process does not
+    # hold open the stdout pipe when _needle_dispatch_agent is called inside a
+    # $() command substitution. Without this, $() blocks forever waiting for
+    # the pipe to close, causing the worker to appear stuck/zombie.
     (
+        exec 1>/dev/null  # close inherited stdout pipe
         local _bg_bead_started
         _bg_bead_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         while true; do
@@ -268,16 +273,16 @@ _needle_dispatch_heredoc() {
     _needle_debug "Dispatching with heredoc method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$rendered" > "$output_file" 2>&1
+        local exit_code=$?
         # timeout returns 124 when timed out
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[0]}
+        bash -c "$rendered" > "$output_file" 2>&1
+        return $?
     fi
 }
 
@@ -295,15 +300,15 @@ _needle_dispatch_stdin() {
     _needle_debug "Dispatching with stdin method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[1]}
+        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" > "$output_file" 2>&1
+        local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[1]}
+        echo "$prompt" | bash -c "$invoke_cmd" > "$output_file" 2>&1
+        return $?
     fi
 }
 
@@ -332,14 +337,14 @@ _needle_dispatch_file() {
 
     local exit_code
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
-        exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$resolved_cmd" > "$output_file" 2>&1
+        exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
     else
-        bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
-        exit_code=${PIPESTATUS[0]}
+        bash -c "$resolved_cmd" > "$output_file" 2>&1
+        exit_code=$?
     fi
 
     # Clean up the prompt file
@@ -361,15 +366,15 @@ _needle_dispatch_args() {
     _needle_debug "Dispatching with args method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$rendered" > "$output_file" 2>&1
+        local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[0]}
+        bash -c "$rendered" > "$output_file" 2>&1
+        return $?
     fi
 }
 

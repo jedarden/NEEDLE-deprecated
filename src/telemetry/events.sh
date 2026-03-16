@@ -285,6 +285,12 @@ _needle_event_worker_draining() {
     _needle_telemetry_emit "worker.draining" "info" "$@"
 }
 
+# Emit worker.distributed_spawn event
+# Usage: _needle_event_worker_distributed_spawn [session=...] [workspace=...] [key=value ...]
+_needle_event_worker_distributed_spawn() {
+    _needle_telemetry_emit "worker.distributed_spawn" "info" "$@"
+}
+
 # ============================================================================
 # Bead Events
 # ============================================================================
@@ -802,6 +808,22 @@ _needle_event_lock_expired() {
 }
 
 # ============================================================================
+# Workspace Events
+# ============================================================================
+
+# Emit workspace.auto_selected event
+# Usage: _needle_event_workspace_auto_selected [workspace=...] [bead_count=...] [reason=...] [key=value ...]
+_needle_event_workspace_auto_selected() {
+    _needle_telemetry_emit "workspace.auto_selected" "info" "$@"
+}
+
+# Emit workspace.distributed_spawn event (worker assigned to non-primary workspace)
+# Usage: _needle_event_workspace_distributed_spawn [session=...] [workspace=...] [primary=...] [key=value ...]
+_needle_event_workspace_distributed_spawn() {
+    _needle_telemetry_emit "workspace.distributed_spawn" "info" "$@"
+}
+
+# ============================================================================
 # Event Category Listing
 # ============================================================================
 
@@ -869,6 +891,9 @@ file.conflict
 file.release
 file.stale
 lock.expired
+workspace.auto_selected
+workspace.distributed_spawn
+worker.distributed_spawn
 EOF
 }
 

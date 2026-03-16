@@ -328,10 +328,17 @@ _needle_pluck_process_bead() {
         "agent=$agent" \
         "workspace=$workspace"
 
-    local dispatch_result
-    dispatch_result=$(_needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title")
-
+    # CRITICAL: Do NOT use $() command substitution to call dispatch.
+    # $() waits for ALL child processes (including the background heartbeat)
+    # to exit before returning, which causes the worker to hang indefinitely.
+    # Instead, write the result to a temp file.
+    local _dispatch_result_file
+    _dispatch_result_file=$(mktemp "${TMPDIR:-/tmp}/needle-dispatch-result-XXXXXXXX")
+    _needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title" > "$_dispatch_result_file"
     local dispatch_exit=$?
+    local dispatch_result
+    dispatch_result=$(cat "$_dispatch_result_file" 2>/dev/null)
+    rm -f "$_dispatch_result_file" 2>/dev/null
     local exit_code duration output_file
 
     if [[ $dispatch_exit -ne 0 ]] || [[ -z "$dispatch_result" ]]; then

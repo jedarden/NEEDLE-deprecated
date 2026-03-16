@@ -16,7 +16,7 @@ model: glm5             # Model identifier
 invoke: |
   cd ${WORKSPACE} && \
   OPENCODE_MODEL=glm-5 \
-  OPENCODE_API_BASE=https://open.bigmodel.cn/api/paas/v4 \
+  OPENCODE_API_BASE=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
   opencode --headless \
            --yes \
            --json-output \

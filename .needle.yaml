@@ -1,9 +1,6 @@
 # NEEDLE workspace configuration
 # Scoped to /home/coder/NEEDLE — workers should not roam outside this repo
 
-workspaces:
-  - .
-
 strands:
   pluck: true
   explore: true

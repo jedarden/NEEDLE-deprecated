@@ -19,9 +19,15 @@ model: glm-5            # Model identifier
 invoke: |
   cd ${WORKSPACE} && \
   unset CLAUDECODE && \
-  ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/paas/v4 \
-  ANTHROPIC_MODEL=glm-4-flash \
-  ANTHROPIC_API_KEY=${ZAI_API_KEY:-$ANTHROPIC_API_KEY} \
+  ANTHROPIC_BASE_URL=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  ANTHROPIC_AUTH_TOKEN=proxy-handles-auth \
+  ANTHROPIC_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5 \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-5 \
+  DISABLE_AUTOUPDATER=1 \
+  DISABLE_TELEMETRY=1 \
   claude --print \
          --dangerously-skip-permissions \
          --output-format stream-json \

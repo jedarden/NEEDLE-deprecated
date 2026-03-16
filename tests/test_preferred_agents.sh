@@ -350,8 +350,6 @@ echo "========================================"
 
 # Valid workspace config
 _write_ws_config <<'EOF'
-workspaces:
-  - .
 strands:
   pluck: true
   explore: auto
