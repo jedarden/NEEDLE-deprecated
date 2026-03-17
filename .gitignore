@@ -25,3 +25,4 @@ temp/
 *.tmp
 *.log
 .beads/.br_recovery/
+.beads/.br_history/
