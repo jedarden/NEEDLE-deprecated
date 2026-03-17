@@ -126,20 +126,22 @@ else
     test_fail "Should reject non-existent path"
 fi
 
-test_case "_needle_validate_workspace: uses current directory if not specified"
+test_case "_needle_validate_workspace: auto-discovers workspace when not specified"
 setup_test_workspace
-cd "$TEST_WORKSPACE"
-unset NEEDLE_VALIDATED_WORKSPACE
+unset NEEDLE_VALIDATED_WORKSPACE NEEDLE_WORKSPACE_AUTO_SELECTED
+# Override discovery to return the test workspace (avoids live filesystem scan)
+_needle_discover_workspace() { echo "$TEST_WORKSPACE"; }
 if _needle_validate_workspace "" 2>/dev/null; then
-    if [[ "$NEEDLE_VALIDATED_WORKSPACE" == "$TEST_WORKSPACE" ]]; then
+    if [[ "$NEEDLE_VALIDATED_WORKSPACE" == "$TEST_WORKSPACE" ]] && \
+       [[ "${NEEDLE_WORKSPACE_AUTO_SELECTED:-}" == "true" ]]; then
         test_pass
     else
-        test_fail "Expected $TEST_WORKSPACE, got $NEEDLE_VALIDATED_WORKSPACE"
+        test_fail "Expected $TEST_WORKSPACE with auto-selected=true, got $NEEDLE_VALIDATED_WORKSPACE (auto=$NEEDLE_WORKSPACE_AUTO_SELECTED)"
     fi
 else
-    test_fail "Should accept current directory if valid"
+    test_fail "Should auto-discover a valid workspace"
 fi
-cd - > /dev/null
+unset -f _needle_discover_workspace
 
 # ---- Agent Validation Tests ----
 
