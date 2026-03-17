@@ -2,133 +2,187 @@ name: Release
 
 on:
   push:
-    tags:
-      - 'v*'
-
-permissions:
-  contents: write
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: false
+        type: choice
+        options:
+          - auto
+          - patch
+          - minor
+          - major
+        default: auto
 
 jobs:
-  build-and-release:
-    name: Build and Release
+  version:
     runs-on: ubuntu-latest
-
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      should_release: ${{ steps.bump.outputs.should_release }}
+    permissions:
+      contents: write
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          fetch-tags: true
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Check if VERSION was bumped
-        id: version-check
+      - name: Fetch all tags
         run: |
-          CURRENT_TAG="${GITHUB_REF#refs/tags/}"
+          git fetch --tags --force
+          echo "Available tags:"
+          git tag -l | sort -V | tail -10
 
-          # Find previous tag
-          PREV_TAG=$(git tag --sort=-version:refname | grep '^v' | grep -v "^${CURRENT_TAG}$" | head -1)
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          if [ -z "$PREV_TAG" ]; then
-            echo "No previous tag found — treating as first release"
-            echo "needs_bump=false" >> $GITHUB_OUTPUT
+      - name: Determine version bump
+        id: bump
+        run: |
+          # Get latest tag
+          LATEST_TAG=$(git tag -l 'v*' | sort -V | tail -1)
+          if [ -z "$LATEST_TAG" ]; then
+            LATEST_TAG="v0.0.0"
+          fi
+          echo "Latest tag: $LATEST_TAG"
+
+          # Parse current version
+          VERSION="${LATEST_TAG#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+          echo "Current version: $MAJOR.$MINOR.$PATCH"
+
+          # Check if there are new commits since last tag
+          COMMIT_COUNT=$(git rev-list ${LATEST_TAG}..HEAD --count 2>/dev/null || echo "1")
+          if [ "$COMMIT_COUNT" = "0" ] && [ -z "${{ inputs.bump }}" ]; then
+            echo "No new commits since $LATEST_TAG, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "new_version=$VERSION" >> $GITHUB_OUTPUT
             exit 0
           fi
 
-          echo "Previous tag: $PREV_TAG"
-          echo "Current tag:  $CURRENT_TAG"
-
-          # Check if VERSION file was changed between tags
-          if git diff --name-only "$PREV_TAG" "$CURRENT_TAG" | grep -q '^VERSION$'; then
-            echo "VERSION file was updated — proceeding with build"
-            echo "needs_bump=false" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION file was NOT updated — will auto-bump"
-            echo "needs_bump=true" >> $GITHUB_OUTPUT
+          # Determine bump type from input or conventional commits
+          BUMP_TYPE="${{ inputs.bump }}"
+          if [ "$BUMP_TYPE" = "auto" ] || [ -z "$BUMP_TYPE" ]; then
+            COMMITS=$(git log ${LATEST_TAG}..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+            if echo "$COMMITS" | grep -qiE "^(feat|feature)!:|BREAKING CHANGE"; then
+              BUMP_TYPE="major"
+            elif echo "$COMMITS" | grep -qiE "^(feat|feature)(\(.+\))?:"; then
+              BUMP_TYPE="minor"
+            else
+              BUMP_TYPE="patch"
+            fi
           fi
+          echo "Bump type: $BUMP_TYPE"
 
-      - name: Auto-bump patch version
-        if: steps.version-check.outputs.needs_bump == 'true'
-        run: |
-          CURRENT=$(cat VERSION | tr -d '\n')
-          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
-          MINOR=$(echo "$CURRENT" | cut -d. -f2)
-          PATCH=$(echo "$CURRENT" | cut -d. -f3)
-          NEW_PATCH=$((PATCH + 1))
-          NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+          # Calculate new version
+          case "$BUMP_TYPE" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
 
-          echo "Auto-bumping $CURRENT -> $NEW_VERSION"
+          NEW_VERSION="$MAJOR.$MINOR.$PATCH"
+          NEW_TAG="v$NEW_VERSION"
+          echo "New version: $NEW_VERSION"
+
+          # Check if tag already exists
+          if git rev-parse "$NEW_TAG" >/dev/null 2>&1; then
+            echo "Tag $NEW_TAG already exists, skipping release"
+            echo "should_release=false" >> $GITHUB_OUTPUT
+            echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+            exit 0
+          fi
 
           # Update VERSION file
           printf '%s' "$NEW_VERSION" > VERSION
 
-          # Update constants.sh
-          sed -i "s/NEEDLE_VERSION=\"$CURRENT\"/NEEDLE_VERSION=\"$NEW_VERSION\"/" src/lib/constants.sh
-          sed -i "s/NEEDLE_VERSION_PATCH=$PATCH/NEEDLE_VERSION_PATCH=$NEW_PATCH/" src/lib/constants.sh
+          # Update src/lib/constants.sh
+          sed -i "s/NEEDLE_VERSION=\"[^\"]*\"/NEEDLE_VERSION=\"$NEW_VERSION\"/" src/lib/constants.sh
+          sed -i "s/NEEDLE_VERSION_MAJOR=[0-9]*/NEEDLE_VERSION_MAJOR=$MAJOR/" src/lib/constants.sh
+          sed -i "s/NEEDLE_VERSION_MINOR=[0-9]*/NEEDLE_VERSION_MINOR=$MINOR/" src/lib/constants.sh
+          sed -i "s/NEEDLE_VERSION_PATCH=[0-9]*/NEEDLE_VERSION_PATCH=$PATCH/" src/lib/constants.sh
 
-          # Commit and push to main
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Commit version bump
           git add VERSION src/lib/constants.sh
-          git commit -m "chore: auto-bump version to $NEW_VERSION"
+          git commit -m "chore: bump version to $NEW_VERSION"
           git push origin HEAD:main
 
-          # Delete the original tag (version mismatch)
-          OLD_TAG="${GITHUB_REF#refs/tags/}"
-          git push origin ":refs/tags/$OLD_TAG" || true
+          # Tag and push
+          git tag -a "$NEW_TAG" -m "Release $NEW_VERSION"
+          git push origin "$NEW_TAG"
 
-          # Create and push new tag — this triggers a fresh release build
-          git tag "v$NEW_VERSION"
-          git push origin "v$NEW_VERSION"
+          echo "should_release=true" >> $GITHUB_OUTPUT
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
 
-          echo "::notice::Auto-bumped to v$NEW_VERSION — new tag will trigger release build"
+  build:
+    needs: version
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ needs.version.outputs.new_version }}
 
       - name: Build dist/needle
-        if: steps.version-check.outputs.needs_bump != 'true'
         run: |
-          bash scripts/build.sh
+          bash scripts/build.sh --skip-native
           chmod +x dist/needle
 
       - name: Verify build
-        if: steps.version-check.outputs.needs_bump != 'true'
         run: |
-          if [ ! -f dist/needle ]; then
-            echo "Error: dist/needle was not created"
-            exit 1
-          fi
-          echo "Build size: $(wc -c < dist/needle) bytes"
-          echo "Build lines: $(wc -l < dist/needle)"
-          # Verify it's a valid bash script (don't run --version as it requires br CLI)
-          head -1 dist/needle | grep -q '^#!/' && echo "Valid shebang found"
+          [ -f dist/needle ] || { echo "dist/needle missing"; exit 1; }
+          echo "Size: $(wc -c < dist/needle) bytes, Lines: $(wc -l < dist/needle)"
+          head -1 dist/needle | grep -q '^#!' && echo "Valid shebang"
           bash -n dist/needle && echo "Bash syntax OK"
-
-          # Verify embedded version matches tag
-          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           BUILT_VERSION=$(grep '^NEEDLE_VERSION=' dist/needle | tail -1 | sed 's/NEEDLE_VERSION="//;s/"//')
-          echo "Tag version:   $TAG_VERSION"
-          echo "Built version: $BUILT_VERSION"
-          if [ "$TAG_VERSION" != "$BUILT_VERSION" ]; then
-            echo "::error::Built binary version ($BUILT_VERSION) does not match tag ($TAG_VERSION)"
-            exit 1
-          fi
+          EXPECTED="${{ needs.version.outputs.new_version }}"
+          echo "Built: $BUILT_VERSION, Expected: $EXPECTED"
+          [ "$BUILT_VERSION" = "$EXPECTED" ] || { echo "Version mismatch"; exit 1; }
 
-      - name: Generate SHA256 checksums
-        if: steps.version-check.outputs.needs_bump != 'true'
+      - name: Generate checksums
         run: |
           cd dist
           sha256sum needle > needle.sha256
           echo "Checksum: $(cat needle.sha256)"
 
-      - name: Extract version from tag
-        if: steps.version-check.outputs.needs_bump != 'true'
-        id: version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: needle-dist
+          path: |
+            dist/needle
+            dist/needle.sha256
 
-      - name: Create Release
-        if: steps.version-check.outputs.needs_bump != 'true'
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.should_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: needle-dist
+          path: dist
+
+      - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
-          name: Release v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.version.outputs.new_version }}
+          name: Release v${{ needs.version.outputs.new_version }}
           body: |
-            ## NEEDLE v${{ steps.version.outputs.version }}
+            ## NEEDLE v${{ needs.version.outputs.new_version }}
 
             Single-file distribution of NEEDLE CLI.
 
@@ -138,44 +192,19 @@ jobs:
             curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash
             ```
 
-            Or install specific version:
+            Or install a specific version:
 
             ```bash
-            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ steps.version.outputs.version }}
+            curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/main/scripts/install.sh | bash -s -- --version ${{ needs.version.outputs.new_version }}
             ```
 
-            ### Manual Installation
+            ### Manual Download
 
             ```bash
-            # Download the binary
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/needle -o needle
-
-            # Download and verify checksum
-            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ steps.version.outputs.version }}/needle.sha256 -o needle.sha256
-            sha256sum -c needle.sha256 || exit 1
-
-            # Make it executable
-            chmod +x needle
-
-            # Move to a directory in your PATH
-            sudo mv needle /usr/local/bin/needle
-
-            # Verify installation
-            needle --version
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.new_version }}/needle -o needle
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/v${{ needs.version.outputs.new_version }}/needle.sha256 -o needle.sha256
+            sha256sum -c needle.sha256 && chmod +x needle
             ```
-
-            ### Verify Integrity
-
-            After downloading, verify the SHA256 checksum:
-
-            ```bash
-            sha256sum -c needle.sha256
-            # Should output: needle: OK
-            ```
-
-            ### What's Changed
-
-            See commit history for details.
           files: |
             dist/needle
             dist/needle.sha256

@@ -223,6 +223,7 @@ _NEEDLE_OUTPUT_LOADED=true
 _NEEDLE_PROMPT_LOADED=true
 _NEEDLE_SELECT_LOADED=true
 _NEEDLE_TELEMETRY_EVENTS_LOADED=true
+_NEEDLE_VERIFY_LOADED=true
 _NEEDLE_WORKSPACE_LOADED=true
 
 HEADER
@@ -278,6 +279,7 @@ MODULES=(
     "src/bead/prompt.sh"
     "src/bead/mitosis.sh"
     "src/bead/intent.sh"
+    "src/bead/verify.sh"
 
     # Lock system
     "src/lock/checkout.sh"
