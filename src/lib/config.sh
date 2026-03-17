@@ -128,6 +128,7 @@ _NEEDLE_CONFIG_DEFAULTS='{
   "fabric": {
     "enabled": false,
     "endpoint": "",
+    "auth_token": "",
     "timeout": 2,
     "batching": false
   },
@@ -443,6 +444,10 @@ fabric:
   # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
   # Example: http://localhost:3000/api/events
   endpoint: ""
+
+  # auth_token: Shared secret for FABRIC auth (can also use FABRIC_AUTH_TOKEN env var)
+  # Required if FABRIC server has auth enabled. Sent as Bearer token.
+  auth_token: ""
 
   # timeout: HTTP request timeout in seconds (default: 2)
   timeout: 2
@@ -994,6 +999,10 @@ fabric:
   # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
   # Example: http://localhost:3000/api/events
   endpoint: ""
+
+  # auth_token: Shared secret for FABRIC auth (can also use FABRIC_AUTH_TOKEN env var)
+  # Required if FABRIC server has auth enabled. Sent as Bearer token.
+  auth_token: ""
 
   # timeout: HTTP request timeout in seconds (default: 2)
   timeout: 2

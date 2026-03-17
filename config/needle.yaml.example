@@ -461,6 +461,10 @@ fabric:
   # Example: http://localhost:3000/api/events
   endpoint: ""
 
+  # auth_token: Shared secret for FABRIC authentication (can also use FABRIC_AUTH_TOKEN env var)
+  # Required if FABRIC server has auth enabled. Sent as Bearer token.
+  auth_token: ""
+
   # timeout: HTTP request timeout in seconds
   timeout: 2
 

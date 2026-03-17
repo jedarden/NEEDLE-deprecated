@@ -57,6 +57,31 @@ _needle_fabric_is_enabled() {
     [[ -n "$endpoint" ]]
 }
 
+# Get FABRIC auth token from config or environment
+# Priority: FABRIC_AUTH_TOKEN env var > config file
+# Usage: _needle_fabric_get_auth_token
+# Returns: token string or empty string if not configured
+_needle_fabric_get_auth_token() {
+    # Check environment variable first
+    if [[ -n "${FABRIC_AUTH_TOKEN:-}" ]]; then
+        echo "$FABRIC_AUTH_TOKEN"
+        return 0
+    fi
+
+    # Check if config loader is available
+    if declare -f get_config &>/dev/null; then
+        local token
+        token=$(get_config "fabric.auth_token" "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    echo ""
+    return 0
+}
+
 # Get FABRIC timeout for HTTP requests (in seconds)
 # Usage: _needle_fabric_get_timeout
 _needle_fabric_get_timeout() {
@@ -99,11 +124,19 @@ _needle_fabric_forward_event() {
     local timeout
     timeout=$(_needle_fabric_get_timeout)
 
+    # Build curl headers
+    local curl_headers=(-H "Content-Type: application/json")
+    local auth_token
+    auth_token=$(_needle_fabric_get_auth_token)
+    if [[ -n "$auth_token" ]]; then
+        curl_headers+=(-H "Authorization: Bearer ${auth_token}")
+    fi
+
     # Forward event in background with timeout
     # Stderr is suppressed to avoid noise in case of network issues
     (
         curl -X POST \
-            -H "Content-Type: application/json" \
+            "${curl_headers[@]}" \
             -d "$event_json" \
             --max-time "$timeout" \
             --silent \
@@ -220,10 +253,18 @@ _needle_fabric_forward_batch() {
     local timeout
     timeout=$(_needle_fabric_get_timeout)
 
+    # Build curl headers
+    local curl_headers=(-H "Content-Type: application/json")
+    local auth_token
+    auth_token=$(_needle_fabric_get_auth_token)
+    if [[ -n "$auth_token" ]]; then
+        curl_headers+=(-H "Authorization: Bearer ${auth_token}")
+    fi
+
     # Forward batch in background
     (
         curl -X POST \
-            -H "Content-Type: application/json" \
+            "${curl_headers[@]}" \
             -d "$events_json" \
             --max-time "$timeout" \
             --silent \
@@ -394,10 +435,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             echo ""
             echo "Configuration:"
             echo "  FABRIC_ENDPOINT=http://localhost:3000/api/events"
+            echo "  FABRIC_AUTH_TOKEN=<shared-secret>"
             echo "  OR"
             echo "  fabric:"
             echo "    enabled: true"
             echo "    endpoint: http://localhost:3000/api/events"
+            echo "    auth_token: <shared-secret>"
             ;;
         *)
             echo "Unknown command: ${1:-}"
