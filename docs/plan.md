@@ -2257,11 +2257,6 @@ strands:
 ```yaml
 # .needle.yaml - Per-workspace settings (in workspace root)
 
-# Override default workspaces for this project
-workspaces:
-  - .                           # Current workspace
-  - ../shared-lib               # Related workspace
-
 # Override runner settings for this workspace
 runner:
   polling_interval: 5s          # Slower polling for this project
@@ -2270,11 +2265,19 @@ runner:
 preferred_agents:
   - claude-anthropic-sonnet     # Try sonnet first
   - opencode-alibaba-qwen       # Fallback to qwen
+```
 
-# Workspace-specific budget (lower than global)
-effort:
-  budget:
-    daily_limit_usd: 10.0
+**Note:** Workspaces are discovered dynamically by scanning for `.beads/` directories.
+The `workspaces:` config key is deprecated and no longer used.
+When `needle run` is invoked without `--workspace`, NEEDLE automatically selects
+the workspace with the most recently created open bead.
+
+Discovery behavior can be configured via:
+
+```yaml
+discovery:
+  root: $HOME                   # Root directory for discovery scans
+  max_depth: 10                 # Maximum directory depth (optional)
 ```
 
 ### Concurrency Enforcement

@@ -217,7 +217,7 @@ echo ""
 
 test_case "_needle_pluck_get_workspaces returns fallback when no config"
 create_test_config
-# Remove workspaces config
+# Remove deprecated workspaces config key if present (workspaces are now discovered dynamically)
 sed -i '/^workspaces:/d' "$NEEDLE_CONFIG_FILE" 2>/dev/null || true
 
 result=$(_needle_pluck_get_workspaces "$TEST_DIR/workspace" 2>/dev/null | head -1)
