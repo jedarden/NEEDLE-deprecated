@@ -18,8 +18,10 @@
 #   1 - Verification failed (needs re-dispatch or release)
 #   2 - No verification_cmd defined (skip verification)
 
-# Guard against re-sourcing
-[[ -n "${_NEEDLE_VERIFY_LOADED:-}" ]] && return 0
+# Guard against re-sourcing (use function-safe check for build concatenation)
+if [[ -n "${_NEEDLE_VERIFY_LOADED:-}" ]]; then
+    : # already loaded
+else
 _NEEDLE_VERIFY_LOADED=true
 
 # Source dependencies (if not already loaded)
@@ -502,3 +504,4 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
             ;;
     esac
 fi
+fi # end re-source guard
