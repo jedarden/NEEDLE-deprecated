@@ -203,8 +203,13 @@ mitosis:
   skip_types: bug,hotfix
 
   # skip_labels: Labels that prevent mitosis (comma-separated)
-  # mitosis-child and mitosis-parent are included by default to prevent recursive splitting
-  skip_labels: no-mitosis,atomic,mitosis-child,mitosis-parent
+  # mitosis-parent is included by default (a parent already split should not re-split)
+  # mitosis-child is NOT skipped — children may legitimately need further splitting
+  skip_labels: no-mitosis,atomic,mitosis-parent
+
+  # max_depth: Maximum mitosis depth (how many levels of splitting from the original bead)
+  # Prevents runaway recursive splitting. Children at this depth will not be split further.
+  max_depth: 3
 
   # max_children: Maximum number of children per mitosis
   max_children: 5

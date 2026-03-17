@@ -50,10 +50,11 @@ _NEEDLE_MITOSIS_LOADED=true
 # Default mitosis settings (can be overridden via config.yaml)
 NEEDLE_MITOSIS_ENABLED="${NEEDLE_MITOSIS_ENABLED:-true}"
 NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
-NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-child,mitosis-parent}"
+NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-parent}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
 NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
+NEEDLE_MITOSIS_MAX_DEPTH="${NEEDLE_MITOSIS_MAX_DEPTH:-3}"
 NEEDLE_MITOSIS_TIMEOUT="${NEEDLE_MITOSIS_TIMEOUT:-60}"
 NEEDLE_MITOSIS_FORCE_ON_FAILURE="${NEEDLE_MITOSIS_FORCE_ON_FAILURE:-true}"
 NEEDLE_MITOSIS_FORCE_FAILURE_THRESHOLD="${NEEDLE_MITOSIS_FORCE_FAILURE_THRESHOLD:-3}"
@@ -239,11 +240,49 @@ _needle_check_mitosis() {
 
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
 
-    # Hard guard: beads that are already mitosis products must never re-split.
-    # This check is independent of skip_labels config to prevent recursive splitting
-    # even if someone removes mitosis-child/mitosis-parent from the config.
-    if [[ ",$labels," == *",mitosis-child,"* ]] || [[ ",$labels," == *",mitosis-parent,"* ]]; then
-        _needle_debug "Skipping mitosis: bead is already a mitosis product (labels: $labels)"
+    # Depth guard: prevent runaway recursive splitting.
+    # Count mitosis depth by tracing parent-* labels up the ancestry chain.
+    # A bead with mitosis-depth:N has been split N levels from the original.
+    local mitosis_depth=0
+    if [[ ",$labels," == *",mitosis-child,"* ]]; then
+        # Extract depth from label if present, otherwise compute from ancestry
+        local depth_label
+        depth_label=$(echo "$labels" | tr ',' '\n' | grep '^mitosis-depth:' | head -1)
+        if [[ -n "$depth_label" ]]; then
+            mitosis_depth="${depth_label#mitosis-depth:}"
+        else
+            # No depth label — count by tracing parent chain via JSONL (fast, no br calls)
+            local jsonl_path="$workspace/.beads/issues.jsonl"
+            if [[ -f "$jsonl_path" ]]; then
+                mitosis_depth=$(python3 -c "
+import json, sys
+beads = {}
+for line in open('$jsonl_path'):
+    try:
+        e = json.loads(line.strip())
+        beads[e['id']] = e
+    except: pass
+depth = 0
+bid = '$bead_id'
+while bid in beads:
+    b = beads[bid]
+    parents = [l.replace('parent-','') for l in b.get('labels',[]) if l.startswith('parent-')]
+    if not parents or 'mitosis-child' not in b.get('labels',[]):
+        break
+    depth += 1
+    bid = parents[0]
+print(depth)
+" 2>/dev/null)
+                mitosis_depth="${mitosis_depth:-0}"
+            fi
+        fi
+    fi
+
+    local max_depth
+    max_depth=$(_needle_mitosis_config "max_depth" "$NEEDLE_MITOSIS_MAX_DEPTH" "$workspace")
+
+    if [[ "$mitosis_depth" -ge "$max_depth" ]]; then
+        _needle_debug "Skipping mitosis: depth $mitosis_depth >= max_depth $max_depth"
         return 1
     fi
 
@@ -414,6 +453,9 @@ A task should be split (mitosis = true) if it meets ANY of these criteria:
   Do NOT copy the parent's full description into child beads.
   Each child description should contain only the implementation details, acceptance criteria, and file references relevant to that specific child task.
   A child bead represents a single task — its description must reflect that single task, not the parent's multi-task scope.
+- **CRITICAL: Each child description must be detailed enough for an agent to complete the task.**
+  A description must include: what to implement, which files to modify, acceptance criteria for this specific child, and any relevant context from the parent.
+  A one-line description is NOT sufficient. Aim for 5-15 lines per child description.
 
 ## Output Format
 Respond with ONLY a JSON object (no markdown, no code blocks):
@@ -424,7 +466,7 @@ Respond with ONLY a JSON object (no markdown, no code blocks):
   "children": [
     {
       "title": "Concise summary of what this child bead specifically does",
-      "description": "Detailed, file-specific description referencing actual paths from the workspace context",
+      "description": "Detailed, actionable description: what to implement, which files to modify, acceptance criteria for this child",
       "affected_files": ["src/auth.py", "tests/test_auth.py"],
       "verification_cmd": "pytest tests/test_auth.py -q",
       "labels": ["optional-domain-label"],
@@ -723,7 +765,7 @@ _needle_heuristic_mitosis_analysis() {
 
         if [[ $use_count -ge 2 ]]; then
             # Build children from extracted structure — titles are meaningful
-            # Each child gets only its own title as description (not the parent's full description)
+            # Each child gets a scoped description: its own title + context from parent
             children="["
             local first=true
             local i=0
@@ -732,10 +774,21 @@ _needle_heuristic_mitosis_analysis() {
                 [[ "$first" == "true" ]] || children+=","
                 first=false
                 ((i++))
+                # Build a scoped description: the child's task + parent context for reference
+                local child_desc
+                child_desc="## Task
+${item_title}
+
+## Context
+This task was decomposed from parent bead. The parent's overall goal:
+${title}
+
+## Scope
+Implement only the work described above. Do not implement other tasks from the parent bead."
                 local child_json
                 child_json=$(jq -n \
                     --arg t "$item_title" \
-                    --arg d "$item_title" \
+                    --arg d "$child_desc" \
                     '{title: $t, description: $d, blocked_by: []}')
                 children+="$child_json"
             done
@@ -832,10 +885,20 @@ _needle_perform_mitosis() {
     parent_priority=$(echo "$parent_obj" | jq -r '.priority // 2' 2>/dev/null)
     parent_priority="${parent_priority:-2}"
 
-    # Inherit non-system labels from parent (exclude mitosis-child and parent-* labels)
+    # Compute parent's mitosis depth for child depth stamping
+    local parent_depth=0
+    local parent_depth_label
+    parent_depth_label=$(echo "$parent_obj" | jq -r \
+        '.labels // [] | map(select(startswith("mitosis-depth:"))) | .[0] // ""' 2>/dev/null)
+    if [[ -n "$parent_depth_label" ]]; then
+        parent_depth="${parent_depth_label#mitosis-depth:}"
+    fi
+    local child_depth=$((parent_depth + 1))
+
+    # Inherit non-system labels from parent (exclude mitosis-child, parent-*, and mitosis-depth:*)
     local parent_inherited_labels
     parent_inherited_labels=$(echo "$parent_obj" | jq -r \
-        '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not))) | .[]' \
+        '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not) and (startswith("mitosis-depth:") | not))) | .[]' \
         2>/dev/null)
 
     # Extract parent's verification_cmd for potential propagation
@@ -940,8 +1003,8 @@ _needle_perform_mitosis() {
 
         _needle_debug "Creating child $child_num: $title (priority: $parent_priority)"
 
-        # Build label args: system labels + labels inherited from parent + per-child labels from LLM
-        local label_args=("--label" "mitosis-child" "--label" "parent-$parent_id")
+        # Build label args: system labels + depth + labels inherited from parent + per-child labels from LLM
+        local label_args=("--label" "mitosis-child" "--label" "parent-$parent_id" "--label" "mitosis-depth:$child_depth")
         if [[ -n "$parent_inherited_labels" ]]; then
             while IFS= read -r plabel; do
                 [[ -n "$plabel" ]] && label_args+=("--label" "$plabel")
