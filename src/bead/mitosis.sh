@@ -50,7 +50,7 @@ _NEEDLE_MITOSIS_LOADED=true
 # Default mitosis settings (can be overridden via config.yaml)
 NEEDLE_MITOSIS_ENABLED="${NEEDLE_MITOSIS_ENABLED:-true}"
 NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
-NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic}"
+NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-child,mitosis-parent}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
 NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
@@ -239,6 +239,14 @@ _needle_check_mitosis() {
 
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
 
+    # Hard guard: beads that are already mitosis products must never re-split.
+    # This check is independent of skip_labels config to prevent recursive splitting
+    # even if someone removes mitosis-child/mitosis-parent from the config.
+    if [[ ",$labels," == *",mitosis-child,"* ]] || [[ ",$labels," == *",mitosis-parent,"* ]]; then
+        _needle_debug "Skipping mitosis: bead is already a mitosis product (labels: $labels)"
+        return 1
+    fi
+
     # Check if bead type should be skipped (respect workspace override)
     local skip_types
     skip_types=$(_needle_mitosis_get_skip_types "$workspace")
@@ -402,6 +410,10 @@ A task should be split (mitosis = true) if it meets ANY of these criteria:
   Do NOT use generic placeholders like "Task part 1", "Task part 2", "Subtask N", "Part N", or "Step N".
   Do NOT copy the parent title verbatim into child titles.
   If the parent bead's work cannot be divided into at least 2 meaningfully distinct tasks, return mitosis: false.
+- **CRITICAL: Each child description must be scoped to that child's work ONLY.**
+  Do NOT copy the parent's full description into child beads.
+  Each child description should contain only the implementation details, acceptance criteria, and file references relevant to that specific child task.
+  A child bead represents a single task — its description must reflect that single task, not the parent's multi-task scope.
 
 ## Output Format
 Respond with ONLY a JSON object (no markdown, no code blocks):
@@ -710,7 +722,8 @@ _needle_heuristic_mitosis_analysis() {
         fi
 
         if [[ $use_count -ge 2 ]]; then
-            # Build children from extracted structure — titles are meaningful, description provides context
+            # Build children from extracted structure — titles are meaningful
+            # Each child gets only its own title as description (not the parent's full description)
             children="["
             local first=true
             local i=0
@@ -722,7 +735,7 @@ _needle_heuristic_mitosis_analysis() {
                 local child_json
                 child_json=$(jq -n \
                     --arg t "$item_title" \
-                    --arg d "$description" \
+                    --arg d "$item_title" \
                     '{title: $t, description: $d, blocked_by: []}')
                 children+="$child_json"
             done

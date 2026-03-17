@@ -203,7 +203,8 @@ mitosis:
   skip_types: bug,hotfix
 
   # skip_labels: Labels that prevent mitosis (comma-separated)
-  skip_labels: no-mitosis,atomic
+  # mitosis-child and mitosis-parent are included by default to prevent recursive splitting
+  skip_labels: no-mitosis,atomic,mitosis-child,mitosis-parent
 
   # max_children: Maximum number of children per mitosis
   max_children: 5
