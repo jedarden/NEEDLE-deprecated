@@ -8,7 +8,7 @@
 #
 # This is a bundled distribution. Source available at the URL above.
 #
-# Generated: 2026-03-15T17:46:18Z
+# Generated: 2026-03-17T01:56:27Z
 #
 
 set -euo pipefail
@@ -18,7 +18,7 @@ set -euo pipefail
 # -----------------------------------------------------------------------------
 
 NEEDLE_VERSION="0.3.6"
-NEEDLE_BUILD_DATE="2026-03-15T17:46:18Z"
+NEEDLE_BUILD_DATE="2026-03-17T01:56:27Z"
 
 # -----------------------------------------------------------------------------
 # Module Loading Guards
@@ -229,8 +229,15 @@ model: glm-4.7          # Model identifier
 invoke: |
   cd ${WORKSPACE} && \
   unset CLAUDECODE && \
-  ANTHROPIC_BASE_URL=http://zai-proxy.devpod.svc.cluster.local:8080/v1 \
-  ANTHROPIC_MODEL=glm-4-flash \
+  ANTHROPIC_BASE_URL=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  ANTHROPIC_AUTH_TOKEN=proxy-handles-auth \
+  ANTHROPIC_MODEL=glm-4.7 \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=glm-4.7 \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=glm-4.7 \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-4.7 \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-4.7 \
+  DISABLE_AUTOUPDATER=1 \
+  DISABLE_TELEMETRY=1 \
   claude --print \
          --dangerously-skip-permissions \
          --output-format stream-json \
@@ -266,6 +273,76 @@ cost:
 __AGENT_EOF__
 )
 
+_NEEDLE_EMBEDDED_AGENTS[claude-code-glm-5-turbo]=$(cat <<'__AGENT_EOF__'
+# NEEDLE Agent Configuration: Claude Code with GLM-5-Turbo
+# Uses Claude Code CLI with ZhipuAI GLM-5-Turbo model (Z.AI endpoint)
+# GLM-5-Turbo is optimized for OpenClaw/agent scenarios: tool calling, instruction following,
+# scheduled/persistent tasks, and high-throughput long-chain execution.
+
+# Agent metadata
+name: claude-code-glm-5-turbo
+description: Claude Code with ZhipuAI GLM-5-Turbo (agent-optimized, 200K context)
+version: "1.0"
+
+# CLI identification
+runner: claude          # CLI executable name
+provider: zai           # Provider for rate limiting (ZhipuAI/Z.AI)
+model: glm-5-turbo      # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}, ${AGENT_DIR}
+# NOTE: unset CLAUDECODE prevents nested session detection when running inside Claude Code
+# Auth is handled by the zai-proxy running in apexalgo-iad (no API key needed on disk)
+# The stream-parser.sh pipe converts raw JSONL into human-readable terminal output.
+invoke: |
+  cd ${WORKSPACE} && \
+  unset CLAUDECODE && \
+  ANTHROPIC_BASE_URL=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  ANTHROPIC_AUTH_TOKEN=proxy-handles-auth \
+  ANTHROPIC_MODEL=glm-5-turbo \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5-turbo \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5-turbo \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5-turbo \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-5-turbo \
+  DISABLE_AUTOUPDATER=1 \
+  DISABLE_TELEMETRY=1 \
+  claude --print \
+         --dangerously-skip-permissions \
+         --output-format stream-json \
+         --verbose \
+  <<'NEEDLE_PROMPT'
+  ${PROMPT}
+  NEEDLE_PROMPT
+  | ${AGENT_DIR}/stream-parser.sh
+
+# Input method
+input:
+  method: heredoc      # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: stream-json  # json | text | stream-json
+  streaming_enabled: true
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits (GLM-5-Turbo - agent-optimized, higher concurrency)
+limits:
+  requests_per_minute: 60
+  max_concurrent: 8
+
+# Cost configuration (pay-per-token)
+cost:
+  type: pay_per_token
+  input_per_1k: 0.001
+  output_per_1k: 0.002
+
+# Timeout in seconds (128K max output warrants generous timeout)
+timeout: 900
+__AGENT_EOF__
+)
+
 _NEEDLE_EMBEDDED_AGENTS[claude-code-glm-5]=$(cat <<'__AGENT_EOF__'
 # NEEDLE Agent Configuration: Claude Code with GLM-5
 # Uses Claude Code CLI with ZhipuAI GLM-5 model
@@ -288,9 +365,15 @@ model: glm-5            # Model identifier
 invoke: |
   cd ${WORKSPACE} && \
   unset CLAUDECODE && \
-  ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/paas/v4 \
-  ANTHROPIC_MODEL=glm-4-flash \
-  ANTHROPIC_API_KEY=${ZAI_API_KEY:-$ANTHROPIC_API_KEY} \
+  ANTHROPIC_BASE_URL=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  ANTHROPIC_AUTH_TOKEN=proxy-handles-auth \
+  ANTHROPIC_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_OPUS_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_SONNET_MODEL=glm-5 \
+  ANTHROPIC_DEFAULT_HAIKU_MODEL=glm-5 \
+  CLAUDE_CODE_SUBAGENT_MODEL=glm-5 \
+  DISABLE_AUTOUPDATER=1 \
+  DISABLE_TELEMETRY=1 \
   claude --print \
          --dangerously-skip-permissions \
          --output-format stream-json \
@@ -526,6 +609,59 @@ cost:
 __AGENT_EOF__
 )
 
+_NEEDLE_EMBEDDED_AGENTS[opencode-zai-glm5-turbo]=$(cat <<'__AGENT_EOF__'
+# NEEDLE Agent Configuration: OpenCode with ZhipuAI GLM-5-Turbo
+# GLM-5-Turbo is optimized for OpenClaw/agent scenarios: tool calling, instruction following,
+# scheduled/persistent tasks, and high-throughput long-chain execution.
+
+# Agent metadata
+name: opencode-zai-glm5-turbo
+description: OpenCode with ZhipuAI GLM-5-Turbo (agent-optimized, 200K context)
+version: "1.0"
+
+# CLI identification
+runner: opencode        # CLI executable name
+provider: zai           # Provider for rate limiting
+model: glm-5-turbo      # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}
+# Auth is handled by the zai-proxy running in apexalgo-iad (no API key needed on disk)
+invoke: |
+  cd ${WORKSPACE} && \
+  OPENCODE_MODEL=glm-5-turbo \
+  OPENCODE_API_BASE=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  opencode --headless \
+           --yes \
+           --json-output \
+           --prompt-file ${PROMPT_FILE}
+
+# Input method
+input:
+  method: file          # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: json          # json | text | structured
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits
+limits:
+  max_concurrent: 10
+
+# Cost configuration (pay-per-token)
+cost:
+  type: pay_per_token
+  input_per_1k: 0.001
+  output_per_1k: 0.002
+
+# Timeout in seconds
+timeout: 900
+__AGENT_EOF__
+)
+
 _NEEDLE_EMBEDDED_AGENTS[opencode-zai-glm5]=$(cat <<'__AGENT_EOF__'
 # NEEDLE Agent Configuration: OpenCode with ZhipuAI GLM-5
 # This configuration defines how NEEDLE invokes OpenCode with ZhipuAI GLM-5 model
@@ -545,7 +681,7 @@ model: glm5             # Model identifier
 invoke: |
   cd ${WORKSPACE} && \
   OPENCODE_MODEL=glm-5 \
-  OPENCODE_API_BASE=https://open.bigmodel.cn/api/paas/v4 \
+  OPENCODE_API_BASE=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
   opencode --headless \
            --yes \
            --json-output \
@@ -1679,8 +1815,8 @@ runner:
 # Ordered list of strand scripts. Position = priority. Presence = enabled.
 # Relative paths resolve against the NEEDLE installation directory.
 strands:
-  - strands/pluck.sh     # Primary work from configured workspaces
-  - strands/explore.sh   # Look for work in other workspaces
+  - strands/pluck.sh     # Primary work from the assigned workspace
+  - strands/explore.sh   # Look for work in other discovered workspaces
   - strands/mend.sh      # Maintenance and cleanup
   - strands/weave.sh     # Create beads from documentation gaps
   - strands/unravel.sh   # Create alternatives for blocked beads
@@ -2312,8 +2448,8 @@ runner:
 # Ordered list of strand scripts. Position = priority. Presence = enabled.
 # Relative paths resolve against the NEEDLE installation directory.
 strands:
-  - strands/pluck.sh     # Primary work from configured workspaces
-  - strands/explore.sh   # Look for work in other workspaces
+  - strands/pluck.sh     # Primary work from the assigned workspace
+  - strands/explore.sh   # Look for work in other discovered workspaces
   - strands/mend.sh      # Maintenance and cleanup
   - strands/weave.sh     # Create beads from documentation gaps
   - strands/unravel.sh   # Create alternatives for blocked beads
@@ -3032,6 +3168,7 @@ NEEDLE_DEPRECATED_KEYS=(
     ["strands.weave.max_beads_per_run"]="Deprecated flat key: use 'weave.max_beads_per_run' instead"
     ["runner.max_workers"]="Deprecated: use 'limits.global_max_concurrent' instead"
     ["global_max_concurrent"]="Deprecated top-level key: use 'limits.global_max_concurrent' instead"
+    ["workspaces"]="Deprecated: 'workspaces' config key is no longer used; workspaces are now discovered dynamically"
 )
 
 # ============================================================================
@@ -3165,6 +3302,10 @@ NEEDLE_CONFIG_SCHEMA=(
     ["debug.auto_bead_workspace"]="string|false|||"
     ["debug.auto_bead_types"]="string|false|||"
     ["debug.auto_bead_rate_limit"]="integer|false|0||"
+
+    # discovery
+    ["discovery.root"]="string|false|||"
+    ["discovery.max_depth"]="integer|false|1||"
 )
 
 # ============================================================================
@@ -4097,6 +4238,323 @@ list_cached_workspaces() {
     for workspace in "${!_NEEDLE_WORKSPACE_CACHE[@]}"; do
         echo "$workspace"
     done
+}
+
+# ============================================================================
+# Workspace Discovery (for auto-selection when --workspace is omitted)
+# ============================================================================
+
+# Discovery scan cache: timestamp of last scan + cached result
+_NEEDLE_DISCOVERY_CACHE_TIMESTAMP=0
+_NEEDLE_DISCOVERY_CACHE_RESULT=""
+
+# Discover all workspaces with .beads directories
+# Scans from root for directories containing .beads/, no maxdepth by default
+# (can be constrained via discovery.max_depth config or NEEDLE_DISCOVER_MAX_DEPTH env)
+# Usage: _needle_discover_all_workspaces [search_root]
+# Returns: List of workspace paths (one per line)
+_needle_discover_all_workspaces() {
+    local search_root="${1:-$HOME}"
+
+    # Check config for optional max depth override (default: unlimited)
+    local max_depth
+    max_depth=$(get_config "discovery.max_depth" "${NEEDLE_DISCOVER_MAX_DEPTH:-}")
+    local find_args=(-name ".beads" -type d
+        -not -path "*/node_modules/*"
+        -not -path "*/.git/*"
+        -not -path "*/vendor/*"
+        -not -path "*/.cache/*"
+        -not -path "*/.local/*"
+        -not -path "*/.npm/*"
+        -not -path "*/.cargo/*"
+        -not -path "*/.nvm/*"
+        -not -path "*/.rustup/*"
+    )
+
+    if [[ -n "$max_depth" ]] && [[ "$max_depth" =~ ^[0-9]+$ ]]; then
+        find_args=(-maxdepth "$max_depth" "${find_args[@]}")
+    fi
+
+    find "$search_root" "${find_args[@]}" 2>/dev/null | while IFS= read -r beads_dir; do
+        [[ -z "$beads_dir" ]] && continue
+        dirname "$beads_dir"
+    done
+}
+
+# Count open beads in a workspace
+# Usage: _needle_workspace_bead_count <workspace_path>
+# Returns: Number of open beads (0 if none or invalid)
+_needle_workspace_bead_count() {
+    local workspace="$1"
+
+    if [[ ! -d "$workspace/.beads" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    local count
+    count=$(cd "$workspace" && br list --status open --json 2>/dev/null | jq 'length' 2>/dev/null)
+
+    if [[ "$count" =~ ^[0-9]+$ ]]; then
+        echo "$count"
+        return 0
+    fi
+
+    # Fallback: JSONL-only mode (corrupted SQLite)
+    count=$(cd "$workspace" && br list --status open --no-db --json 2>/dev/null | jq 'length' 2>/dev/null)
+
+    if [[ ! "$count" =~ ^[0-9]+$ ]]; then
+        echo "0"
+        return 0
+    fi
+
+    echo "$count"
+}
+
+# Get the most recently created open bead's timestamp in a workspace
+# Usage: _needle_workspace_freshest_time <workspace_path>
+# Returns: Unix timestamp of most recently created open bead (0 if none)
+_needle_workspace_freshest_time() {
+    local workspace="$1"
+
+    if [[ ! -d "$workspace/.beads" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    # Get the most recently created open bead's created_at timestamp
+    local freshest
+    freshest=$(cd "$workspace" && br list --status open --json --limit 1 --sort created_at --reverse 2>/dev/null | \
+        jq -r '.[0].created_at // empty' 2>/dev/null)
+
+    if [[ -z "$freshest" ]]; then
+        # Fallback: JSONL-only mode
+        freshest=$(cd "$workspace" && br list --status open --no-db --json --limit 1 --sort created_at --reverse 2>/dev/null | \
+            jq -r '.[0].created_at // empty' 2>/dev/null)
+    fi
+
+    if [[ -z "$freshest" ]]; then
+        echo "0"
+        return 0
+    fi
+
+    # Convert ISO timestamp to unix epoch
+    date -d "$freshest" +%s 2>/dev/null || echo "0"
+}
+
+# Check if any active NEEDLE worker is assigned to a workspace
+# A heartbeat is "active" if its last_heartbeat is within the timeout window
+# Usage: _needle_workspace_has_active_worker <workspace_path>
+# Returns: 0 if an active worker is assigned, 1 otherwise
+_needle_workspace_has_active_worker() {
+    local workspace="$1"
+    local heartbeat_dir="${NEEDLE_HOME:-$HOME/.needle}/state/heartbeats"
+
+    if [[ ! -d "$heartbeat_dir" ]]; then
+        return 1
+    fi
+
+    # Get heartbeat timeout from config (default: 120s)
+    local timeout
+    timeout=$(get_config_int "watchdog.heartbeat_timeout" "120")
+    local cutoff
+    cutoff=$(date -d "$((${timeout%%[!0-9]*})) seconds ago" -u +%s 2>/dev/null)
+    [[ -z "$cutoff" ]] && cutoff=0
+
+    local hb_file
+    for hb_file in "$heartbeat_dir"/*.json; do
+        [[ -f "$hb_file" ]] || continue
+
+        # Extract workspace and last_heartbeat from heartbeat JSON
+        local hb_workspace hb_last
+        hb_workspace=$(jq -r '.workspace // empty' "$hb_file" 2>/dev/null)
+        hb_last=$(jq -r '.last_heartbeat // empty' "$hb_file" 2>/dev/null)
+
+        [[ -z "$hb_workspace" ]] && continue
+        [[ -z "$hb_last" ]] && continue
+
+        # Resolve both paths for comparison
+        # Normalize workspace path (heartbeat may store trailing slash or not)
+        local norm_ws norm_hb
+        norm_ws=$(cd "$workspace" 2>/dev/null && pwd)
+        norm_hb=$(cd "$hb_workspace" 2>/dev/null && pwd)
+        [[ -z "$norm_ws" ]] && continue
+        [[ "$norm_ws" != "$norm_hb" ]] && continue
+
+        # Check if heartbeat is fresh
+        local hb_epoch
+        hb_epoch=$(date -d "$hb_last" +%s 2>/dev/null)
+        [[ -z "$hb_epoch" ]] && continue
+        [[ "$hb_epoch" -ge "$cutoff" ]] && return 0
+    done
+
+    return 1
+}
+
+# Discover the best workspace to run in when --workspace is omitted.
+#
+# Selection logic:
+#   1. Scan for .beads/ directories under root (default $HOME or discovery.root config)
+#   2. For each workspace, get freshest open bead timestamp and open bead count
+#   3. Check heartbeats to see if any active worker is already assigned
+#   4. Return workspace with freshest unserviced bead (no active worker)
+#   5. If all workspaces have active workers, return the one with most open beads (work-stealing)
+#   6. If no workspaces have open beads, return empty (caller handles error)
+#
+# Results are cached for 60s to avoid repeated filesystem scans.
+#
+# Usage: _needle_discover_workspace [--root <path>] [--all]
+# Returns: workspace path on stdout (one per line if --all), exit 0 on success, exit 1 if none found
+_needle_discover_workspace() {
+    local root=""
+    local show_all=false
+
+    # Parse arguments
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --root)
+                root="${2:?--root requires a path}"
+                shift 2
+                ;;
+            --all)
+                show_all=true
+                shift
+                ;;
+            *)
+                _needle_warn "Unknown argument to _needle_discover_workspace: $1"
+                shift
+                ;;
+        esac
+    done
+
+    # Resolve search root: explicit arg > config > $HOME
+    if [[ -z "$root" ]]; then
+        root=$(get_config "discovery.root" "$HOME")
+    fi
+    root="$(cd "$root" 2>/dev/null && pwd)" || {
+        _needle_error "Discovery root not found: $root"
+        return 1
+    }
+
+    # Check cache (60s TTL)
+    local now
+    now=$(date +%s)
+    local cache_ttl=60
+    if [[ $((now - _NEEDLE_DISCOVERY_CACHE_TIMESTAMP)) -lt "$cache_ttl" ]] && \
+       [[ -n "$_NEEDLE_DISCOVERY_CACHE_RESULT" ]]; then
+        if $show_all; then
+            echo "$_NEEDLE_DISCOVERY_CACHE_RESULT"
+            return 0
+        else
+            echo "$_NEEDLE_DISCOVERY_CACHE_RESULT" | head -1
+            [[ -n "$(echo "$_NEEDLE_DISCOVERY_CACHE_RESULT" | head -1)" ]]
+            return $?
+        fi
+    fi
+
+    # Phase 1: Gather workspace metadata
+    # Format: "timestamp|count|has_worker|workspace"
+    local candidates=()
+    while IFS= read -r workspace; do
+        [[ -z "$workspace" ]] && continue
+
+        local count freshness has_worker
+        count=$(_needle_workspace_bead_count "$workspace")
+
+        # Skip workspaces with no open beads
+        [[ "$count" -eq 0 ]] && continue
+
+        freshness=$(_needle_workspace_freshest_time "$workspace")
+
+        if _needle_workspace_has_active_worker "$workspace"; then
+            has_worker=1
+        else
+            has_worker=0
+        fi
+
+        candidates+=("$freshness|$count|$has_worker|$workspace")
+    done < <(_needle_discover_all_workspaces "$root")
+
+    # No workspaces with open beads
+    if [[ ${#candidates[@]} -eq 0 ]]; then
+        return 1
+    fi
+
+    # Phase 2: Rank workspaces
+    # Priority 1: unserviced workspaces (has_worker=0), sorted by freshest bead desc
+    # Priority 2: all-serviced workspaces, sorted by open bead count desc (work-stealing)
+    local unserviced=()
+    local serviced=()
+    local entry
+    for entry in "${candidates[@]}"; do
+        local has_worker="${entry#*|}"; has_worker="${has_worker%%|*}"
+        if [[ "$has_worker" -eq 0 ]]; then
+            unserviced+=("$entry")
+        else
+            serviced+=("$entry")
+        fi
+    done
+
+    local ranked=()
+    if [[ ${#unserviced[@]} -gt 0 ]]; then
+        # Sort unserviced by freshness desc (field 0), then by count desc (field 1)
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && ranked+=("$line")
+        done < <(printf '%s\n' "${unserviced[@]}" | sort -t'|' -k1 -nr -k2 -nr)
+    else
+        # All workspaces have active workers — work-stealing: sort by count desc
+        while IFS= read -r line; do
+            [[ -n "$line" ]] && ranked+=("$line")
+        done < <(printf '%s\n' "${serviced[@]}" | sort -t'|' -k2 -nr)
+    fi
+
+    # Extract workspace paths from ranked entries
+    local result=()
+    for entry in "${ranked[@]}"; do
+        result+=("${entry##*|}")
+    done
+
+    # Cache the result
+    _NEEDLE_DISCOVERY_CACHE_TIMESTAMP="$now"
+    _NEEDLE_DISCOVERY_CACHE_RESULT=$(printf '%s\n' "${result[@]}")
+
+    # Output
+    if $show_all; then
+        printf '%s\n' "${result[@]}"
+        return 0
+    else
+        echo "${result[0]}"
+        return 0
+    fi
+}
+
+# Discover top-N workspaces with the most open beads for round-robin distribution.
+# Usage: _needle_discover_top_workspaces <count> [search_root]
+# Returns: List of workspace paths (one per line), sorted by bead count desc
+_needle_discover_top_workspaces() {
+    local count="${1:-3}"
+    local search_root="${2:-$HOME}"
+
+    # Build list of workspace:count pairs, sort by count desc, take top N
+    local workspaces=()
+    while IFS= read -r workspace; do
+        [[ -z "$workspace" ]] && continue
+
+        local ws_count
+        ws_count=$(_needle_workspace_bead_count "$workspace")
+
+        [[ "$ws_count" -eq 0 ]] && continue
+
+        workspaces+=("$ws_count:$workspace")
+    done < <(_needle_discover_all_workspaces "$search_root")
+
+    # Sort by count (descending) and extract workspace paths
+    if [[ ${#workspaces[@]} -gt 0 ]]; then
+        printf '%s\n' "${workspaces[@]}" | \
+            sort -t: -k1 -nr | \
+            head -n "$count" | \
+            cut -d: -f2-
+    fi
 }
 
 # =============================================================================
@@ -6820,6 +7278,12 @@ _needle_event_worker_draining() {
     _needle_telemetry_emit "worker.draining" "info" "$@"
 }
 
+# Emit worker.distributed_spawn event
+# Usage: _needle_event_worker_distributed_spawn [session=...] [workspace=...] [key=value ...]
+_needle_event_worker_distributed_spawn() {
+    _needle_telemetry_emit "worker.distributed_spawn" "info" "$@"
+}
+
 # ============================================================================
 # Bead Events
 # ============================================================================
@@ -7337,6 +7801,22 @@ _needle_event_lock_expired() {
 }
 
 # ============================================================================
+# Workspace Events
+# ============================================================================
+
+# Emit workspace.auto_selected event
+# Usage: _needle_event_workspace_auto_selected [workspace=...] [bead_count=...] [reason=...] [key=value ...]
+_needle_event_workspace_auto_selected() {
+    _needle_telemetry_emit "workspace.auto_selected" "info" "$@"
+}
+
+# Emit workspace.distributed_spawn event (worker assigned to non-primary workspace)
+# Usage: _needle_event_workspace_distributed_spawn [session=...] [workspace=...] [primary=...] [key=value ...]
+_needle_event_workspace_distributed_spawn() {
+    _needle_telemetry_emit "workspace.distributed_spawn" "info" "$@"
+}
+
+# ============================================================================
 # Event Category Listing
 # ============================================================================
 
@@ -7404,6 +7884,9 @@ file.conflict
 file.release
 file.stale
 lock.expired
+workspace.auto_selected
+workspace.distributed_spawn
+worker.distributed_spawn
 EOF
 }
 
@@ -10699,7 +11182,12 @@ _needle_start_heartbeat_background() {
     # the heartbeat file, preserving stale status=starting/current_bead=null.
     # Now we always write status=executing with the active bead_id so the watchdog
     # can detect stuck agents via bead_started age.
+    # CRITICAL: Close stdout (fd1) explicitly so this background process does not
+    # hold open the stdout pipe when _needle_dispatch_agent is called inside a
+    # $() command substitution. Without this, $() blocks forever waiting for
+    # the pipe to close, causing the worker to appear stuck/zombie.
     (
+        exec 1>/dev/null  # close inherited stdout pipe
         local _bg_bead_started
         _bg_bead_started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
         while true; do
@@ -10918,16 +11406,16 @@ _needle_dispatch_heredoc() {
     _needle_debug "Dispatching with heredoc method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$rendered" > "$output_file" 2>&1
+        local exit_code=$?
         # timeout returns 124 when timed out
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[0]}
+        bash -c "$rendered" > "$output_file" 2>&1
+        return $?
     fi
 }
 
@@ -10945,15 +11433,15 @@ _needle_dispatch_stdin() {
     _needle_debug "Dispatching with stdin method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[1]}
+        echo "$prompt" | timeout "$timeout" bash -c "$invoke_cmd" > "$output_file" 2>&1
+        local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        echo "$prompt" | bash -c "$invoke_cmd" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[1]}
+        echo "$prompt" | bash -c "$invoke_cmd" > "$output_file" 2>&1
+        return $?
     fi
 }
 
@@ -10982,14 +11470,14 @@ _needle_dispatch_file() {
 
     local exit_code
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
-        exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$resolved_cmd" > "$output_file" 2>&1
+        exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
     else
-        bash -c "$resolved_cmd" 2>&1 | _needle_run_tee "$output_file"
-        exit_code=${PIPESTATUS[0]}
+        bash -c "$resolved_cmd" > "$output_file" 2>&1
+        exit_code=$?
     fi
 
     # Clean up the prompt file
@@ -11011,15 +11499,15 @@ _needle_dispatch_args() {
     _needle_debug "Dispatching with args method"
 
     if [[ "$timeout" -gt 0 ]]; then
-        timeout "$timeout" bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        local exit_code=${PIPESTATUS[0]}
+        timeout "$timeout" bash -c "$rendered" > "$output_file" 2>&1
+        local exit_code=$?
         if [[ $exit_code -eq 124 ]]; then
             _needle_warn "Command timed out after ${timeout}s"
         fi
         return $exit_code
     else
-        bash -c "$rendered" 2>&1 | _needle_run_tee "$output_file"
-        return ${PIPESTATUS[0]}
+        bash -c "$rendered" > "$output_file" 2>&1
+        return $?
     fi
 }
 
@@ -13964,7 +14452,7 @@ _needle_validate_prompt() {
 # Default mitosis settings (can be overridden via config.yaml)
 NEEDLE_MITOSIS_ENABLED="${NEEDLE_MITOSIS_ENABLED:-true}"
 NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
-NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic}"
+NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-child,mitosis-parent}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
 NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
@@ -14153,6 +14641,14 @@ _needle_check_mitosis() {
 
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
 
+    # Hard guard: beads that are already mitosis products must never re-split.
+    # This check is independent of skip_labels config to prevent recursive splitting
+    # even if someone removes mitosis-child/mitosis-parent from the config.
+    if [[ ",$labels," == *",mitosis-child,"* ]] || [[ ",$labels," == *",mitosis-parent,"* ]]; then
+        _needle_debug "Skipping mitosis: bead is already a mitosis product (labels: $labels)"
+        return 1
+    fi
+
     # Check if bead type should be skipped (respect workspace override)
     local skip_types
     skip_types=$(_needle_mitosis_get_skip_types "$workspace")
@@ -14316,6 +14812,10 @@ A task should be split (mitosis = true) if it meets ANY of these criteria:
   Do NOT use generic placeholders like "Task part 1", "Task part 2", "Subtask N", "Part N", or "Step N".
   Do NOT copy the parent title verbatim into child titles.
   If the parent bead's work cannot be divided into at least 2 meaningfully distinct tasks, return mitosis: false.
+- **CRITICAL: Each child description must be scoped to that child's work ONLY.**
+  Do NOT copy the parent's full description into child beads.
+  Each child description should contain only the implementation details, acceptance criteria, and file references relevant to that specific child task.
+  A child bead represents a single task — its description must reflect that single task, not the parent's multi-task scope.
 
 ## Output Format
 Respond with ONLY a JSON object (no markdown, no code blocks):
@@ -14623,7 +15123,8 @@ _needle_heuristic_mitosis_analysis() {
         fi
 
         if [[ $use_count -ge 2 ]]; then
-            # Build children from extracted structure — titles are meaningful, description provides context
+            # Build children from extracted structure — titles are meaningful
+            # Each child gets only its own title as description (not the parent's full description)
             children="["
             local first=true
             local i=0
@@ -14635,7 +15136,7 @@ _needle_heuristic_mitosis_analysis() {
                 local child_json
                 child_json=$(jq -n \
                     --arg t "$item_title" \
-                    --arg d "$description" \
+                    --arg d "$item_title" \
                     '{title: $t, description: $d, blocked_by: []}')
                 children+="$child_json"
             done
@@ -23992,15 +24493,15 @@ _needle_release_bead() {
 # =============================================================================
 
 # NEEDLE Strand: pluck (Priority 1)
-# Primary work from configured workspaces
+# Primary work from the assigned workspace
 #
 # Implementation: nd-2gc
 #
-# This strand searches for work in the configured primary workspaces.
+# This strand searches for work in the assigned workspace.
 # It is the highest priority strand and should be checked first.
 #
 # Flow:
-#   1. Get configured workspaces (or use provided workspace)
+#   1. Get the assigned workspace
 #   2. For each workspace, attempt to claim a bead atomically
 #   3. Run mitosis check on claimed bead
 #   4. If mitosis triggered, split and release (fallthrough)
@@ -24049,7 +24550,7 @@ _needle_pluck_get_workspaces() {
     fi
 
     # No workspace provided — shouldn't happen, but be safe
-    _needle_warn "pluck: no workspace configured"
+    _needle_warn "pluck: no workspace assigned"
     return 1
 }
 
@@ -24274,10 +24775,17 @@ _needle_pluck_process_bead() {
         "agent=$agent" \
         "workspace=$workspace"
 
-    local dispatch_result
-    dispatch_result=$(_needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title")
-
+    # CRITICAL: Do NOT use $() command substitution to call dispatch.
+    # $() waits for ALL child processes (including the background heartbeat)
+    # to exit before returning, which causes the worker to hang indefinitely.
+    # Instead, write the result to a temp file.
+    local _dispatch_result_file
+    _dispatch_result_file=$(mktemp "${TMPDIR:-/tmp}/needle-dispatch-result-XXXXXXXX")
+    _needle_dispatch_agent "$agent" "$workspace" "$prompt" "$bead_id" "$bead_title" > "$_dispatch_result_file"
     local dispatch_exit=$?
+    local dispatch_result
+    dispatch_result=$(cat "$_dispatch_result_file" 2>/dev/null)
+    rm -f "$_dispatch_result_file" 2>/dev/null
     local exit_code duration output_file
 
     if [[ $dispatch_exit -ne 0 ]] || [[ -z "$dispatch_result" ]]; then
@@ -24534,7 +25042,7 @@ _needle_mark_bead_failed() {
 # ============================================================================
 
 # Main pluck strand function
-# Searches for work in configured workspaces and processes it
+# Searches for work in the assigned workspace and processes it
 #
 # Usage: _needle_strand_pluck <workspace> <agent>
 # Arguments:
@@ -24572,7 +25080,7 @@ _needle_strand_pluck() {
         return 1
     fi
 
-    # Get configured workspaces (with fallback to provided workspace)
+    # Get assigned workspace
     local workspaces
     workspaces=$(_needle_pluck_get_workspaces "$workspace")
 
@@ -24587,7 +25095,7 @@ _needle_strand_pluck() {
     local ws_count
     ws_count=$(echo "$workspaces" | wc -l)
 
-    _needle_diag_strand "pluck" "Found configured workspaces" \
+    _needle_diag_strand "pluck" "Found assigned workspace" \
         "workspace_count=$ws_count" \
         "workspaces=${workspaces//$'\n'/,}"
 
@@ -24656,7 +25164,7 @@ _needle_strand_pluck() {
     fi
 
     # No work found in any workspace
-    _needle_debug "pluck strand: no work found in configured workspaces"
+    _needle_debug "pluck strand: no work found in assigned workspace"
     _needle_diag_strand "pluck" "No work found in any workspace" \
         "workspaces_processed=$ws_processed" \
         "workspaces_with_no_beads=$ws_with_no_beads"
@@ -24686,7 +25194,7 @@ _needle_pluck_stats() {
     fi
 
     _needle_json_object \
-        "configured_workspaces=$ws_count" \
+        "assigned_workspaces=$ws_count" \
         "strand=pluck" \
         "priority=1"
 }
@@ -24700,21 +25208,18 @@ _needle_pluck_stats() {
 # =============================================================================
 
 # NEEDLE Strand: explore (Priority 3)
-# Search for work in configured, child, and sibling workspaces
+# Search for work in child workspaces; cascade upward to siblings via parent switch
 #
 # Implementation: nd-hq2
 #
 # This strand expands the search scope when pluck and mend find nothing.
-# It searches in three phases:
-#   Phase 0: Check all workspaces configured in config.yaml
-#   Phase 1 (Down): Search child directories for .beads/ workspaces
-#   Phase 2 (Up):   Walk up parent directories, searching siblings at each level
-#
-# At each discovered workspace, explore checks for:
-#   - Open, claimable beads (spawns workers or claims directly)
-#   - Stale in_progress beads (dead workers holding claims)
-#
-# The upward walk is constrained by explore.max_upward_depth config (default: 3).
+# It cascades in two phases:
+#   Phase 1 (Down): Search all child directories for .beads/ workspaces (unlimited depth).
+#                   Runs mend+pluck inline in each child. Returns 0 if work claimed.
+#   Phase 2 (Up):   If Phase 1 finds nothing, move up one folder and signal the engine
+#                   to restart the full loop (pluck→mend→explore) from the parent.
+#                   The parent's Phase 1 will then discover all sibling workspaces.
+#                   Returns 2 + NEEDLE_EXPLORE_NEW_WORKSPACE to trigger workspace switch.
 #
 # Usage:
 #   _needle_strand_explore <workspace> <agent>
@@ -25083,86 +25588,6 @@ _needle_explore_spawn_workers_if_needed() {
 }
 
 # ============================================================================
-# Phase 0: Check Configured Workspaces
-# ============================================================================
-
-# Find the first configured workspace with claimable beads.
-# Reads workspaces from config.yaml and checks each for unassigned beads.
-# Returns: workspace path on stdout (empty if none found)
-_needle_explore_find_configured_workspace_with_beads() {
-    local current_workspace="$1"
-
-    _needle_debug "explore: checking configured workspaces from config"
-
-    # Check if config file exists
-    if [[ ! -f "$NEEDLE_CONFIG_FILE" ]]; then
-        _needle_debug "explore: no config file found at $NEEDLE_CONFIG_FILE, skipping configured workspaces check"
-        return 1
-    fi
-
-    local ws_count=0
-    local checked_count=0
-
-    # Count total configured workspaces
-    while IFS= read -r ws; do
-        [[ -z "$ws" ]] && continue
-        ((ws_count++))
-    done < <(yq -r '.workspaces[]' "$NEEDLE_CONFIG_FILE" 2>/dev/null)
-
-    if [[ "$ws_count" -eq 0 ]]; then
-        _needle_debug "explore: no workspaces configured in config.yaml"
-        return 1
-    fi
-
-    _needle_debug "explore: found $ws_count configured workspace(s) to check"
-
-    # Check each configured workspace for claimable beads
-    while IFS= read -r ws; do
-        [[ -z "$ws" ]] && continue
-
-        # Expand tilde if present
-        ws="${ws/#\~/$HOME}"
-
-        # Skip the current workspace (we're already here, pluck would have found work)
-        [[ "$ws" == "$current_workspace" ]] && continue
-
-        ((checked_count++))
-        _needle_debug "explore: checking configured workspace: $ws"
-
-        # Verify the workspace exists
-        if [[ ! -d "$ws/.beads" ]]; then
-            _needle_debug "explore: workspace $ws has no .beads directory, skipping"
-            continue
-        fi
-
-        local bead_count
-        bead_count=$(_needle_explore_count_unassigned "$ws")
-
-        if (( bead_count > 0 )); then
-            _needle_info "explore: configured workspace $ws has $bead_count claimable bead(s)"
-            echo "$ws"
-            return 0
-        fi
-
-        # Also check for stale beads while we're here
-        local released
-        released=$(_needle_explore_check_stale "$ws")
-        if (( released > 0 )); then
-            _needle_info "explore: released $released stale bead(s) in configured workspace $ws"
-            # Re-check if this workspace now has claimable beads
-            bead_count=$(_needle_explore_count_unassigned "$ws")
-            if (( bead_count > 0 )); then
-                echo "$ws"
-                return 0
-            fi
-        fi
-    done < <(yq -r '.workspaces[]' "$NEEDLE_CONFIG_FILE" 2>/dev/null)
-
-    _needle_debug "explore: checked $checked_count configured workspace(s), found no work"
-    return 1
-}
-
-# ============================================================================
 # Phase 1: Search Children (Downward)
 # ============================================================================
 
@@ -25312,125 +25737,71 @@ _needle_strand_explore() {
         return 1
     fi
 
-    local max_depth
-    max_depth=$(_needle_explore_get_max_depth)
-
-    local max_upward
-    max_upward=$(_needle_explore_get_max_upward_depth)
-
-    # Phase 0: Check configured workspaces from config.yaml first
-    # This ensures we find work in ALL configured workspaces, not just filesystem neighbors
-    local configured_workspace
-    configured_workspace=$(_needle_explore_find_configured_workspace_with_beads "$workspace")
-
-    if [[ -n "$configured_workspace" ]]; then
-        _needle_info "explore: configured workspace $configured_workspace has beads, switching"
-
-        # Auto-scale: spawn additional workers if bead count exceeds threshold
-        _needle_explore_spawn_workers_if_needed "$configured_workspace" "$agent"
-
-        _needle_telemetry_emit "explore.workspace_switch" "info" \
-            "from=$workspace" \
-            "to=$configured_workspace" \
-            "direction=configured"
-
-        # Signal the engine to change workspace and restart
-        export NEEDLE_EXPLORE_NEW_WORKSPACE="$configured_workspace"
-        return 2
-    fi
-
-    # Phase 1: Traverse downward and upward, running pluck and mend
-    # into each discovered workspace directly. This avoids the workspace-switch
-    # overhead and the br ready filtering issue — just try to claim directly.
-
-    # Collect all discovered workspaces (children + siblings via upward walk)
-    local -a discovered_workspaces=()
-
-    # Children
+    # Phase 1: Search all child directories (unlimited depth) for workspaces with beads.
+    # Run mend+pluck inline in each discovered child workspace.
+    local -a child_workspaces=()
     while IFS= read -r beads_dir; do
         [[ -z "$beads_dir" ]] && continue
         local found_ws
         found_ws=$(dirname "$beads_dir")
         [[ "$found_ws" == "$workspace" ]] && continue
-        discovered_workspaces+=("$found_ws")
-    done < <(find "$workspace" -maxdepth "$max_depth" -name ".beads" -type d \
+        child_workspaces+=("$found_ws")
+    done < <(find "$workspace" -name ".beads" -type d \
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
         -not -path "*/.cache/*" 2>/dev/null)
 
-    # Walk upward and collect siblings
-    local current="$workspace"
-    local level=0
-    while (( level < max_upward )); do
-        local parent
-        parent=$(dirname "$current")
-        [[ "$parent" == "$current" ]] || [[ "$parent" == "/" ]] && break
-        ((level++))
+    if [[ ${#child_workspaces[@]} -gt 0 ]]; then
+        _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
 
-        while IFS= read -r beads_dir; do
-            [[ -z "$beads_dir" ]] && continue
-            local found_ws
-            found_ws=$(dirname "$beads_dir")
-            [[ "$found_ws" == "$workspace" ]] && continue
-            # Deduplicate
-            local already=false
-            for existing in "${discovered_workspaces[@]}"; do
-                [[ "$existing" == "$found_ws" ]] && already=true && break
-            done
-            $already || discovered_workspaces+=("$found_ws")
-        done < <(find "$parent" -maxdepth "$max_depth" -name ".beads" -type d \
-            -not -path "*/node_modules/*" \
-            -not -path "*/.git/*" \
-            -not -path "*/vendor/*" \
-            -not -path "*/.cache/*" 2>/dev/null)
+        # Run mend first (release stale/orphaned claims)
+        for ws in "${child_workspaces[@]}"; do
+            if declare -f _needle_strand_mend &>/dev/null; then
+                _needle_strand_mend "$ws" "$agent" 2>/dev/null
+            fi
+        done
 
-        current="$parent"
-    done
+        # Run pluck into each child workspace
+        for ws in "${child_workspaces[@]}"; do
+            if declare -f _needle_strand_pluck &>/dev/null; then
+                _needle_debug "explore: running pluck in child $ws"
 
-    if [[ ${#discovered_workspaces[@]} -eq 0 ]]; then
-        _needle_telemetry_emit "explore.scan_completed" "info" \
-            "workspace=$workspace" \
-            "result=no_workspaces_found"
-        _needle_debug "explore: no workspaces with beads found"
-        return 1
+                _needle_telemetry_emit "explore.workspace_pluck" "info" \
+                    "from=$workspace" \
+                    "to=$ws"
+
+                if _needle_strand_pluck "$ws" "$agent"; then
+                    _needle_info "explore: pluck found work in $ws"
+                    _needle_explore_spawn_workers_if_needed "$ws" "$agent"
+                    return 0
+                fi
+            fi
+        done
     fi
 
-    _needle_debug "explore: found ${#discovered_workspaces[@]} workspace(s), running mend+pluck into each"
+    # Phase 2: No work found in children. Move up one folder and signal the engine
+    # to restart the loop from the parent. The parent's explore Phase 1 will then
+    # discover all sibling workspaces as its children.
+    local parent
+    parent=$(dirname "$workspace")
+    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]]; then
+        _needle_info "explore: no work in children, walking up to $parent"
 
-    # Run mend into each workspace first (release stale/orphaned claims)
-    for ws in "${discovered_workspaces[@]}"; do
-        if declare -f _needle_strand_mend &>/dev/null; then
-            _needle_strand_mend "$ws" "$agent" 2>/dev/null
-        fi
-    done
+        _needle_telemetry_emit "explore.workspace_switch" "info" \
+            "from=$workspace" \
+            "to=$parent" \
+            "direction=up"
 
-    # Run pluck into each workspace (attempt to claim and work on beads)
-    for ws in "${discovered_workspaces[@]}"; do
-        if declare -f _needle_strand_pluck &>/dev/null; then
-            _needle_debug "explore: running pluck in $ws"
-
-            _needle_telemetry_emit "explore.workspace_pluck" "info" \
-                "from=$workspace" \
-                "to=$ws"
-
-            if _needle_strand_pluck "$ws" "$agent"; then
-                _needle_info "explore: pluck found work in $ws"
-
-                # Auto-scale if needed
-                _needle_explore_spawn_workers_if_needed "$ws" "$agent"
-
-                return 0  # Work done
-            fi
-        fi
-    done
+        export NEEDLE_EXPLORE_NEW_WORKSPACE="$parent"
+        return 2
+    fi
 
     _needle_telemetry_emit "explore.scan_completed" "info" \
         "workspace=$workspace" \
-        "discovered=${#discovered_workspaces[@]}" \
-        "result=no_claimable_work"
+        "result=no_work_found"
 
-    _needle_debug "explore: no claimable work in ${#discovered_workspaces[@]} discovered workspace(s)"
+    _needle_debug "explore: no claimable work found"
     return 1
 }
 
@@ -25514,14 +25885,12 @@ _needle_strand_mend() {
     local heartbeat_count=0
     local log_count=0
 
-    # Collect all configured workspaces to check for orphaned/stale claims
+    # Collect all workspaces to check for orphaned/stale claims
     local workspaces=()
     workspaces+=("$workspace")
 
-    # Add all configured workspaces from config
-    local config
-    config=$(load_config 2>/dev/null)
-    if [[ -n "$config" ]]; then
+    # Add all dynamically discovered workspaces
+    if declare -f _needle_discover_all_workspaces &>/dev/null; then
         while IFS= read -r ws; do
             [[ -z "$ws" ]] && continue
             # Deduplicate — skip if already in list
@@ -25535,7 +25904,7 @@ _needle_strand_mend() {
             if ! $already && [[ -d "$ws/.beads" ]]; then
                 workspaces+=("$ws")
             fi
-        done < <(echo "$config" | jq -r '.workspaces[]? // empty' 2>/dev/null)
+        done < <(_needle_discover_all_workspaces 2>/dev/null)
     fi
 
     # 1. Clean orphaned claims across all workspaces
@@ -33197,8 +33566,8 @@ runner:
 # Strand configuration
 # Values: true (always enabled), false (always disabled), auto (follows billing model)
 strands:
-  pluck: auto    # Primary work from configured workspaces
-  explore: auto  # Look for work in other workspaces
+  pluck: auto    # Primary work from the auto-discovered workspace
+  explore: auto  # Look for work in other discovered workspaces
   mend: auto     # Maintenance and cleanup
   weave: auto    # Create beads from documentation gaps
   unravel: auto  # Create alternatives for blocked beads
@@ -34330,17 +34699,6 @@ _needle_init() {
         _needle_config_set "editor" "\"$editor\""
         _needle_config_set "timezone" "\"$timezone\""
 
-        # Add workspace to config if we have one
-        if [[ -n "$NEEDLE_CONFIG_WORKSPACE" ]]; then
-            # Check if workspaces section exists, if not create it
-            if ! grep -q "^workspaces:" "$config_file" 2>/dev/null; then
-                echo "" >> "$config_file"
-                echo "workspaces:" >> "$config_file"
-            fi
-            # Add the workspace path
-            echo "  - \"$NEEDLE_CONFIG_WORKSPACE\"" >> "$config_file"
-        fi
-
         _needle_success "Updated configuration settings"
     fi
 
@@ -34424,7 +34782,7 @@ USAGE:
 
 OPTIONS:
     -w, --workspace <PATH>   Workspace directory to process beads from
-                             [default: current directory or config default]
+                             [default: auto-discovered - see WORKSPACE DISCOVERY]
 
     -a, --agent <NAME>       Agent adapter to use for execution
                              [default: from config]
@@ -34454,8 +34812,18 @@ OPTIONS:
     -v, --verbose            Enable verbose output
     -h, --help               Print help information
 
+WORKSPACE DISCOVERY:
+    When --workspace is omitted, NEEDLE automatically discovers the best
+    workspace by scanning for .beads/ directories and selecting the one
+    with the most unassigned beads (ties broken by recent activity).
+
+    Multi-worker distribution (--count=N):
+      Workers are distributed round-robin across the top-N workspaces
+      with the most claimable beads. Each worker processes its assigned
+      workspace independently.
+
 STRANDS:
-    1. pluck     - Process beads from configured workspaces
+    1. pluck     - Process beads from the assigned workspace
     2. explore   - Look for work in other workspaces
     3. mend      - Maintenance and cleanup tasks
     4. weave     - Create beads from documentation gaps (opt-in)
@@ -34464,14 +34832,14 @@ STRANDS:
     7. knot      - Alert human when stuck
 
 EXAMPLES:
-    # Start a worker with defaults
-    needle run
+    # Start a worker - workspace auto-discovered
+    needle run --agent=claude-anthropic-sonnet
 
-    # Start with explicit workspace and agent
+    # Start with explicit workspace (disables distribution)
     needle run --workspace=/home/coder/project --agent=claude-anthropic-sonnet
 
-    # Start 3 workers
-    needle run --count=3
+    # Start 3 workers - distributed across workspaces with most work
+    needle run --count=3 --agent=claude-anthropic-sonnet
 
     # Start with custom identifier
     needle run --id=primary
@@ -34503,12 +34871,30 @@ SEE ALSO:
 # Usage: _needle_validate_workspace <path>
 # Returns: 0 if valid, 1 if invalid
 # Sets: NEEDLE_VALIDATED_WORKSPACE to absolute path
+#       NEEDLE_WORKSPACE_AUTO_SELECTED to "true" if auto-discovered
 _needle_validate_workspace() {
     local workspace="$1"
+    local auto_selected=false
 
-    # If not specified, use current directory
+    # If not specified, discover dynamically
     if [[ -z "$workspace" ]]; then
-        workspace="$(pwd)"
+        # Check if discovery function is available
+        if declare -f _needle_discover_workspace &>/dev/null; then
+            workspace=$(_needle_discover_workspace)
+            if [[ -z "$workspace" ]]; then
+                _needle_error "No workspace with open beads found"
+                _needle_info "Specify a workspace with --workspace or create beads in a project"
+                return 1
+            fi
+            auto_selected=true
+            NEEDLE_WORKSPACE_AUTO_SELECTED="true"
+            export NEEDLE_WORKSPACE_AUTO_SELECTED
+            _needle_info "Auto-selected workspace: $workspace (freshest unserviced beads)"
+        else
+            _needle_error "Workspace discovery unavailable (workspace.sh not loaded)"
+            _needle_info "Specify a workspace with --workspace"
+            return 1
+        fi
     fi
 
     # Resolve to absolute path
@@ -34529,6 +34915,20 @@ _needle_validate_workspace() {
         _needle_error "Workspace missing .beads/ directory: $abs_path"
         _needle_info "Run 'needle init' in the workspace to initialize it"
         return 1
+    fi
+
+    # Emit telemetry event if auto-selected
+    if [[ "$auto_selected" == "true" ]]; then
+        # Get bead count for context
+        local bead_count=0
+        if declare -f _needle_workspace_bead_count &>/dev/null; then
+            bead_count=$(_needle_workspace_bead_count "$abs_path")
+        fi
+        _needle_emit_event "workspace.auto_selected" \
+            "Workspace auto-discovered for run" \
+            "workspace=$abs_path" \
+            "bead_count=$bead_count" \
+            "reason=freshest_unserviced"
     fi
 
     # Valid - store and export
@@ -35254,9 +35654,9 @@ _needle_spawn_single_worker() {
     fi
 }
 
-# Spawn multiple workers in parallel
+# Spawn multiple workers in parallel, distributing across workspaces
 # Arguments:
-#   $1 - Workspace path
+#   $1 - Workspace path (primary workspace, may be auto-selected)
 #   $2 - Agent name
 #   $3 - Provider name
 #   $4 - Number of workers to spawn
@@ -35264,8 +35664,12 @@ _needle_spawn_single_worker() {
 #   $6 - No hooks flag (true/false)
 # Returns: Array of session names (newline-separated)
 # Usage: sessions=$(_needle_spawn_multiple_workers "/workspace" "claude-anthropic-sonnet" "anthropic" 5 "10.00" "false")
+#
+# Round-robin distribution (when workspace was auto-selected):
+#   If NEEDLE_WORKSPACE_AUTO_SELECTED=true, workers are distributed across
+#   the top-N workspaces with the most claimable beads.
 _needle_spawn_multiple_workers() {
-    local workspace="$1"
+    local primary_workspace="$1"
     local agent="$2"
     local provider="$3"
     local count="$4"
@@ -35292,11 +35696,43 @@ _needle_spawn_multiple_workers() {
         used="$used $next_id"
     done
 
-    # Spawn workers in parallel (non-blocking)
+    # Determine workspaces for round-robin distribution
+    local -a workspaces=()
+    if [[ "${NEEDLE_WORKSPACE_AUTO_SELECTED:-}" == "true" ]] && declare -f _needle_discover_top_workspaces &>/dev/null; then
+        # Auto-selected: distribute across top workspaces with most work
+        while IFS= read -r ws; do
+            [[ -n "$ws" ]] && workspaces+=("$ws")
+        done < <(_needle_discover_top_workspaces "$count")
+
+        # Ensure primary workspace is included if discovery didn't return enough
+        if [[ ${#workspaces[@]} -lt $count ]]; then
+            # Check if primary is already in the list
+            local primary_in_list=false
+            for ws in "${workspaces[@]}"; do
+                [[ "$ws" == "$primary_workspace" ]] && primary_in_list=true && break
+            done
+            if [[ "$primary_in_list" == "false" ]]; then
+                workspaces=("$primary_workspace" "${workspaces[@]}")
+            fi
+        fi
+
+        _needle_info "Distributing $count workers across ${#workspaces[@]} workspace(s)"
+    else
+        # Explicit workspace: all workers go to same workspace
+        for ((i = 0; i < count; i++)); do
+            workspaces+=("$primary_workspace")
+        done
+    fi
+
+    # Spawn workers in round-robin across workspaces
     local spawned_sessions=()
-    local pids=()
+    local workspace_index=0
 
     for identifier in "${identifiers[@]}"; do
+        # Round-robin: cycle through available workspaces
+        local workspace="${workspaces[$((workspace_index % ${#workspaces[@]}))]}"
+        ((workspace_index++))
+
         # Generate session name
         local session
         session=$(_needle_generate_session_name "" "$runner" "$provider" "$model" "$identifier")
@@ -35315,7 +35751,16 @@ _needle_spawn_multiple_workers() {
         # Create tmux session (non-blocking)
         if _needle_create_session "$session" "${cmd_args[*]}"; then
             spawned_sessions+=("$session")
-            _needle_debug "Spawned worker: $session"
+            _needle_debug "Spawned worker: $session in $workspace"
+
+            # Emit telemetry for distributed spawn
+            if [[ "${NEEDLE_WORKSPACE_AUTO_SELECTED:-}" == "true" ]] && [[ "$workspace" != "$primary_workspace" ]]; then
+                _needle_emit_event "worker.distributed_spawn" \
+                    "Worker spawned in discovered workspace" \
+                    "session=$session" \
+                    "workspace=$workspace" \
+                    "primary_workspace=$primary_workspace"
+            fi
         else
             _needle_warn "Failed to spawn worker: $session"
         fi
@@ -37592,10 +38037,14 @@ _needle_status_display() {
     local workspace
     workspace=$(_needle_status_get_workspace)
 
+    # Discover all workspaces with their worker/bead status
+    local workspaces_json
+    workspaces_json=$(_needle_status_get_all_workspaces "$workers_json")
+
     if [[ "$json_output" == "true" ]]; then
-        _needle_status_output_json "$workers_json" "$beads_json" "$strands_json" "$effort_json" "$workspace"
+        _needle_status_output_json "$workers_json" "$beads_json" "$strands_json" "$effort_json" "$workspace" "$workspaces_json"
     else
-        _needle_status_output_dashboard "$workers_json" "$workers_count" "$beads_json" "$strands_json" "$effort_json" "$workspace"
+        _needle_status_output_dashboard "$workers_json" "$workers_count" "$beads_json" "$strands_json" "$effort_json" "$workspace" "$workspaces_json"
     fi
 }
 
@@ -37718,6 +38167,71 @@ _needle_status_get_workspace() {
     fi
 }
 
+# Collect data for all dynamically discovered workspaces.
+# Workers JSON is passed in to avoid re-reading the workers file.
+#
+# Usage: _needle_status_get_all_workspaces <workers_json>
+# Returns: JSON array [{path, open, workers}]
+_needle_status_get_all_workspaces() {
+    local workers_json="${1:-[]}"
+
+    if ! command -v br &>/dev/null; then
+        echo "[]"
+        return 0
+    fi
+
+    # Determine discovery root from config
+    local discovery_root="$HOME"
+    if declare -f get_config &>/dev/null; then
+        local configured_root
+        configured_root=$(get_config "discovery.root" "" 2>/dev/null)
+        configured_root="${configured_root/#\~/$HOME}"
+        if [[ -n "$configured_root" && -d "$configured_root" ]]; then
+            discovery_root="$configured_root"
+        fi
+    fi
+
+    # Discover all workspaces
+    local workspaces_list=""
+    if declare -f _needle_discover_all_workspaces &>/dev/null; then
+        workspaces_list=$(_needle_discover_all_workspaces "$discovery_root" 2>/dev/null)
+    fi
+
+    if [[ -z "$workspaces_list" ]]; then
+        echo "[]"
+        return 0
+    fi
+
+    local workspace_entries="[]"
+    while IFS= read -r ws; do
+        [[ -z "$ws" ]] && continue
+        [[ ! -d "$ws/.beads" ]] && continue
+
+        # Count open (unassigned) beads in this workspace
+        local open_count
+        open_count=$(cd "$ws" && br list --status open --unassigned --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+        [[ ! "$open_count" =~ ^[0-9]+$ ]] && open_count=0
+
+        # Count active workers for this workspace
+        local worker_count
+        worker_count=$(echo "$workers_json" | jq --arg ws "$ws" '[.[] | select(.workspace == $ws)] | length' 2>/dev/null || echo "0")
+        [[ ! "$worker_count" =~ ^[0-9]+$ ]] && worker_count=0
+
+        # Include workspace if it has open beads or active workers
+        if [[ "$open_count" -gt 0 ]] || [[ "$worker_count" -gt 0 ]]; then
+            local entry
+            entry=$(jq -n \
+                --arg path "$ws" \
+                --argjson open "$open_count" \
+                --argjson workers "$worker_count" \
+                '{path: $path, open: $open, workers: $workers}')
+            workspace_entries=$(echo "$workspace_entries" | jq ". + [$entry]" 2>/dev/null || echo "$workspace_entries")
+        fi
+    done <<< "$workspaces_list"
+
+    echo "$workspace_entries"
+}
+
 # Output JSON format
 _needle_status_output_json() {
     local workers_json="$1"
@@ -37725,6 +38239,7 @@ _needle_status_output_json() {
     local strands_json="$3"
     local effort_json="$4"
     local workspace="$5"
+    local workspaces_json="${6:-[]}"
 
     local initialized="false"
     local config_exists="false"
@@ -37745,6 +38260,7 @@ _needle_status_output_json() {
         --arg workspace "$workspace" \
         --argjson workers "$workers_json" \
         --argjson beads "$beads_json" \
+        --argjson workspaces "$workspaces_json" \
         --argjson strands "$strands_json" \
         --argjson effort "$effort_json" \
         '{
@@ -37754,6 +38270,7 @@ _needle_status_output_json() {
             workspace: $workspace,
             workers: $workers,
             beads: $beads,
+            workspaces: $workspaces,
             strands: $strands,
             effort: $effort
         }'
@@ -37767,6 +38284,7 @@ _needle_status_output_dashboard() {
     local strands_json="$4"
     local effort_json="$5"
     local workspace="$6"
+    local workspaces_json="${7:-[]}"
 
     # Header
     local header_width=63
@@ -37778,6 +38296,9 @@ _needle_status_output_dashboard() {
 
     # WORKERS section
     _needle_status_display_workers "$workers_json" "$workers_count"
+
+    # WORKSPACES section (dynamically discovered)
+    _needle_status_display_workspaces "$workspaces_json"
 
     # BEADS section
     _needle_status_display_beads "$beads_json" "$workspace"
@@ -37821,6 +38342,46 @@ _needle_status_display_workers() {
             _needle_print "  $display_session  $runtime"
         done
     fi
+
+    _needle_print ""
+}
+
+# Display workspaces section (dynamically discovered)
+_needle_status_display_workspaces() {
+    local workspaces_json="$1"
+
+    local count
+    count=$(echo "$workspaces_json" | jq 'length' 2>/dev/null || echo "0")
+
+    _needle_print_color "$NEEDLE_COLOR_BOLD" "WORKSPACES (discovered: $count)"
+
+    if [[ "$count" -eq 0 ]]; then
+        _needle_print "  No workspaces with active work found"
+        _needle_print ""
+        return
+    fi
+
+    echo "$workspaces_json" | jq -c '.[]' 2>/dev/null | while IFS= read -r ws_entry; do
+        local path open workers
+        path=$(echo "$ws_entry" | jq -r '.path')
+        open=$(echo "$ws_entry" | jq -r '.open')
+        workers=$(echo "$ws_entry" | jq -r '.workers')
+
+        # Shorten path for display
+        local display_path="${path/#$HOME/\~}"
+
+        # Build annotation
+        local annotation=""
+        if [[ "$workers" -gt 0 ]] && [[ "$open" -gt 0 ]]; then
+            annotation="  active: $workers worker(s), open: $open"
+        elif [[ "$workers" -gt 0 ]]; then
+            annotation="  active: $workers worker(s)"
+        elif [[ "$open" -gt 0 ]]; then
+            annotation="  open: $open  (unserviced)"
+        fi
+
+        printf "  %-40s%s\n" "$display_path" "$annotation"
+    done
 
     _needle_print ""
 }
