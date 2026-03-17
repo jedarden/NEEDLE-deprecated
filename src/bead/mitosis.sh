@@ -919,6 +919,10 @@ _needle_perform_mitosis() {
         "parent_id=$parent_id" \
         "children_count=$children_count"
 
+    # Mark parent as mitosis-parent BEFORE creating children to prevent another
+    # worker from claiming and splitting the same parent (race condition)
+    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
+
     # Array to collect child IDs
     local -a child_ids=()
     local prev_id=""
@@ -1061,6 +1065,8 @@ _needle_perform_mitosis() {
     # Check if any children were created
     if [[ ${#child_ids[@]} -eq 0 ]]; then
         _needle_error "Mitosis failed: no children created"
+        # Roll back the early mitosis-parent label since no children were made
+        br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
         _needle_emit_event "bead.mitosis.failed" \
             "Mitosis failed: no children created" \
             "parent_id=$parent_id"
@@ -1075,9 +1081,6 @@ _needle_perform_mitosis() {
 
     # Release any claim on parent (children will be worked instead)
     br update "$parent_id" --release --reason "mitosis" 2>/dev/null || true
-
-    # Add mitosis-parent label to parent
-    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
 
     # Emit mitosis complete event
     local children_list
