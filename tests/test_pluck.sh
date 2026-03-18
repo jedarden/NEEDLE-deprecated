@@ -635,6 +635,10 @@ case "$1" in
     show)
         echo '[{"id":"bd-fc2","title":"Test","priority":2,"labels":["failure-count:2"]}]'
         ;;
+    label)
+        # br label list <bead_id> --no-color
+        echo "failure-count:2"
+        ;;
     update)
         echo "Updated"
         exit 0
@@ -694,6 +698,10 @@ case "\$1" in
     show)
         echo '[{"id":"bd-inc2","title":"Test","priority":2,"labels":["failure-count:3"]}]'
         ;;
+    label)
+        # br label list <bead_id> --no-color
+        echo "failure-count:3"
+        ;;
     update)
         echo "\$@" >> "$BR_LOG"
         echo "Updated"
@@ -750,6 +758,10 @@ echo "\$@" >> "$BR_FORCE_LOG"
 case "\$1" in
     show)
         echo '[{"id":"bd-fm1","title":"Force Mitosis Test","priority":2,"labels":["failure-count:2"],"description":"line1\nline2\nline3\nline4\nline5\nline6"}]'
+        ;;
+    label)
+        # br label list <bead_id> --no-color
+        echo "failure-count:2"
         ;;
     update)
         echo "Updated"
@@ -809,6 +821,10 @@ echo "\$@" >> "$BR_QUARAN_LOG"
 case "\$1" in
     show)
         echo '[{"id":"bd-quar1","title":"Quarantine Test","priority":2,"labels":["failure-count:2"]}]'
+        ;;
+    label)
+        # br label list <bead_id> --no-color
+        echo "failure-count:2"
         ;;
     update)
         if echo "\$@" | grep -q "quarantined"; then
