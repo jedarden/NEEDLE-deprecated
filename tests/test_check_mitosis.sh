@@ -532,6 +532,48 @@ else
 fi
 
 # ============================================================================
+# Genesis bead guard (nd-7dl7cj)
+# ============================================================================
+
+test_case "genesis bead is skipped (no-mitosis label applied)"
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+rc=$?
+if [[ $rc -ne 0 ]]; then
+    test_pass
+else
+    test_fail "Expected non-zero exit for genesis bead type"
+fi
+
+test_case "genesis bead receives no-mitosis label automatically"
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if grep -q "update nd-test --label no-mitosis" "$BR_LOG" 2>/dev/null; then
+    test_pass
+else
+    test_fail "Expected 'br update nd-test --label no-mitosis' to be called for genesis bead"
+fi
+
+test_case "genesis bead skipped even with force=true"
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2","priority":1}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" "true" "5" &>/dev/null
+rc=$?
+if [[ $rc -ne 0 ]]; then
+    test_pass
+else
+    test_fail "Expected non-zero exit for genesis bead even with force=true"
+fi
+
+test_case "genesis bead skipped and analysis not called"
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if [[ ! -s "$ANALYZE_LOG" ]]; then
+    test_pass
+else
+    test_fail "Expected analysis NOT to be called for genesis bead"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 
