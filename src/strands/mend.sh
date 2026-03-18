@@ -6,6 +6,7 @@
 #
 # This strand handles maintenance tasks such as:
 # - Cleaning up orphaned claims (beads assigned to dead workers)
+# - Removing stale dependency links (open beads blocked by closed beads)
 # - Pruning old heartbeat files from dead workers
 # - Log rotation and cleanup
 #
@@ -40,6 +41,7 @@ _needle_strand_mend() {
     local work_done=false
     local orphaned_count=0
     local stale_count=0
+    local stale_dep_count=0
     local heartbeat_count=0
     local log_count=0
 
@@ -83,14 +85,23 @@ _needle_strand_mend() {
         fi
     done
 
-    # 3. Prune old heartbeat files from dead workers
+    # 3. Remove stale dependency links on open beads blocked by closed beads
+    for ws in "${workspaces[@]}"; do
+        _needle_diag_strand "mend" "Checking for stale dep links" "workspace=$ws"
+        if _needle_mend_stale_deps "$ws"; then
+            work_done=true
+            ((stale_dep_count++))
+        fi
+    done
+
+    # 4. Prune old heartbeat files from dead workers
     _needle_diag_strand "mend" "Checking for old heartbeats"
     if _needle_mend_old_heartbeats; then
         work_done=true
         heartbeat_count=1
     fi
 
-    # 4. Log rotation/cleanup (if configured)
+    # 5. Log rotation/cleanup (if configured)
     _needle_diag_strand "mend" "Checking for log cleanup"
     if _needle_mend_logs; then
         work_done=true
@@ -102,6 +113,7 @@ _needle_strand_mend() {
             "workspace=$workspace" \
             "orphaned_cleaned=$orphaned_count" \
             "stale_cleaned=$stale_count" \
+            "stale_deps_cleaned=$stale_dep_count" \
             "heartbeats_cleaned=$heartbeat_count" \
             "logs_cleaned=$log_count"
 
@@ -113,6 +125,7 @@ _needle_strand_mend() {
         "workspace=$workspace" \
         "orphaned_checked=true" \
         "stale_checked=true" \
+        "stale_deps_checked=true" \
         "heartbeats_checked=true" \
         "logs_checked=true"
 
@@ -674,6 +687,112 @@ _needle_mend_logs() {
             "previous_count=$log_count" \
             "max_files=$max_files"
 
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# Stale Dependency Cleanup
+# ============================================================================
+
+# Detect and remove stale dependency links on open beads
+# A stale dependency is a "blocks"-type link pointing to a closed (DONE) bead.
+# Workers cannot claim beads that appear blocked, even if the blocker is resolved.
+#
+# Usage: _needle_mend_stale_deps <workspace>
+# Returns: 0 if any stale deps were removed, 1 if none
+_needle_mend_stale_deps() {
+    local workspace="$1"
+    local removed=0
+
+    # Resolve the workspace database path
+    local db_path=""
+    if [[ -f "$workspace/.beads/beads.db" ]]; then
+        db_path="$workspace/.beads/beads.db"
+    else
+        local found_db
+        found_db=$(find "$workspace" -maxdepth 2 -path '*/.beads/beads.db' -type f 2>/dev/null | head -1)
+        if [[ -n "$found_db" ]]; then
+            db_path="$found_db"
+        fi
+    fi
+
+    if [[ -z "$db_path" ]]; then
+        _needle_debug "mend: no beads database found in $workspace"
+        return 1
+    fi
+
+    # Get all open beads
+    local open_beads
+    open_beads=$(br list --db="$db_path" --status open --json 2>/dev/null)
+
+    if [[ -z "$open_beads" ]] || [[ "$open_beads" == "[]" ]] || [[ "$open_beads" == "null" ]]; then
+        _needle_debug "mend: no open beads found in $workspace"
+        return 1
+    fi
+
+    if ! echo "$open_beads" | jq -e '.[]' &>/dev/null; then
+        _needle_debug "mend: no valid open beads data for stale dep check"
+        return 1
+    fi
+
+    # Check each open bead for stale blocking dependencies
+    while IFS= read -r bead; do
+        local bead_id dep_count
+        bead_id=$(echo "$bead" | jq -r '.id // empty')
+        dep_count=$(echo "$bead" | jq -r '.dependency_count // 0')
+
+        [[ -z "$bead_id" ]] && continue
+
+        # Skip beads with no dependencies (optimization)
+        if [[ "$dep_count" -eq 0 ]]; then
+            continue
+        fi
+
+        # Get blocks-type dependencies for this bead
+        local deps
+        deps=$(br dep list "$bead_id" --db="$db_path" -t blocks --json 2>/dev/null)
+
+        if [[ -z "$deps" ]] || [[ "$deps" == "[]" ]] || [[ "$deps" == "null" ]]; then
+            continue
+        fi
+
+        # Check each dependency for staleness
+        while IFS= read -r dep; do
+            local dep_id dep_status
+
+            # depends_on_id is the canonical field from the JSONL schema;
+            # fall back to id in case the CLI enriches with target bead fields
+            dep_id=$(echo "$dep" | jq -r '.depends_on_id // .id // empty')
+            dep_status=$(echo "$dep" | jq -r '.status // empty')
+
+            [[ -z "$dep_id" ]] && continue
+
+            # Only remove the link if the blocking bead is confirmed closed
+            if [[ "$dep_status" == "closed" ]]; then
+                _needle_warn "mend: stale dep detected — $bead_id blocked by closed bead $dep_id"
+
+                if br dep remove "$bead_id" "$dep_id" --db="$db_path" 2>/dev/null; then
+                    _needle_info "mend: removed stale dep link $bead_id -> $dep_id"
+
+                    _needle_emit_event "mend.stale_dep_removed" \
+                        "Removed stale dependency on closed bead" \
+                        "bead_id=$bead_id" \
+                        "blocking_bead_id=$dep_id" \
+                        "workspace=$workspace"
+
+                    ((removed++))
+                else
+                    _needle_warn "mend: failed to remove stale dep $bead_id -> $dep_id"
+                fi
+            fi
+        done < <(echo "$deps" | jq -c '.[]' 2>/dev/null)
+    done < <(echo "$open_beads" | jq -c '.[]' 2>/dev/null)
+
+    if ((removed > 0)); then
+        _needle_info "mend: removed $removed stale dep link(s) in $workspace"
         return 0
     fi
 
