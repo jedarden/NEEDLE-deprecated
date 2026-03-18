@@ -156,6 +156,11 @@ NEEDLE_WS_CONFIG_LOADED_AT=0
 NEEDLE_CONFIG_CHECK_INTERVAL=15
 NEEDLE_CONFIG_CHECK_COUNTER=0
 
+# Track binary mtime for hot-reload detection
+# Recorded once at startup; compared during worker loop to detect binary replacement
+NEEDLE_BINARY_PATH=""
+NEEDLE_BINARY_MTIME_AT_START=0
+
 # ============================================================================
 # Backoff and Crash Recovery Functions
 # ============================================================================
@@ -457,6 +462,39 @@ _needle_init_config_tracking() {
     fi
 
     _needle_debug "Config tracking initialized: global=$NEEDLE_GLOBAL_CONFIG_LOADED_AT, workspace=$NEEDLE_WS_CONFIG_LOADED_AT"
+}
+
+# Initialize binary mtime tracking for hot-reload detection
+# Records the mtime of the needle binary at startup.
+# Called once at worker startup; comparison happens in the polling loop (separate task).
+# Usage: _needle_init_binary_mtime_tracking
+_needle_init_binary_mtime_tracking() {
+    local binary_path=""
+
+    # Resolve binary path: NEEDLE_SRC is src/, so the binary lives one level up in bin/
+    local candidate
+    candidate="$(dirname "$NEEDLE_SRC")/bin/needle"
+    if [[ -x "$candidate" ]]; then
+        # Follow symlinks so we track the real file, not the symlink
+        binary_path="$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")"
+    else
+        # Fall back to locating needle in PATH
+        local in_path
+        in_path="$(command -v needle 2>/dev/null || true)"
+        if [[ -n "$in_path" ]]; then
+            binary_path="$(readlink -f "$in_path" 2>/dev/null || echo "$in_path")"
+        fi
+    fi
+
+    NEEDLE_BINARY_PATH="$binary_path"
+
+    if [[ -n "$binary_path" ]] && [[ -f "$binary_path" ]]; then
+        NEEDLE_BINARY_MTIME_AT_START=$(_needle_get_config_mtime "$binary_path")
+        _needle_debug "Binary mtime recorded at startup: path=$binary_path mtime=$NEEDLE_BINARY_MTIME_AT_START"
+    else
+        NEEDLE_BINARY_MTIME_AT_START=0
+        _needle_debug "Binary path not resolved; binary mtime tracking disabled"
+    fi
 }
 
 # Check if configuration files have changed and reload if needed
@@ -1075,6 +1113,9 @@ _needle_worker_loop_init() {
 
     # Initialize config change tracking timestamps (required before hot-reload checks)
     _needle_init_config_tracking
+
+    # Record binary mtime at startup (used later for binary hot-reload polling)
+    _needle_init_binary_mtime_tracking
 
     _NEEDLE_LOOP_INIT=true
     _needle_debug "Worker loop initialized"
