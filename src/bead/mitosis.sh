@@ -968,8 +968,15 @@ _needle_perform_mitosis() {
 
     # Transition mitosis-pending → mitosis-parent: replace the temporary lock with
     # the permanent parent marker before creating children.
-    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
-    br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+    # CRITICAL: must run in workspace context — bare br update writes to cwd's DB,
+    # which may be a different workspace than the bead's.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        (cd "$workspace" && br update "$parent_id" --label "mitosis-parent" 2>/dev/null) || true
+        (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+    else
+        br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
+        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+    fi
 
     # Array to collect child IDs
     local -a child_ids=()
@@ -1114,8 +1121,13 @@ _needle_perform_mitosis() {
     if [[ ${#child_ids[@]} -eq 0 ]]; then
         _needle_error "Mitosis failed: no children created"
         # Roll back labels: remove both mitosis-parent and mitosis-pending
-        br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
-        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null) || true
+            (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
+            br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         _needle_emit_event "bead.mitosis.failed" \
             "Mitosis failed: no children created" \
             "parent_id=$parent_id"
