@@ -223,6 +223,11 @@ _needle_strand_engine() {
 
     _needle_debug "Starting strand engine for workspace: $workspace, agent: $agent"
 
+    # Reset explore upward traversal count for this fresh engine run.
+    # The counter is preserved across workspace switches (within the loop below)
+    # but must be cleared between separate engine invocations.
+    unset NEEDLE_EXPLORE_UPWARD_COUNT
+
     # Track strand results for final diagnostic
     local strand_results=()
     local disabled_count=0

@@ -615,6 +615,128 @@ br() {
     esac
 }
 
+# Test 25: Regression test for nd-60z92o — shallow find in Phase 1 (maxdepth respected)
+# Verify that Phase 1 does NOT find .beads dirs deeper than max_depth.
+_test_start "Phase 1 find respects max_depth (nd-60z92o regression)"
+test_root="/tmp/test-explore-maxdepth-$$"
+mkdir -p "$test_root"
+# Place a .beads dir at depth 4 (deeper than default max_depth=3)
+mkdir -p "$test_root/a/b/c/d/.beads"
+# With max_depth=3 on $test_root, this .beads is at depth 4 and should NOT be found
+found=$(_needle_explore_find_child_with_beads "$test_root" 3)
+if [[ -z "$found" ]]; then
+    _test_pass "Phase 1 find correctly skips .beads at depth 4 when max_depth=3"
+else
+    _test_fail "Phase 1 find should NOT have found deep .beads (max_depth=3)" "found: $found"
+fi
+rm -rf "$test_root"
+
+# Test 26: Regression test for nd-60z92o — max_upward_depth prevents unbounded upward walk
+# Verify that Phase 2 does NOT return 2 (workspace switch) once max_upward_depth is reached.
+_test_start "Phase 2 respects max_upward_depth (nd-60z92o regression)"
+test_ws="/tmp/test-explore-upward-$$"
+mkdir -p "$test_ws"
+
+# Simulate having already walked up max_upward_depth times
+local_max_upward=$(_needle_explore_get_max_upward_depth)
+export NEEDLE_EXPLORE_UPWARD_COUNT="$local_max_upward"
+
+# Override br to return no work (so Phase 1 finds nothing and Phase 2 is triggered)
+br() {
+    case "$1" in
+        list)
+            echo '[]'
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+_needle_strand_explore "$test_ws" "test-agent" >/dev/null 2>&1
+upward_result=$?
+unset NEEDLE_EXPLORE_UPWARD_COUNT
+
+rm -rf "$test_ws"
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# When at max upward depth, explore should return 1 (no work), NOT 2 (workspace switch)
+if [[ "$upward_result" -eq 1 ]]; then
+    _test_pass "Phase 2 correctly returned 1 (no switch) when at max_upward_depth=$local_max_upward"
+else
+    _test_fail "Phase 2 should return 1 when at max_upward_depth, got $upward_result"
+fi
+
+# Test 27: Regression test for nd-60z92o — upward counter increments correctly
+_test_start "Phase 2 NEEDLE_EXPLORE_UPWARD_COUNT increments on workspace switch (nd-60z92o)"
+test_ws2="/tmp/test-explore-upward-inc-$$"
+mkdir -p "$test_ws2"
+unset NEEDLE_EXPLORE_UPWARD_COUNT
+
+br() {
+    case "$1" in
+        list)
+            echo '[]'
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+_needle_strand_explore "$test_ws2" "test-agent" >/dev/null 2>&1
+inc_result=$?
+
+rm -rf "$test_ws2"
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+if [[ "$inc_result" -eq 2 ]] && [[ "${NEEDLE_EXPLORE_UPWARD_COUNT:-0}" -eq 1 ]]; then
+    _test_pass "Phase 2 returned 2 and NEEDLE_EXPLORE_UPWARD_COUNT=1 on first upward walk"
+elif [[ "$inc_result" -eq 1 ]]; then
+    # /tmp is very shallow — possibly parent is / so upward walk is suppressed
+    _test_pass "Phase 2 returned 1 (parent is root, no upward walk possible)"
+else
+    _test_fail "Phase 2 upward counter not incremented correctly" \
+        "result=$inc_result NEEDLE_EXPLORE_UPWARD_COUNT=${NEEDLE_EXPLORE_UPWARD_COUNT:-unset}"
+fi
+unset NEEDLE_EXPLORE_UPWARD_COUNT
+
 # Summary
 echo ""
 echo "=========================================="

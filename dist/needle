@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # NEEDLE - Navigates Every Enqueued Deliverable, Logs Effort
-# Version: 0.12.0
+# Version: 0.14.0
 #
 # Universal orchestration wrapper for headless coding CLI agents
 # https://github.com/jedarden/NEEDLE
 #
 # This is a bundled distribution. Source available at the URL above.
 #
-# Generated: 2026-03-18T05:36:31Z
+# Generated: 2026-03-18T14:41:10Z
 #
 
 set -euo pipefail
@@ -17,8 +17,8 @@ set -euo pipefail
 # Version & Metadata
 # -----------------------------------------------------------------------------
 
-NEEDLE_VERSION="0.12.0"
-NEEDLE_BUILD_DATE="2026-03-18T05:36:31Z"
+NEEDLE_VERSION="0.14.0"
+NEEDLE_BUILD_DATE="2026-03-18T14:41:10Z"
 
 # -----------------------------------------------------------------------------
 # Module Loading Guards
@@ -972,9 +972,9 @@ _needle_extract_embedded_agents() {
 # Global constants and version information
 
 # Version information
-NEEDLE_VERSION="0.12.0"
+NEEDLE_VERSION="0.14.0"
 NEEDLE_VERSION_MAJOR=0
-NEEDLE_VERSION_MINOR=12
+NEEDLE_VERSION_MINOR=14
 NEEDLE_VERSION_PATCH=0
 
 # GitHub repository for self-update
@@ -14799,14 +14799,9 @@ print(depth)
         return 1
     fi
 
-    # Genesis beads are phase orchestrators tied to a plan document.
-    # When a genesis bead is unblocked (all current-phase children complete),
-    # mitosis should create the NEXT phase's child beads from the plan.
-    # The LLM analysis prompt includes the plan reference and progress checklist,
-    # so mitosis will naturally create children for the next incomplete phase.
-    if [[ "$bead_type" == "genesis" ]]; then
-        _needle_debug "Genesis bead $bead_id: allowing mitosis for next-phase expansion"
-    fi
+    # No special handling for genesis beads. They are executed like any other bead —
+    # the agent reads the plan doc and creates children via `br create`.
+    # Mitosis is only invoked through the forced-failure path.
 
     # Check if bead type should be skipped (respect workspace override)
     local skip_types
@@ -16320,10 +16315,6 @@ export -f _needle_show_intent
 #   1 - Verification failed (needs re-dispatch or release)
 #   2 - No verification_cmd defined (skip verification)
 
-# Guard against re-sourcing (use function-safe check for build concatenation)
-if [[ -n "${_NEEDLE_VERIFY_LOADED:-}" ]]; then
-    : # already loaded
-else
 # Source dependencies (if not already loaded)
 # Source telemetry for events
 # Source diagnostic module for logging
@@ -16724,9 +16715,6 @@ _needle_verify_bead() {
 # ============================================================================
 # Direct Execution Support (for testing)
 # ============================================================================
-
-
-fi # end re-source guard
 
 # =============================================================================
 # MODULE: src/lock/checkout.sh
@@ -25270,8 +25258,8 @@ _needle_quarantine_bead() {
 # Flow:
 #   1. Get the assigned workspace
 #   2. For each workspace, attempt to claim a bead atomically
-#   3. Run mitosis check on claimed bead
-#   4. If mitosis triggered, split and release (fallthrough)
+#   3. Execute bead (no pre-flight mitosis — agent handles all work)
+#   4. If bead fails N times, forced mitosis splits it (see _needle_mark_bead_failed)
 #   5. If atomic, build prompt and dispatch to agent
 #   6. Capture output and exit code
 #   7. Mark bead complete or failed
@@ -25491,28 +25479,12 @@ _needle_pluck_process_bead() {
         "agent=$agent" \
         "title=$bead_title"
 
-    # Step 1: Check mitosis
-    _needle_debug "Checking mitosis for bead: $bead_id"
-    _needle_event_bead_mitosis_check "$bead_id"
-
-    if _needle_check_mitosis "$bead_id" "$workspace" "$agent"; then
-        # Mitosis performed - bead was split into children
-        # The mitosis module handles:
-        # - Creating child beads
-        # - Setting parent blocked by children
-        # - Releasing parent claim
-        # - Emitting mitosis events
-
-        _needle_info "Mitosis performed on $bead_id, children created"
-        _needle_event_bead_released "$bead_id" "reason=mitosis"
-
-        # Mitosis is considered "work done" - return success
-        # The children will be picked up in subsequent cycles
-        return 0
-    fi
-
-    # Step 2: No mitosis - proceed with execution
-    _needle_debug "No mitosis needed, proceeding with execution: $bead_id"
+    # No pre-execution mitosis check. All beads (including genesis) go straight
+    # to agent execution. The agent handles the work — for genesis beads, that
+    # means reading the plan doc and creating child beads via `br create`.
+    # Mitosis is ONLY triggered via the forced-failure path
+    # (_needle_mark_bead_failed) after N consecutive failures.
+    _needle_debug "Proceeding with execution: $bead_id"
 
     # Step 3: Build prompt
     _needle_debug "Building prompt for bead: $bead_id"
@@ -26512,8 +26484,11 @@ _needle_strand_explore() {
         return 1
     fi
 
-    # Phase 1: Search all child directories (unlimited depth) for workspaces with beads.
+    # Phase 1: Search child directories up to max_depth for workspaces with beads.
     # Run mend+pluck inline in each discovered child workspace.
+    local max_depth
+    max_depth=$(_needle_explore_get_max_depth)
+
     local -a child_workspaces=()
     while IFS= read -r beads_dir; do
         [[ -z "$beads_dir" ]] && continue
@@ -26521,7 +26496,7 @@ _needle_strand_explore() {
         found_ws=$(dirname "$beads_dir")
         [[ "$found_ws" == "$workspace" ]] && continue
         child_workspaces+=("$found_ws")
-    done < <(find "$workspace" -name ".beads" -type d \
+    done < <(find "$workspace" -maxdepth "$max_depth" -name ".beads" -type d \
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
@@ -26530,7 +26505,9 @@ _needle_strand_explore() {
         -not -path "*/.rustup/*" \
         -not -path "*/.local/*" \
         -not -path "*/.npm/*" \
-        -not -path "*/.nvm/*" 2>/dev/null)
+        -not -path "*/.nvm/*" \
+        -not -path "*/target/*" \
+        -not -path "*/sample_beads_db_files/*" 2>/dev/null)
 
     if [[ ${#child_workspaces[@]} -gt 0 ]]; then
         _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
@@ -26563,18 +26540,30 @@ _needle_strand_explore() {
     # Phase 2: No work found in children. Move up one folder and signal the engine
     # to restart the loop from the parent. The parent's explore Phase 1 will then
     # discover all sibling workspaces as its children.
+    # Bounded by max_upward_depth to prevent scanning the entire home directory.
+    local max_upward
+    max_upward=$(_needle_explore_get_max_upward_depth)
+
+    local upward_count="${NEEDLE_EXPLORE_UPWARD_COUNT:-0}"
     local parent
     parent=$(dirname "$workspace")
-    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]]; then
-        _needle_info "explore: no work in children, walking up to $parent"
+    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]] && (( upward_count < max_upward )); then
+        _needle_info "explore: no work in children, walking up to $parent (upward=$((upward_count + 1))/$max_upward)"
 
         _needle_telemetry_emit "explore.workspace_switch" "info" \
             "from=$workspace" \
             "to=$parent" \
-            "direction=up"
+            "direction=up" \
+            "upward_count=$((upward_count + 1))" \
+            "max_upward=$max_upward"
 
+        export NEEDLE_EXPLORE_UPWARD_COUNT=$((upward_count + 1))
         export NEEDLE_EXPLORE_NEW_WORKSPACE="$parent"
         return 2
+    fi
+
+    if (( upward_count >= max_upward )); then
+        _needle_debug "explore: reached max upward depth ($max_upward), not walking further up"
     fi
 
     _needle_telemetry_emit "explore.scan_completed" "info" \
@@ -33318,6 +33307,11 @@ _needle_strand_engine() {
         "br_available=$(command -v br &>/dev/null && echo 'yes' || echo 'no')"
 
     _needle_debug "Starting strand engine for workspace: $workspace, agent: $agent"
+
+    # Reset explore upward traversal count for this fresh engine run.
+    # The counter is preserved across workspace switches (within the loop below)
+    # but must be cleared between separate engine invocations.
+    unset NEEDLE_EXPLORE_UPWARD_COUNT
 
     # Track strand results for final diagnostic
     local strand_results=()

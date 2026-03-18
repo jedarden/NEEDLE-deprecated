@@ -556,8 +556,11 @@ _needle_strand_explore() {
         return 1
     fi
 
-    # Phase 1: Search all child directories (unlimited depth) for workspaces with beads.
+    # Phase 1: Search child directories up to max_depth for workspaces with beads.
     # Run mend+pluck inline in each discovered child workspace.
+    local max_depth
+    max_depth=$(_needle_explore_get_max_depth)
+
     local -a child_workspaces=()
     while IFS= read -r beads_dir; do
         [[ -z "$beads_dir" ]] && continue
@@ -565,7 +568,7 @@ _needle_strand_explore() {
         found_ws=$(dirname "$beads_dir")
         [[ "$found_ws" == "$workspace" ]] && continue
         child_workspaces+=("$found_ws")
-    done < <(find "$workspace" -name ".beads" -type d \
+    done < <(find "$workspace" -maxdepth "$max_depth" -name ".beads" -type d \
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
@@ -574,7 +577,9 @@ _needle_strand_explore() {
         -not -path "*/.rustup/*" \
         -not -path "*/.local/*" \
         -not -path "*/.npm/*" \
-        -not -path "*/.nvm/*" 2>/dev/null)
+        -not -path "*/.nvm/*" \
+        -not -path "*/target/*" \
+        -not -path "*/sample_beads_db_files/*" 2>/dev/null)
 
     if [[ ${#child_workspaces[@]} -gt 0 ]]; then
         _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
@@ -607,18 +612,30 @@ _needle_strand_explore() {
     # Phase 2: No work found in children. Move up one folder and signal the engine
     # to restart the loop from the parent. The parent's explore Phase 1 will then
     # discover all sibling workspaces as its children.
+    # Bounded by max_upward_depth to prevent scanning the entire home directory.
+    local max_upward
+    max_upward=$(_needle_explore_get_max_upward_depth)
+
+    local upward_count="${NEEDLE_EXPLORE_UPWARD_COUNT:-0}"
     local parent
     parent=$(dirname "$workspace")
-    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]]; then
-        _needle_info "explore: no work in children, walking up to $parent"
+    if [[ "$parent" != "$workspace" ]] && [[ "$parent" != "/" ]] && (( upward_count < max_upward )); then
+        _needle_info "explore: no work in children, walking up to $parent (upward=$((upward_count + 1))/$max_upward)"
 
         _needle_telemetry_emit "explore.workspace_switch" "info" \
             "from=$workspace" \
             "to=$parent" \
-            "direction=up"
+            "direction=up" \
+            "upward_count=$((upward_count + 1))" \
+            "max_upward=$max_upward"
 
+        export NEEDLE_EXPLORE_UPWARD_COUNT=$((upward_count + 1))
         export NEEDLE_EXPLORE_NEW_WORKSPACE="$parent"
         return 2
+    fi
+
+    if (( upward_count >= max_upward )); then
+        _needle_debug "explore: reached max upward depth ($max_upward), not walking further up"
     fi
 
     _needle_telemetry_emit "explore.scan_completed" "info" \
