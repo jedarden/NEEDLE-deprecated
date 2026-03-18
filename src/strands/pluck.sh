@@ -142,29 +142,22 @@ _needle_get_bead_failure_count() {
     local bead_id="$1"
     local workspace="${2:-${NEEDLE_WORKSPACE:-$(pwd)}}"
 
-    local bead_json
+    # Read labels via br label list (br show --json does not include labels)
+    local label_output
     if [[ -n "$workspace" && -d "$workspace" ]]; then
-        bead_json=$(cd "$workspace" && br show "$bead_id" --json 2>/dev/null)
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
     else
-        bead_json=$(br show "$bead_id" --json 2>/dev/null)
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
     fi
 
-    if [[ -z "$bead_json" ]]; then
+    if [[ -z "$label_output" ]]; then
         echo "0"
         return 0
     fi
 
-    # Handle array or object response
-    local labels_json
-    if echo "$bead_json" | jq -e 'type == "array"' &>/dev/null; then
-        labels_json=$(echo "$bead_json" | jq -r '.[0].labels // [] | .[]' 2>/dev/null)
-    else
-        labels_json=$(echo "$bead_json" | jq -r '.labels // [] | .[]' 2>/dev/null)
-    fi
-
     # Find 'failure-count:N' label and extract N
     local count
-    count=$(echo "$labels_json" | grep '^failure-count:' | sed 's/failure-count://' | head -1)
+    count=$(echo "$label_output" | grep 'failure-count:' | sed 's/^[[:space:]]*//' | sed 's/^failure-count://' | head -1)
     if [[ -n "$count" ]] && [[ "$count" =~ ^[0-9]+$ ]]; then
         echo "$count"
     else

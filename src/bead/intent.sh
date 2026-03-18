@@ -77,30 +77,24 @@ _needle_extract_files_from_description() {
 # Example:
 #   files=$(_needle_extract_files_from_label "$bead_json")
 _needle_extract_files_from_label() {
-    local bead_json="$1"
+    local bead_id="$1"
+    local workspace="${2:-}"
 
-    if [[ -z "$bead_json" ]]; then
+    if [[ -z "$bead_id" ]]; then
         return 0
     fi
 
-    if ! command -v jq &>/dev/null; then
-        _needle_warn "jq not available, cannot extract files label"
-        return 0
+    # Read labels via br label list (br show --json does not include labels)
+    local label_output
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+    else
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
     fi
 
     # Look for labels starting with "files:"
-    # Handle both array input and single object
     local files_label
-    files_label=$(echo "$bead_json" | jq -r '
-        (. // []) |
-        if type == "array" then
-            .[0].labels // []
-        else
-            .labels // []
-        end |
-        .[] |
-        select(startswith("files:"))
-    ' 2>/dev/null | head -1)
+    files_label=$(echo "$label_output" | grep 'files:' | sed 's/^[[:space:]]*//' | head -1)
 
     if [[ -n "$files_label" ]]; then
         # Strip the "files:" prefix and return the rest
@@ -155,7 +149,7 @@ _needle_extract_files_from_bead() {
 
     # 1. Extract from explicit files: label
     local label_files
-    label_files=$(_needle_extract_files_from_label "$bead_json")
+    label_files=$(_needle_extract_files_from_label "$bead_id" "$workspace")
 
     if [[ -n "$label_files" ]]; then
         # Split comma-separated files
@@ -524,9 +518,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 _needle_extract_files_from_description "${1:-}"
             elif [[ "${1:-}" == "--from-label" ]]; then
                 shift
-                local json
-                json=$(br show "${1:-}" --json 2>/dev/null)
-                _needle_extract_files_from_label "$json"
+                _needle_extract_files_from_label "${1:-}"
             else
                 _needle_extract_files_from_bead "$@"
             fi

@@ -420,9 +420,15 @@ _needle_claim_bead() {
 
                 if [[ -z "$_claimed_verification_cmd" ]]; then
                     # Fall back to label-based storage used by mitosis children
-                    _claimed_verification_cmd=$(echo "$bead_json" | \
-                        jq -r '.labels[]? // empty' 2>/dev/null | \
-                        grep -m1 '^verification_cmd:' | sed 's/^verification_cmd://')
+                    # Use br label list since br show --json does not include labels
+                    local _claim_label_output
+                    if [[ -n "$workspace" && -d "$workspace" ]]; then
+                        _claim_label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+                    else
+                        _claim_label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
+                    fi
+                    _claimed_verification_cmd=$(echo "$_claim_label_output" | \
+                        grep -m1 'verification_cmd:' | sed 's/^[[:space:]]*//' | sed 's/^verification_cmd://')
                 fi
 
                 export NEEDLE_CLAIMED_BEAD_ID="$bead_id"

@@ -116,9 +116,15 @@ _needle_get_verification_cmd() {
     fi
 
     # Fallback: check labels for "verification_cmd:<command>" pattern
-    local labels
-    labels=$(echo "$bead_json" | jq -r '.labels[]? // empty' 2>/dev/null)
+    # Use br label list since br show --json does not include labels
+    local label_output
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+    else
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
+    fi
 
+    local label
     while IFS= read -r label; do
         if [[ "$label" =~ ^verification_cmd:(.+)$ ]]; then
             echo "${BASH_REMATCH[1]}"

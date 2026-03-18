@@ -124,7 +124,7 @@ _needle_set_hook_env() {
                 export NEEDLE_BEAD_TITLE=$(echo "$bead_json" | jq -r '.title // ""' 2>/dev/null)
                 export NEEDLE_BEAD_PRIORITY=$(echo "$bead_json" | jq -r '.priority // 3' 2>/dev/null)
                 export NEEDLE_BEAD_TYPE=$(echo "$bead_json" | jq -r '.type // "task"' 2>/dev/null)
-                export NEEDLE_BEAD_LABELS=$(echo "$bead_json" | jq -r '.labels | join(",") // ""' 2>/dev/null)
+                export NEEDLE_BEAD_LABELS=$(br label list "$bead_id" --no-color 2>/dev/null | sed '1d' | sed 's/^  //' | paste -sd, - | sed 's/,$//')
             fi
         fi
     fi
