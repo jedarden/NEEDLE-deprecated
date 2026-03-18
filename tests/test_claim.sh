@@ -70,6 +70,11 @@ mock_br() {
     local claim_success="${2:-true}"
     local claim_bead_id="${3:-}"
 
+    # Write ready_data to a file so the mock can serve br label list from it.
+    # br ready --json does NOT include labels, so claim.sh uses br label list.
+    # The mock needs to serve labels for beads present in ready_data.
+    echo "$ready_data" > "$TEST_DIR/br_mock_ready.json"
+
     # Create a mock br script
     # NOTE: br update is called as: br update <bead_id> --claim --actor <actor>
     # So $1="update", $2=<bead_id>, $3="--claim" — we check $* for "--claim"
@@ -113,7 +118,7 @@ EOF
 EOF
     fi
 
-    # Add ready, show, and other update commands
+    # Add ready, show, label, and other update commands
     cat >> "$TEST_DIR/bin/br" << 'EOF'
 fi
 
@@ -121,7 +126,7 @@ case "$1 $2" in
     "ready --unassigned"|"ready --workspace="*)
 EOF
     cat >> "$TEST_DIR/bin/br" << EOF
-        echo '$ready_data'
+        cat "${TEST_DIR}/br_mock_ready.json"
 EOF
     cat >> "$TEST_DIR/bin/br" << 'EOF'
         ;;
@@ -136,6 +141,24 @@ EOF
             echo '{"id":"bd-claimed","assignee":"worker-alpha"}'
         else
             echo "{\"id\":\"$bead_id\",\"assignee\":null}"
+        fi
+        ;;
+    "label list")
+        # br label list <bead_id> [--no-color]
+        # Serve labels from the ready_data for matching bead
+        bead_id="$3"
+        if command -v jq &>/dev/null; then
+EOF
+    cat >> "$TEST_DIR/bin/br" << EOF
+            labels=\$(jq -r --arg id "\$bead_id" '.[] | select(.id==\$id) | .labels[]?' "${TEST_DIR}/br_mock_ready.json" 2>/dev/null)
+EOF
+    cat >> "$TEST_DIR/bin/br" << 'EOF'
+            if [[ -n "$labels" ]]; then
+                echo "Labels for $bead_id:"
+                echo "$labels" | sed 's/^/  /'
+            else
+                echo "No labels for $bead_id."
+            fi
         fi
         ;;
     "update "*)

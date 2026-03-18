@@ -126,6 +126,8 @@ _needle_get_verification_cmd() {
 
     local label
     while IFS= read -r label; do
+        # Strip leading whitespace (br label list indents labels with 2 spaces)
+        label="${label#"${label%%[![:space:]]*}"}"
         if [[ "$label" =~ ^verification_cmd:(.+)$ ]]; then
             echo "${BASH_REMATCH[1]}"
             return 0

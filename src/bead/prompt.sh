@@ -74,7 +74,8 @@ _needle_build_prompt() {
     title=$(echo "$bead_object" | jq -r '.title // "Untitled Task"')
     description=$(echo "$bead_object" | jq -r '.description // ""')
     # Read labels via br label list (br show --json does not include labels)
-    labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | sed '1d' | sed 's/^  //' | paste -sd, - | sed 's/,$//')
+    # Output format: "Labels for <id>:\n  label1\n  label2" — strip header and indent, join with ", "
+    labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | sed '1d' | sed 's/^  //' | paste -sd, - | sed 's/,$//' | sed 's/,/, /g')
     priority=$(echo "$bead_object" | jq -r '.priority // 2')
     status=$(echo "$bead_object" | jq -r '.status // "open"')
     issue_type=$(echo "$bead_object" | jq -r '.issue_type // "task"')

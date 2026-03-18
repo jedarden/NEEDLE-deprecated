@@ -53,15 +53,41 @@ test_fail() {
 }
 
 # Mock br show command for testing
+# Also mocks br label list to return labels extracted from the JSON data.
+# br label list output format: "Labels for <id>:\n  label1\n  label2"
 mock_br_show() {
     local data="$1"
-    # Create a mock br script
+
+    # Write mock data to temp files for the mock script to read
+    echo "$data" > "$TEST_DIR/br_mock_show.json"
+
+    # Extract labels into separate file (one per line, 2-space indented as br does)
+    if command -v jq &>/dev/null; then
+        jq -r '.[0].labels[]? // empty' "$TEST_DIR/br_mock_show.json" 2>/dev/null \
+            | sed 's/^/  /' > "$TEST_DIR/br_mock_labels.txt"
+    else
+        : > "$TEST_DIR/br_mock_labels.txt"
+    fi
+
     mkdir -p "$TEST_DIR/bin"
     cat > "$TEST_DIR/bin/br" << EOF
 #!/bin/bash
-case "\$1 \$2 \$3" in
-    "show "*" --json")
-        echo '$data'
+case "\$1" in
+    show)
+        if [[ "\$3" == "--json" ]]; then
+            cat "${TEST_DIR}/br_mock_show.json"
+        fi
+        ;;
+    label)
+        if [[ "\$2" == "list" ]]; then
+            bead_id="\$3"
+            if [[ -s "${TEST_DIR}/br_mock_labels.txt" ]]; then
+                echo "Labels for \$bead_id:"
+                cat "${TEST_DIR}/br_mock_labels.txt"
+            else
+                echo "No labels for \$bead_id."
+            fi
+        fi
         ;;
     *)
         echo "[]" >&2
