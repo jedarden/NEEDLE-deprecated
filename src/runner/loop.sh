@@ -1293,13 +1293,6 @@ _needle_process_bead() {
     # Emit bead claimed event
     _needle_event_bead_claimed "$bead_id" "workspace=$workspace"
 
-    # Also emit telemetry event
-    _needle_telemetry_emit "bead.claimed" "info" \
-        "bead_id=$bead_id" \
-        "workspace=$workspace" \
-        "session=$NEEDLE_SESSION" \
-        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
     # Build prompt for agent
     local prompt
     prompt=$(_needle_build_prompt "$bead_id" "$workspace")

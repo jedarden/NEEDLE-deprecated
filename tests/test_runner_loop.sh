@@ -758,6 +758,38 @@ test_forced_mitosis_integration() {
     echo ""
 }
 
+# Regression test: bead.claimed event must be emitted exactly once per processing cycle
+# Bug nd-knbnvu: _needle_event_bead_claimed already calls _needle_telemetry_emit internally,
+# so a redundant direct call was doubling the event.
+test_bead_claimed_emitted_once() {
+    echo "=== Testing bead.claimed is emitted exactly once (regression nd-knbnvu) ==="
+
+    setup_mock_environment
+
+    local claimed_count=0
+    _needle_telemetry_emit() {
+        local event_type="$1"
+        if [[ "$event_type" == "bead.claimed" ]]; then
+            claimed_count=$((claimed_count + 1))
+        fi
+    }
+
+    _needle_event_bead_claimed "nd-regression-test" "workspace=/tmp/test"
+
+    if [[ "$claimed_count" -eq 1 ]]; then
+        echo "✓ bead.claimed emitted exactly once"
+    else
+        echo "✗ bead.claimed emitted $claimed_count time(s), expected exactly 1"
+        unset -f _needle_telemetry_emit
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    unset -f _needle_telemetry_emit
+    cleanup_mock_environment
+    echo ""
+}
+
 # Run all tests
 echo "=========================================="
 echo "NEEDLE Worker Loop Module Tests"
@@ -777,6 +809,7 @@ test_forced_mitosis_functions
 test_exit_code_1_increments_bead_failure
 test_exit_code_0_resets_bead_failure
 test_forced_mitosis_integration
+test_bead_claimed_emitted_once
 
 echo ""
 echo "=========================================="
