@@ -277,28 +277,25 @@ _needle_pluck_process_bead() {
         "agent=$agent" \
         "title=$bead_title"
 
-    # Step 1: Check mitosis
-    _needle_debug "Checking mitosis for bead: $bead_id"
-    _needle_event_bead_mitosis_check "$bead_id"
+    # Step 1: Genesis beads trigger mitosis on claim (they are orchestration beads
+    # that exist to be split into phase children). All other bead types skip the
+    # pre-execution mitosis check — mitosis is only triggered via the forced-failure
+    # path (_needle_mark_bead_failed) after N consecutive failures.
+    if [[ "$bead_type" == "genesis" ]]; then
+        _needle_debug "Genesis bead $bead_id: checking mitosis on claim"
+        _needle_event_bead_mitosis_check "$bead_id"
 
-    if _needle_check_mitosis "$bead_id" "$workspace" "$agent"; then
-        # Mitosis performed - bead was split into children
-        # The mitosis module handles:
-        # - Creating child beads
-        # - Setting parent blocked by children
-        # - Releasing parent claim
-        # - Emitting mitosis events
+        if _needle_check_mitosis "$bead_id" "$workspace" "$agent"; then
+            _needle_info "Mitosis performed on genesis bead $bead_id, children created"
+            _needle_event_bead_released "$bead_id" "reason=mitosis"
+            return 0
+        fi
 
-        _needle_info "Mitosis performed on $bead_id, children created"
-        _needle_event_bead_released "$bead_id" "reason=mitosis"
-
-        # Mitosis is considered "work done" - return success
-        # The children will be picked up in subsequent cycles
-        return 0
+        _needle_debug "Genesis mitosis did not split bead, proceeding with execution: $bead_id"
     fi
 
-    # Step 2: No mitosis - proceed with execution
-    _needle_debug "No mitosis needed, proceeding with execution: $bead_id"
+    # Step 2: Proceed with execution
+    _needle_debug "Proceeding with execution: $bead_id"
 
     # Step 3: Build prompt
     _needle_debug "Building prompt for bead: $bead_id"

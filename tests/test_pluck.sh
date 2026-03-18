@@ -357,7 +357,7 @@ fi
 # Test Mitosis Integration (Mock)
 # ============================================================================
 
-test_case "_needle_pluck_process_bead checks mitosis"
+test_case "_needle_pluck_process_bead does NOT check mitosis pre-execution for non-genesis beads"
 create_test_config
 # Enable mitosis for this test
 cat > "$NEEDLE_CONFIG_FILE" << EOF
@@ -372,11 +372,86 @@ EOF
 
 mock_br '[{"id":"bd-mitosis1","title":"Complex Task","priority":2}]' "true" "open"
 
-# Process should check mitosis (may fail at agent dispatch, which is OK)
-result=$(_needle_pluck_process_bead "bd-mitosis1" "$TEST_DIR/workspace" "test-agent" 2>&1) || true
+PRE_EXEC_MITOSIS_CALLED="false"
+_needle_check_mitosis() {
+    local _bead="$1" _ws="$2" _ag="$3" _force="${4:-false}"
+    if [[ "$_force" != "true" ]]; then
+        PRE_EXEC_MITOSIS_CALLED="true"
+    fi
+    return 1
+}
+_needle_build_prompt() { echo "test prompt"; return 0; }
+_needle_dispatch_agent() { echo "0|100|"; return 0; }
 
-# The test passes if the function runs without syntax errors
-test_pass "(mitosis check attempted)"
+_needle_pluck_process_bead "bd-mitosis1" "$TEST_DIR/workspace" "test-agent" 2>/dev/null || true
+
+if [[ "$PRE_EXEC_MITOSIS_CALLED" == "false" ]]; then
+    test_pass "(no pre-execution mitosis for non-genesis bead)"
+else
+    test_fail "Expected no pre-execution mitosis check for non-genesis bead, but it was called"
+fi
+
+test_case "_needle_pluck_process_bead triggers mitosis on claim for genesis beads"
+create_test_config
+cat > "$NEEDLE_CONFIG_FILE" << EOF
+strands:
+  pluck: true
+
+mitosis:
+  enabled: true
+  skip_types: ""
+  skip_labels: ""
+EOF
+
+# Custom mock that returns issue_type=genesis from br show
+mkdir -p "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/br" << 'BREOF'
+#!/bin/bash
+case "$1 $2" in
+    "show "*)
+        bead_id="$2"
+        cat << JSON
+{"id":"$bead_id","title":"Genesis: Project","status":"open","priority":2,"issue_type":"genesis","labels":[],"type":"genesis"}
+JSON
+        ;;
+    "update --claim")
+        echo "Claimed"
+        exit 0
+        ;;
+    "update "*)
+        echo "Status updated"
+        exit 0
+        ;;
+    "label "*)
+        exit 0
+        ;;
+    "list "*)
+        echo '[]'
+        ;;
+    *)
+        exit 1
+        ;;
+esac
+BREOF
+chmod +x "$TEST_DIR/bin/br"
+export PATH="$TEST_DIR/bin:$PATH"
+
+GENESIS_MITOSIS_CALLED="false"
+_needle_check_mitosis() {
+    local _bead="$1" _ws="$2" _ag="$3" _force="${4:-false}"
+    if [[ "$_force" != "true" ]]; then
+        GENESIS_MITOSIS_CALLED="true"
+    fi
+    return 0  # Simulate successful mitosis split
+}
+
+_needle_pluck_process_bead "bd-genesis1" "$TEST_DIR/workspace" "test-agent" 2>/dev/null || true
+
+if [[ "$GENESIS_MITOSIS_CALLED" == "true" ]]; then
+    test_pass "(genesis bead triggered pre-execution mitosis)"
+else
+    test_fail "Expected pre-execution mitosis for genesis bead, but it was not called"
+fi
 
 # ============================================================================
 # Test Telemetry Events
