@@ -790,6 +790,106 @@ test_bead_claimed_emitted_once() {
     echo ""
 }
 
+# Test: SIGUSR1 hot-reload handler (nd-76fgio)
+test_sigusr1_reload_handler() {
+    echo "=== Testing SIGUSR1 hot-reload handler (nd-76fgio) ==="
+
+    setup_mock_environment
+
+    # Test that _needle_setup_reload_signal function exists
+    if declare -f _needle_setup_reload_signal >/dev/null; then
+        echo "✓ _needle_setup_reload_signal function exists"
+    else
+        echo "✗ _needle_setup_reload_signal function missing"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    # Test that binary mtime tracking functions exist
+    if declare -f _needle_init_binary_mtime_tracking >/dev/null; then
+        echo "✓ _needle_init_binary_mtime_tracking function exists"
+    else
+        echo "✗ _needle_init_binary_mtime_tracking function missing"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    if declare -f _needle_check_hot_reload >/dev/null; then
+        echo "✓ _needle_check_hot_reload function exists"
+    else
+        echo "✗ _needle_check_hot_reload function missing"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    # Test initial state: _NEEDLE_RELOAD_REQUESTED should be 0
+    if [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 0 ]]; then
+        echo "✓ _NEEDLE_RELOAD_REQUESTED initializes to 0"
+    else
+        echo "✗ _NEEDLE_RELOAD_REQUESTED expected 0, got ${_NEEDLE_RELOAD_REQUESTED}"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    # Test that SIGUSR1 sets _NEEDLE_RELOAD_REQUESTED=1
+    _needle_setup_reload_signal
+    _NEEDLE_RELOAD_REQUESTED=0
+    kill -USR1 $$
+    # Bash delivers pending signals between commands; flag should be set by now
+    if [[ "$_NEEDLE_RELOAD_REQUESTED" -eq 1 ]]; then
+        echo "✓ SIGUSR1 sets _NEEDLE_RELOAD_REQUESTED=1"
+    else
+        echo "✗ SIGUSR1 did not set _NEEDLE_RELOAD_REQUESTED=1 (got: ${_NEEDLE_RELOAD_REQUESTED:-unset})"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    # Test that _needle_check_hot_reload returns 1 when binary path not configured
+    # (binary tracking disabled — no path set)
+    NEEDLE_BINARY_PATH=""
+    NEEDLE_BINARY_MTIME_AT_START=0
+    if ! _needle_check_hot_reload; then
+        echo "✓ _needle_check_hot_reload returns 1 when binary tracking disabled"
+    else
+        echo "✗ _needle_check_hot_reload should return 1 when binary path not set"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    # Test _needle_check_hot_reload detects mtime change
+    local tmp_binary
+    tmp_binary=$(mktemp)
+    touch "$tmp_binary"
+    NEEDLE_BINARY_PATH="$tmp_binary"
+    NEEDLE_BINARY_MTIME_AT_START=$(_needle_get_config_mtime "$tmp_binary")
+    # No change yet — should return 1 (no reload needed)
+    if ! _needle_check_hot_reload; then
+        echo "✓ _needle_check_hot_reload returns 1 when binary unchanged"
+    else
+        echo "✗ _needle_check_hot_reload should return 1 when binary unchanged"
+        rm -f "$tmp_binary"
+        cleanup_mock_environment
+        exit 1
+    fi
+    # Simulate binary replacement (touch with newer mtime)
+    sleep 1
+    touch "$tmp_binary"
+    if _needle_check_hot_reload; then
+        echo "✓ _needle_check_hot_reload returns 0 when binary mtime changes"
+    else
+        echo "✗ _needle_check_hot_reload should return 0 when binary mtime changes"
+        rm -f "$tmp_binary"
+        cleanup_mock_environment
+        exit 1
+    fi
+
+    rm -f "$tmp_binary"
+    NEEDLE_BINARY_PATH=""
+    NEEDLE_BINARY_MTIME_AT_START=0
+    cleanup_mock_environment
+    echo ""
+}
+
 # Run all tests
 echo "=========================================="
 echo "NEEDLE Worker Loop Module Tests"
@@ -810,6 +910,7 @@ test_exit_code_1_increments_bead_failure
 test_exit_code_0_resets_bead_failure
 test_forced_mitosis_integration
 test_bead_claimed_emitted_once
+test_sigusr1_reload_handler
 
 echo ""
 echo "=========================================="
