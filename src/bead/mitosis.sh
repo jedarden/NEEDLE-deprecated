@@ -204,6 +204,18 @@ _needle_check_mitosis() {
         return 1
     fi
 
+    # Session-level loop guard: track beads that have already been through
+    # mitosis in this worker process to prevent infinite re-splitting.
+    # Uses a file in /dev/shm keyed by PID for fast, lock-free checks.
+    local mitosis_guard_file="/dev/shm/needle-mitosis-guard-$$"
+    if [[ -f "$mitosis_guard_file" ]] && grep -qF "$bead_id" "$mitosis_guard_file" 2>/dev/null; then
+        _needle_warn "Mitosis loop guard: bead $bead_id already split in this session, skipping"
+        _needle_emit_event "bead.mitosis.loop_guard" \
+            "Blocked repeated mitosis on same bead in single session" \
+            "bead_id=$bead_id"
+        return 1
+    fi
+
     # Check if mitosis is enabled (respect workspace override)
     if ! _needle_mitosis_is_enabled "$workspace"; then
         _needle_debug "Mitosis is disabled"
@@ -235,10 +247,20 @@ _needle_check_mitosis() {
     # Extract bead properties
     local bead_type labels description
     bead_type=$(echo "$bead_object" | jq -r '.type // .issue_type // "task"')
-    labels=$(echo "$bead_object" | jq -r '.labels | if type == "array" then join(",") else . // "" end')
     description=$(echo "$bead_object" | jq -r '.description // ""')
 
+    # BUG FIX: br show --json does NOT include labels in its output schema.
+    # The old code read labels from the JSON (always empty), so mitosis-parent
+    # and mitosis-pending skip-checks never triggered, causing infinite loops.
+    # Now we read labels via `br label list` which returns the actual labels.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    else
+        labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
+
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
+    _needle_debug "Mitosis label check: raw labels='$labels' for bead $bead_id"
 
     # Depth guard: prevent runaway recursive splitting.
     # Count mitosis depth by tracing parent-* labels up the ancestry chain.
@@ -397,7 +419,16 @@ print(depth)
     fi
 
     # Perform mitosis
+    local mitosis_result
     _needle_perform_mitosis "$bead_id" "$workspace" "$analysis"
+    mitosis_result=$?
+
+    # Record this bead in the session loop guard to prevent re-splitting
+    if [[ $mitosis_result -eq 0 ]]; then
+        echo "$bead_id" >> "$mitosis_guard_file"
+    fi
+
+    return $mitosis_result
 }
 
 # ============================================================================
@@ -419,7 +450,11 @@ _needle_build_mitosis_prompt() {
     title=$(echo "$bead_object" | jq -r '.title // "Untitled"')
     description=$(echo "$bead_object" | jq -r '.description // ""')
     priority=$(echo "$bead_object" | jq -r '.priority // 2')
-    parent_labels=$(echo "$bead_object" | jq -r '.labels // []' | jq -r 'join(",")')
+    # Read labels via br label list (br show --json doesn't include labels)
+    parent_labels=""
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        parent_labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
 
     # Get max children config (respect workspace override)
     local max_children
@@ -933,20 +968,29 @@ _needle_perform_mitosis() {
     parent_priority="${parent_priority:-2}"
 
     # Compute parent's mitosis depth for child depth stamping
+    # Read depth label via br label list since br show --json doesn't include labels
     local parent_depth=0
     local parent_depth_label
-    parent_depth_label=$(echo "$parent_obj" | jq -r \
-        '.labels // [] | map(select(startswith("mitosis-depth:"))) | .[0] // ""' 2>/dev/null)
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        parent_depth_label=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null | grep '^mitosis-depth:' | head -1)
+    else
+        parent_depth_label=$(br label list "$parent_id" --no-color 2>/dev/null | grep '^mitosis-depth:' | head -1)
+    fi
     if [[ -n "$parent_depth_label" ]]; then
         parent_depth="${parent_depth_label#mitosis-depth:}"
     fi
     local child_depth=$((parent_depth + 1))
 
-    # Inherit non-system labels from parent (exclude mitosis-child, parent-*, and mitosis-depth:*)
+    # Inherit non-system labels from parent (exclude mitosis-child, parent-*, mitosis-depth:*, mitosis-parent, mitosis-pending)
+    # Read labels via br label list since br show --json doesn't include them
     local parent_inherited_labels
-    parent_inherited_labels=$(echo "$parent_obj" | jq -r \
-        '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not) and (startswith("mitosis-depth:") | not))) | .[]' \
-        2>/dev/null)
+    local all_parent_labels
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        all_parent_labels=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null)
+    else
+        all_parent_labels=$(br label list "$parent_id" --no-color 2>/dev/null)
+    fi
+    parent_inherited_labels=$(echo "$all_parent_labels" | grep -v -E '^(mitosis-child|mitosis-parent|mitosis-pending|parent-|mitosis-depth:)')
 
     # Extract parent's verification_cmd for potential propagation
     # Check both direct field and label format (verification_cmd:<command>)
@@ -955,9 +999,13 @@ _needle_perform_mitosis() {
 
     # If not in direct field, check labels for verification_cmd label
     if [[ -z "$parent_verification_cmd" ]]; then
-        local parent_labels_json
-        parent_labels_json=$(echo "$parent_obj" | jq -r '.labels // []' 2>/dev/null)
-        parent_verification_cmd=$(echo "$parent_labels_json" | jq -r 'map(select(startswith("verification_cmd:"))) | .[]' | sed 's/^verification_cmd://' | head -1)
+        local parent_labels_for_vcmd
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            parent_labels_for_vcmd=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null)
+        else
+            parent_labels_for_vcmd=$(br label list "$parent_id" --no-color 2>/dev/null)
+        fi
+        parent_verification_cmd=$(echo "$parent_labels_for_vcmd" | grep '^verification_cmd:' | sed 's/^verification_cmd://' | head -1)
     fi
 
     # Emit mitosis started event
@@ -970,12 +1018,49 @@ _needle_perform_mitosis() {
     # the permanent parent marker before creating children.
     # CRITICAL: must run in workspace context — bare br update writes to cwd's DB,
     # which may be a different workspace than the bead's.
+    # Use `br label add` (dedicated label command) rather than `br update --label`
+    # for reliability — update --label may silently fail in some br versions.
+    local label_add_exit label_rm_exit
     if [[ -n "$workspace" && -d "$workspace" ]]; then
-        (cd "$workspace" && br update "$parent_id" --label "mitosis-parent" 2>/dev/null) || true
-        (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        (cd "$workspace" && br label add --label mitosis-parent "$parent_id" 2>&1)
+        label_add_exit=$?
+        (cd "$workspace" && br label remove --label mitosis-pending "$parent_id" 2>&1)
+        label_rm_exit=$?
     else
-        br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
-        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        br label add --label mitosis-parent "$parent_id" 2>&1
+        label_add_exit=$?
+        br label remove --label mitosis-pending "$parent_id" 2>&1
+        label_rm_exit=$?
+    fi
+
+    # Observability: log label write results — silent failures here caused
+    # infinite mitosis loops (see mobile-gaming-58g incident 2026-03-18)
+    if [[ $label_add_exit -ne 0 ]]; then
+        _needle_error "CRITICAL: Failed to add mitosis-parent label to $parent_id (exit=$label_add_exit)"
+        _needle_emit_event "bead.mitosis.label_write_failed" \
+            "Failed to write mitosis-parent label" \
+            "parent_id=$parent_id" \
+            "label=mitosis-parent" \
+            "exit_code=$label_add_exit"
+    else
+        _needle_debug "Successfully added mitosis-parent label to $parent_id"
+    fi
+
+    # Verify the label actually persisted by reading it back
+    local verify_labels
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        verify_labels=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    else
+        verify_labels=$(br label list "$parent_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
+    if [[ ",$verify_labels," != *",mitosis-parent,"* ]]; then
+        _needle_error "CRITICAL: mitosis-parent label did not persist on $parent_id (labels after write: '$verify_labels')"
+        _needle_emit_event "bead.mitosis.label_verify_failed" \
+            "mitosis-parent label not found after write" \
+            "parent_id=$parent_id" \
+            "labels_found=$verify_labels"
+    else
+        _needle_debug "Verified mitosis-parent label persisted on $parent_id"
     fi
 
     # Array to collect child IDs
@@ -1168,17 +1253,10 @@ _needle_perform_mitosis() {
 _needle_is_mitosis_parent() {
     local bead_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$bead_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
-    [[ "$labels" == *"mitosis-parent"* ]]
+    [[ ",$labels," == *",mitosis-parent,"* ]]
 }
 
 # Check if a bead is a mitosis child
@@ -1187,17 +1265,10 @@ _needle_is_mitosis_parent() {
 _needle_is_mitosis_child() {
     local bead_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$bead_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
-    [[ "$labels" == *"mitosis-child"* ]]
+    [[ ",$labels," == *",mitosis-child,"* ]]
 }
 
 # Get parent ID for a mitosis child
@@ -1206,15 +1277,8 @@ _needle_is_mitosis_child() {
 _needle_get_mitosis_parent() {
     local child_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$child_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$child_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
     # Extract parent ID from label
     if [[ "$labels" =~ parent-([a-z0-9-]+) ]]; then
