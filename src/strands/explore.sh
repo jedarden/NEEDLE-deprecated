@@ -424,7 +424,12 @@ _needle_explore_find_child_with_beads() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     return 1
 }
@@ -451,7 +456,12 @@ _needle_explore_search_children_stale() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     echo "$total_released"
 }
@@ -518,7 +528,12 @@ _needle_explore_find_sibling_with_beads() {
             -not -path "*/node_modules/*" \
             -not -path "*/.git/*" \
             -not -path "*/vendor/*" \
-            -not -path "*/.cache/*" 2>/dev/null)
+            -not -path "*/.cache/*" \
+            -not -path "*/.cargo/*" \
+            -not -path "*/.rustup/*" \
+            -not -path "*/.local/*" \
+            -not -path "*/.npm/*" \
+            -not -path "*/.nvm/*" 2>/dev/null)
 
         current="$parent"
     done
@@ -554,7 +569,12 @@ _needle_strand_explore() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     if [[ ${#child_workspaces[@]} -gt 0 ]]; then
         _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
