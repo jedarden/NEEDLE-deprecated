@@ -107,6 +107,7 @@ _NEEDLE_LOOP_INIT=false
 _NEEDLE_LOOP_SHUTDOWN=false
 _NEEDLE_LOOP_DRAINING=false
 _NEEDLE_LOOP_INTERRUPT=false
+_NEEDLE_LOOP_HOT_RELOAD=false
 
 # ============================================================================
 # Configuration Defaults
@@ -495,6 +496,27 @@ _needle_init_binary_mtime_tracking() {
         NEEDLE_BINARY_MTIME_AT_START=0
         _needle_debug "Binary path not resolved; binary mtime tracking disabled"
     fi
+}
+
+# Check whether the needle binary has been replaced since startup
+# Compares current mtime of NEEDLE_BINARY_PATH to the value recorded at startup.
+# Returns: 0 if binary changed (hot-reload needed), 1 if unchanged or tracking disabled
+# Usage: _needle_check_hot_reload
+_needle_check_hot_reload() {
+    # If binary path not resolved, tracking is disabled — no reload
+    if [[ -z "${NEEDLE_BINARY_PATH:-}" ]] || [[ "$NEEDLE_BINARY_MTIME_AT_START" -eq 0 ]]; then
+        return 1
+    fi
+
+    local current_mtime
+    current_mtime=$(_needle_get_config_mtime "$NEEDLE_BINARY_PATH")
+
+    if [[ "$current_mtime" -ne "$NEEDLE_BINARY_MTIME_AT_START" ]]; then
+        _needle_debug "Binary mtime changed: was=$NEEDLE_BINARY_MTIME_AT_START now=$current_mtime path=$NEEDLE_BINARY_PATH"
+        return 0
+    fi
+
+    return 1
 }
 
 # Check if configuration files have changed and reload if needed
@@ -1235,6 +1257,15 @@ _needle_worker_loop() {
             idle_timeout="$NEEDLE_LOOP_CURRENT_IDLE_TIMEOUT"
             max_consecutive_empty="$NEEDLE_LOOP_CURRENT_MAX_CONSECUTIVE_EMPTY"
             _needle_debug "Runtime config updated: polling_interval=${polling_interval}s, idle_timeout=${idle_timeout}s"
+        fi
+
+        # Check if binary has been updated since startup (hot-reload detection)
+        # Re-exec logic is handled by the caller when this returns 0; here we only detect.
+        if _needle_check_hot_reload; then
+            _needle_info "Binary updated (mtime changed) — triggering hot-reload"
+            # Re-exec is handled by the block below; exit the loop so the caller can act
+            _NEEDLE_LOOP_HOT_RELOAD=true
+            break
         fi
 
         # Run strand engine to find work
