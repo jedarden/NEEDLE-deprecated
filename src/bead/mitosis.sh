@@ -308,14 +308,9 @@ print(depth)
         return 1
     fi
 
-    # Genesis beads are phase orchestrators tied to a plan document.
-    # When a genesis bead is unblocked (all current-phase children complete),
-    # mitosis should create the NEXT phase's child beads from the plan.
-    # The LLM analysis prompt includes the plan reference and progress checklist,
-    # so mitosis will naturally create children for the next incomplete phase.
-    if [[ "$bead_type" == "genesis" ]]; then
-        _needle_debug "Genesis bead $bead_id: allowing mitosis for next-phase expansion"
-    fi
+    # No special handling for genesis beads. They are executed like any other bead —
+    # the agent reads the plan doc and creates children via `br create`.
+    # Mitosis is only invoked through the forced-failure path.
 
     # Check if bead type should be skipped (respect workspace override)
     local skip_types

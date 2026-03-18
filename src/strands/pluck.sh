@@ -10,8 +10,8 @@
 # Flow:
 #   1. Get the assigned workspace
 #   2. For each workspace, attempt to claim a bead atomically
-#   3. Run mitosis check on claimed bead
-#   4. If mitosis triggered, split and release (fallthrough)
+#   3. Execute bead (no pre-flight mitosis — agent handles all work)
+#   4. If bead fails N times, forced mitosis splits it (see _needle_mark_bead_failed)
 #   5. If atomic, build prompt and dispatch to agent
 #   6. Capture output and exit code
 #   7. Mark bead complete or failed
@@ -277,24 +277,11 @@ _needle_pluck_process_bead() {
         "agent=$agent" \
         "title=$bead_title"
 
-    # Step 1: Genesis beads trigger mitosis on claim (they are orchestration beads
-    # that exist to be split into phase children). All other bead types skip the
-    # pre-execution mitosis check — mitosis is only triggered via the forced-failure
-    # path (_needle_mark_bead_failed) after N consecutive failures.
-    if [[ "$bead_type" == "genesis" ]]; then
-        _needle_debug "Genesis bead $bead_id: checking mitosis on claim"
-        _needle_event_bead_mitosis_check "$bead_id"
-
-        if _needle_check_mitosis "$bead_id" "$workspace" "$agent"; then
-            _needle_info "Mitosis performed on genesis bead $bead_id, children created"
-            _needle_event_bead_released "$bead_id" "reason=mitosis"
-            return 0
-        fi
-
-        _needle_debug "Genesis mitosis did not split bead, proceeding with execution: $bead_id"
-    fi
-
-    # Step 2: Proceed with execution
+    # No pre-execution mitosis check. All beads (including genesis) go straight
+    # to agent execution. The agent handles the work — for genesis beads, that
+    # means reading the plan doc and creating child beads via `br create`.
+    # Mitosis is ONLY triggered via the forced-failure path
+    # (_needle_mark_bead_failed) after N consecutive failures.
     _needle_debug "Proceeding with execution: $bead_id"
 
     # Step 3: Build prompt
