@@ -736,7 +736,7 @@ _needle_handle_exit_code() {
                 return 0
             fi
 
-            _needle_release_bead "$bead_id" "agent_failed"
+            _needle_release_bead "$bead_id" --reason "agent_failed"
             _needle_increment_backoff
 
             # Emit failure event
@@ -816,7 +816,7 @@ _needle_handle_exit_code() {
             # Unknown error - release
             _needle_warn "Exit code $exit_code: Unknown error - releasing bead"
 
-            _needle_release_bead "$bead_id" "unknown_error:$exit_code"
+            _needle_release_bead "$bead_id" --reason "unknown_error:$exit_code"
             _needle_increment_backoff
 
             # Emit error event
@@ -1332,7 +1332,7 @@ _needle_process_bead() {
     # Run pre-execute hook
     if ! _needle_run_hook "pre_execute" "$bead_id"; then
         _needle_warn "Pre-execute hook aborted for bead $bead_id"
-        _needle_release_bead "$bead_id" "hook_failed"
+        _needle_release_bead "$bead_id" --reason "hook_failed"
         return 1
     fi
 
@@ -1618,41 +1618,6 @@ _needle_quarantine_bead() {
 }
 
 # ============================================================================
-# Bead Release Function
-# ============================================================================
-
-# Release a bead back to the queue without failure
-# Usage: _needle_release_bead <bead_id> <reason>
-# Return values:
-#   0 - Bead released successfully
-#   1 - Release failed
-_needle_release_bead() {
-    local bead_id="$1"
-    local reason="$2"
-
-    _needle_debug "Releasing bead: $bead_id (reason: $reason)"
-
-    # Release using br CLI
-    if ! br update "$bead_id" --release --reason "$reason" 2>/dev/null; then
-        _needle_error "Failed to release bead: $bead_id"
-        _needle_event_error_release_failed "$bead_id" "reason=$reason"
-        return 1
-    fi
-
-    # Emit released event
-    _needle_event_bead_released "$bead_id" "reason=$reason"
-    _needle_telemetry_emit "bead.released" "info" \
-        "bead_id=$bead_id" \
-        "reason=$reason" \
-        "session=$NEEDLE_SESSION" \
-        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-    _needle_info "Bead released: $bead_id (reason: $reason)"
-
-    return 0
-}
-
-# ============================================================================
 # Direct Execution Support (for testing)
 # ============================================================================
 
@@ -1709,7 +1674,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
                 echo "Usage: $0 release <bead_id> <reason>"
                 exit 1
             fi
-            _needle_release_bead "$2" "$3"
+            _needle_release_bead "$2" --reason "$3"
             ;;
         -h|--help)
             cat <<'EOF'

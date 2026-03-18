@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # NEEDLE - Navigates Every Enqueued Deliverable, Logs Effort
-# Version: 0.5.2
+# Version: 0.5.3
 #
 # Universal orchestration wrapper for headless coding CLI agents
 # https://github.com/jedarden/NEEDLE
 #
 # This is a bundled distribution. Source available at the URL above.
 #
-# Generated: 2026-03-18T01:09:19Z
+# Generated: 2026-03-18T01:14:27Z
 #
 
 set -euo pipefail
@@ -17,8 +17,8 @@ set -euo pipefail
 # Version & Metadata
 # -----------------------------------------------------------------------------
 
-NEEDLE_VERSION="0.5.2"
-NEEDLE_BUILD_DATE="2026-03-18T01:09:20Z"
+NEEDLE_VERSION="0.5.3"
+NEEDLE_BUILD_DATE="2026-03-18T01:14:27Z"
 
 # -----------------------------------------------------------------------------
 # Module Loading Guards
@@ -972,10 +972,10 @@ _needle_extract_embedded_agents() {
 # Global constants and version information
 
 # Version information
-NEEDLE_VERSION="0.5.2"
+NEEDLE_VERSION="0.5.4"
 NEEDLE_VERSION_MAJOR=0
 NEEDLE_VERSION_MINOR=5
-NEEDLE_VERSION_PATCH=2
+NEEDLE_VERSION_PATCH=4
 
 # GitHub repository for self-update
 NEEDLE_GITHUB_REPO="${NEEDLE_GITHUB_REPO:-jedarden/NEEDLE}"
@@ -24174,7 +24174,7 @@ _needle_handle_exit_code() {
                 return 0
             fi
 
-            _needle_release_bead "$bead_id" "agent_failed"
+            _needle_release_bead "$bead_id" --reason "agent_failed"
             _needle_increment_backoff
 
             # Emit failure event
@@ -24254,7 +24254,7 @@ _needle_handle_exit_code() {
             # Unknown error - release
             _needle_warn "Exit code $exit_code: Unknown error - releasing bead"
 
-            _needle_release_bead "$bead_id" "unknown_error:$exit_code"
+            _needle_release_bead "$bead_id" --reason "unknown_error:$exit_code"
             _needle_increment_backoff
 
             # Emit error event
@@ -24769,7 +24769,7 @@ _needle_process_bead() {
     # Run pre-execute hook
     if ! _needle_run_hook "pre_execute" "$bead_id"; then
         _needle_warn "Pre-execute hook aborted for bead $bead_id"
-        _needle_release_bead "$bead_id" "hook_failed"
+        _needle_release_bead "$bead_id" --reason "hook_failed"
         return 1
     fi
 
@@ -25050,41 +25050,6 @@ _needle_quarantine_bead() {
 
     # Run on_quarantine hook for alerting/escalation
     _needle_run_hook "on_quarantine" "$bead_id"
-
-    return 0
-}
-
-# ============================================================================
-# Bead Release Function
-# ============================================================================
-
-# Release a bead back to the queue without failure
-# Usage: _needle_release_bead <bead_id> <reason>
-# Return values:
-#   0 - Bead released successfully
-#   1 - Release failed
-_needle_release_bead() {
-    local bead_id="$1"
-    local reason="$2"
-
-    _needle_debug "Releasing bead: $bead_id (reason: $reason)"
-
-    # Release using br CLI
-    if ! br update "$bead_id" --release --reason "$reason" 2>/dev/null; then
-        _needle_error "Failed to release bead: $bead_id"
-        _needle_event_error_release_failed "$bead_id" "reason=$reason"
-        return 1
-    fi
-
-    # Emit released event
-    _needle_event_bead_released "$bead_id" "reason=$reason"
-    _needle_telemetry_emit "bead.released" "info" \
-        "bead_id=$bead_id" \
-        "reason=$reason" \
-        "session=$NEEDLE_SESSION" \
-        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-
-    _needle_info "Bead released: $bead_id (reason: $reason)"
 
     return 0
 }
