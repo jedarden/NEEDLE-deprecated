@@ -3,9 +3,9 @@
 # Global constants and version information
 
 # Version information
-NEEDLE_VERSION="0.12.0"
+NEEDLE_VERSION="0.13.0"
 NEEDLE_VERSION_MAJOR=0
-NEEDLE_VERSION_MINOR=12
+NEEDLE_VERSION_MINOR=13
 NEEDLE_VERSION_PATCH=0
 
 # GitHub repository for self-update
