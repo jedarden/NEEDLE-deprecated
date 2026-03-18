@@ -499,6 +499,20 @@ else
     _fail "Expected deprecation warning for runner.max_workers. Got: $runner_warn"
 fi
 
+# Deprecated workspaces: key warns (nd-i72dp)
+_t "deprecated workspaces: key emits a warning"
+_write_config <<'EOF'
+workspaces:
+  - /home/user/project1
+  - /home/user/project2
+EOF
+ws_warn=$(check_deprecated_keys "$NEEDLE_CONFIG_FILE" 2>&1)
+if echo "$ws_warn" | grep -qi "deprecated\|workspaces"; then
+    _pass
+else
+    _fail "Expected deprecation warning for workspaces: key. Got: $ws_warn"
+fi
+
 # ============================================================================
 # Tests: validate_config_on_load
 # ============================================================================
