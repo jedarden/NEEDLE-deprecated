@@ -1,0 +1,49 @@
+# NEEDLE Agent Configuration: OpenCode with ZhipuAI GLM-5-Turbo
+# GLM-5-Turbo is optimized for OpenClaw/agent scenarios: tool calling, instruction following,
+# scheduled/persistent tasks, and high-throughput long-chain execution.
+
+# Agent metadata
+name: opencode-zai-glm5-turbo
+description: OpenCode with ZhipuAI GLM-5-Turbo (agent-optimized, 200K context)
+version: "1.0"
+
+# CLI identification
+runner: opencode        # CLI executable name
+provider: zai           # Provider for rate limiting
+model: glm-5-turbo      # Model identifier
+
+# Invocation template
+# Variables: ${WORKSPACE}, ${PROMPT}, ${BEAD_ID}, ${BEAD_TITLE}
+# Auth is handled by the zai-proxy running in apexalgo-iad (no API key needed on disk)
+invoke: |
+  cd ${WORKSPACE} && \
+  OPENCODE_MODEL=glm-5-turbo \
+  OPENCODE_API_BASE=http://zai-proxy-apexalgo.tail1b1987.ts.net:8080 \
+  opencode --headless \
+           --yes \
+           --json-output \
+           --prompt-file ${PROMPT_FILE}
+
+# Input method
+input:
+  method: file          # heredoc | stdin | file | args
+
+# Output parsing
+output:
+  format: json          # json | text | structured
+  success_codes: [0]
+  retry_codes: [1]
+  fail_codes: [2, 137]
+
+# Rate limits
+limits:
+  max_concurrent: 10
+
+# Cost configuration (pay-per-token)
+cost:
+  type: pay_per_token
+  input_per_1k: 0.001
+  output_per_1k: 0.002
+
+# Timeout in seconds
+timeout: 900
