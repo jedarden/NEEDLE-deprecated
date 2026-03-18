@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # NEEDLE - Navigates Every Enqueued Deliverable, Logs Effort
-# Version: 0.5.3
+# Version: 0.10.0
 #
 # Universal orchestration wrapper for headless coding CLI agents
 # https://github.com/jedarden/NEEDLE
 #
 # This is a bundled distribution. Source available at the URL above.
 #
-# Generated: 2026-03-18T01:14:27Z
+# Generated: 2026-03-18T02:50:16Z
 #
 
 set -euo pipefail
@@ -17,8 +17,8 @@ set -euo pipefail
 # Version & Metadata
 # -----------------------------------------------------------------------------
 
-NEEDLE_VERSION="0.5.3"
-NEEDLE_BUILD_DATE="2026-03-18T01:14:27Z"
+NEEDLE_VERSION="0.10.0"
+NEEDLE_BUILD_DATE="2026-03-18T02:50:16Z"
 
 # -----------------------------------------------------------------------------
 # Module Loading Guards
@@ -972,10 +972,10 @@ _needle_extract_embedded_agents() {
 # Global constants and version information
 
 # Version information
-NEEDLE_VERSION="0.5.4"
+NEEDLE_VERSION="0.10.0"
 NEEDLE_VERSION_MAJOR=0
-NEEDLE_VERSION_MINOR=5
-NEEDLE_VERSION_PATCH=4
+NEEDLE_VERSION_MINOR=10
+NEEDLE_VERSION_PATCH=0
 
 # GitHub repository for self-update
 NEEDLE_GITHUB_REPO="${NEEDLE_GITHUB_REPO:-jedarden/NEEDLE}"
@@ -12339,9 +12339,15 @@ _needle_claim_bead() {
 
                 if [[ -z "$_claimed_verification_cmd" ]]; then
                     # Fall back to label-based storage used by mitosis children
-                    _claimed_verification_cmd=$(echo "$bead_json" | \
-                        jq -r '.labels[]? // empty' 2>/dev/null | \
-                        grep -m1 '^verification_cmd:' | sed 's/^verification_cmd://')
+                    # Use br label list since br show --json does not include labels
+                    local _claim_label_output
+                    if [[ -n "$workspace" && -d "$workspace" ]]; then
+                        _claim_label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+                    else
+                        _claim_label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
+                    fi
+                    _claimed_verification_cmd=$(echo "$_claim_label_output" | \
+                        grep -m1 'verification_cmd:' | sed 's/^[[:space:]]*//' | sed 's/^verification_cmd://')
                 fi
 
                 export NEEDLE_CLAIMED_BEAD_ID="$bead_id"
@@ -14061,7 +14067,8 @@ _needle_build_prompt() {
     local title description labels priority status issue_type
     title=$(echo "$bead_object" | jq -r '.title // "Untitled Task"')
     description=$(echo "$bead_object" | jq -r '.description // ""')
-    labels=$(echo "$bead_object" | jq -r '.labels | if type == "array" then join(", ") else . // "" end')
+    # Read labels via br label list (br show --json does not include labels)
+    labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | sed '1d' | sed 's/^  //' | paste -sd, - | sed 's/,$//')
     priority=$(echo "$bead_object" | jq -r '.priority // 2')
     status=$(echo "$bead_object" | jq -r '.status // "open"')
     issue_type=$(echo "$bead_object" | jq -r '.issue_type // "task"')
@@ -14687,6 +14694,18 @@ _needle_check_mitosis() {
         return 1
     fi
 
+    # Session-level loop guard: track beads that have already been through
+    # mitosis in this worker process to prevent infinite re-splitting.
+    # Uses a file in /dev/shm keyed by PID for fast, lock-free checks.
+    local mitosis_guard_file="/dev/shm/needle-mitosis-guard-$$"
+    if [[ -f "$mitosis_guard_file" ]] && grep -qF "$bead_id" "$mitosis_guard_file" 2>/dev/null; then
+        _needle_warn "Mitosis loop guard: bead $bead_id already split in this session, skipping"
+        _needle_emit_event "bead.mitosis.loop_guard" \
+            "Blocked repeated mitosis on same bead in single session" \
+            "bead_id=$bead_id"
+        return 1
+    fi
+
     # Check if mitosis is enabled (respect workspace override)
     if ! _needle_mitosis_is_enabled "$workspace"; then
         _needle_debug "Mitosis is disabled"
@@ -14718,10 +14737,20 @@ _needle_check_mitosis() {
     # Extract bead properties
     local bead_type labels description
     bead_type=$(echo "$bead_object" | jq -r '.type // .issue_type // "task"')
-    labels=$(echo "$bead_object" | jq -r '.labels | if type == "array" then join(",") else . // "" end')
     description=$(echo "$bead_object" | jq -r '.description // ""')
 
+    # BUG FIX: br show --json does NOT include labels in its output schema.
+    # The old code read labels from the JSON (always empty), so mitosis-parent
+    # and mitosis-pending skip-checks never triggered, causing infinite loops.
+    # Now we read labels via `br label list` which returns the actual labels.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    else
+        labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
+
     _needle_debug "Checking mitosis for bead $bead_id (type: $bead_type, labels: $labels)"
+    _needle_debug "Mitosis label check: raw labels='$labels' for bead $bead_id"
 
     # Depth guard: prevent runaway recursive splitting.
     # Count mitosis depth by tracing parent-* labels up the ancestry chain.
@@ -14766,6 +14795,18 @@ print(depth)
 
     if [[ "$mitosis_depth" -ge "$max_depth" ]]; then
         _needle_debug "Skipping mitosis: depth $mitosis_depth >= max_depth $max_depth"
+        return 1
+    fi
+
+    # Hardcoded guard: genesis beads are orchestration trackers, not actionable tasks.
+    # Automatically apply the no-mitosis label so they are permanently excluded.
+    if [[ "$bead_type" == "genesis" ]]; then
+        _needle_debug "Skipping mitosis for genesis bead: $bead_id (applying no-mitosis label)"
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$bead_id" --label "no-mitosis" 2>/dev/null) || true
+        else
+            br update "$bead_id" --label "no-mitosis" 2>/dev/null || true
+        fi
         return 1
     fi
 
@@ -14868,7 +14909,16 @@ print(depth)
     fi
 
     # Perform mitosis
+    local mitosis_result
     _needle_perform_mitosis "$bead_id" "$workspace" "$analysis"
+    mitosis_result=$?
+
+    # Record this bead in the session loop guard to prevent re-splitting
+    if [[ $mitosis_result -eq 0 ]]; then
+        echo "$bead_id" >> "$mitosis_guard_file"
+    fi
+
+    return $mitosis_result
 }
 
 # ============================================================================
@@ -14890,7 +14940,11 @@ _needle_build_mitosis_prompt() {
     title=$(echo "$bead_object" | jq -r '.title // "Untitled"')
     description=$(echo "$bead_object" | jq -r '.description // ""')
     priority=$(echo "$bead_object" | jq -r '.priority // 2')
-    parent_labels=$(echo "$bead_object" | jq -r '.labels // []' | jq -r 'join(",")')
+    # Read labels via br label list (br show --json doesn't include labels)
+    parent_labels=""
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        parent_labels=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
 
     # Get max children config (respect workspace override)
     local max_children
@@ -15403,20 +15457,29 @@ _needle_perform_mitosis() {
     parent_priority="${parent_priority:-2}"
 
     # Compute parent's mitosis depth for child depth stamping
+    # Read depth label via br label list since br show --json doesn't include labels
     local parent_depth=0
     local parent_depth_label
-    parent_depth_label=$(echo "$parent_obj" | jq -r \
-        '.labels // [] | map(select(startswith("mitosis-depth:"))) | .[0] // ""' 2>/dev/null)
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        parent_depth_label=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null | grep '^mitosis-depth:' | head -1)
+    else
+        parent_depth_label=$(br label list "$parent_id" --no-color 2>/dev/null | grep '^mitosis-depth:' | head -1)
+    fi
     if [[ -n "$parent_depth_label" ]]; then
         parent_depth="${parent_depth_label#mitosis-depth:}"
     fi
     local child_depth=$((parent_depth + 1))
 
-    # Inherit non-system labels from parent (exclude mitosis-child, parent-*, and mitosis-depth:*)
+    # Inherit non-system labels from parent (exclude mitosis-child, parent-*, mitosis-depth:*, mitosis-parent, mitosis-pending)
+    # Read labels via br label list since br show --json doesn't include them
     local parent_inherited_labels
-    parent_inherited_labels=$(echo "$parent_obj" | jq -r \
-        '.labels // [] | map(select(. != "mitosis-child" and (startswith("parent-") | not) and (startswith("mitosis-depth:") | not))) | .[]' \
-        2>/dev/null)
+    local all_parent_labels
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        all_parent_labels=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null)
+    else
+        all_parent_labels=$(br label list "$parent_id" --no-color 2>/dev/null)
+    fi
+    parent_inherited_labels=$(echo "$all_parent_labels" | grep -v -E '^(mitosis-child|mitosis-parent|mitosis-pending|parent-|mitosis-depth:)')
 
     # Extract parent's verification_cmd for potential propagation
     # Check both direct field and label format (verification_cmd:<command>)
@@ -15425,9 +15488,13 @@ _needle_perform_mitosis() {
 
     # If not in direct field, check labels for verification_cmd label
     if [[ -z "$parent_verification_cmd" ]]; then
-        local parent_labels_json
-        parent_labels_json=$(echo "$parent_obj" | jq -r '.labels // []' 2>/dev/null)
-        parent_verification_cmd=$(echo "$parent_labels_json" | jq -r 'map(select(startswith("verification_cmd:"))) | .[]' | sed 's/^verification_cmd://' | head -1)
+        local parent_labels_for_vcmd
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            parent_labels_for_vcmd=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null)
+        else
+            parent_labels_for_vcmd=$(br label list "$parent_id" --no-color 2>/dev/null)
+        fi
+        parent_verification_cmd=$(echo "$parent_labels_for_vcmd" | grep '^verification_cmd:' | sed 's/^verification_cmd://' | head -1)
     fi
 
     # Emit mitosis started event
@@ -15438,8 +15505,52 @@ _needle_perform_mitosis() {
 
     # Transition mitosis-pending → mitosis-parent: replace the temporary lock with
     # the permanent parent marker before creating children.
-    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
-    br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+    # CRITICAL: must run in workspace context — bare br update writes to cwd's DB,
+    # which may be a different workspace than the bead's.
+    # Use `br label add` (dedicated label command) rather than `br update --label`
+    # for reliability — update --label may silently fail in some br versions.
+    local label_add_exit label_rm_exit
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        (cd "$workspace" && br label add --label mitosis-parent "$parent_id" 2>&1)
+        label_add_exit=$?
+        (cd "$workspace" && br label remove --label mitosis-pending "$parent_id" 2>&1)
+        label_rm_exit=$?
+    else
+        br label add --label mitosis-parent "$parent_id" 2>&1
+        label_add_exit=$?
+        br label remove --label mitosis-pending "$parent_id" 2>&1
+        label_rm_exit=$?
+    fi
+
+    # Observability: log label write results — silent failures here caused
+    # infinite mitosis loops (see mobile-gaming-58g incident 2026-03-18)
+    if [[ $label_add_exit -ne 0 ]]; then
+        _needle_error "CRITICAL: Failed to add mitosis-parent label to $parent_id (exit=$label_add_exit)"
+        _needle_emit_event "bead.mitosis.label_write_failed" \
+            "Failed to write mitosis-parent label" \
+            "parent_id=$parent_id" \
+            "label=mitosis-parent" \
+            "exit_code=$label_add_exit"
+    else
+        _needle_debug "Successfully added mitosis-parent label to $parent_id"
+    fi
+
+    # Verify the label actually persisted by reading it back
+    local verify_labels
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        verify_labels=$(cd "$workspace" && br label list "$parent_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    else
+        verify_labels=$(br label list "$parent_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
+    fi
+    if [[ ",$verify_labels," != *",mitosis-parent,"* ]]; then
+        _needle_error "CRITICAL: mitosis-parent label did not persist on $parent_id (labels after write: '$verify_labels')"
+        _needle_emit_event "bead.mitosis.label_verify_failed" \
+            "mitosis-parent label not found after write" \
+            "parent_id=$parent_id" \
+            "labels_found=$verify_labels"
+    else
+        _needle_debug "Verified mitosis-parent label persisted on $parent_id"
+    fi
 
     # Array to collect child IDs
     local -a child_ids=()
@@ -15584,8 +15695,13 @@ _needle_perform_mitosis() {
     if [[ ${#child_ids[@]} -eq 0 ]]; then
         _needle_error "Mitosis failed: no children created"
         # Roll back labels: remove both mitosis-parent and mitosis-pending
-        br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
-        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null) || true
+            (cd "$workspace" && br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
+            br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         _needle_emit_event "bead.mitosis.failed" \
             "Mitosis failed: no children created" \
             "parent_id=$parent_id"
@@ -15626,17 +15742,10 @@ _needle_perform_mitosis() {
 _needle_is_mitosis_parent() {
     local bead_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$bead_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
-    [[ "$labels" == *"mitosis-parent"* ]]
+    [[ ",$labels," == *",mitosis-parent,"* ]]
 }
 
 # Check if a bead is a mitosis child
@@ -15645,17 +15754,10 @@ _needle_is_mitosis_parent() {
 _needle_is_mitosis_child() {
     local bead_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$bead_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$bead_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
-    [[ "$labels" == *"mitosis-child"* ]]
+    [[ ",$labels," == *",mitosis-child,"* ]]
 }
 
 # Get parent ID for a mitosis child
@@ -15664,15 +15766,8 @@ _needle_is_mitosis_child() {
 _needle_get_mitosis_parent() {
     local child_id="$1"
 
-    local bead_json
-    bead_json=$(br show "$child_id" --json 2>/dev/null)
-
-    if [[ -z "$bead_json" ]]; then
-        return 1
-    fi
-
     local labels
-    labels=$(echo "$bead_json" | jq -r '.labels | if type == "array" then join(",") else . // "" end' 2>/dev/null)
+    labels=$(br label list "$child_id" --no-color 2>/dev/null | tr '\n' ',' | sed 's/,$//')
 
     # Extract parent ID from label
     if [[ "$labels" =~ parent-([a-z0-9-]+) ]]; then
@@ -15773,30 +15868,24 @@ _needle_extract_files_from_description() {
 # Example:
 #   files=$(_needle_extract_files_from_label "$bead_json")
 _needle_extract_files_from_label() {
-    local bead_json="$1"
+    local bead_id="$1"
+    local workspace="${2:-}"
 
-    if [[ -z "$bead_json" ]]; then
+    if [[ -z "$bead_id" ]]; then
         return 0
     fi
 
-    if ! command -v jq &>/dev/null; then
-        _needle_warn "jq not available, cannot extract files label"
-        return 0
+    # Read labels via br label list (br show --json does not include labels)
+    local label_output
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+    else
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
     fi
 
     # Look for labels starting with "files:"
-    # Handle both array input and single object
     local files_label
-    files_label=$(echo "$bead_json" | jq -r '
-        (. // []) |
-        if type == "array" then
-            .[0].labels // []
-        else
-            .labels // []
-        end |
-        .[] |
-        select(startswith("files:"))
-    ' 2>/dev/null | head -1)
+    files_label=$(echo "$label_output" | grep 'files:' | sed 's/^[[:space:]]*//' | head -1)
 
     if [[ -n "$files_label" ]]; then
         # Strip the "files:" prefix and return the rest
@@ -15851,7 +15940,7 @@ _needle_extract_files_from_bead() {
 
     # 1. Extract from explicit files: label
     local label_files
-    label_files=$(_needle_extract_files_from_label "$bead_json")
+    label_files=$(_needle_extract_files_from_label "$bead_id" "$workspace")
 
     if [[ -n "$label_files" ]]; then
         # Split comma-separated files
@@ -16316,15 +16405,21 @@ _needle_get_verification_cmd() {
     fi
 
     # Fallback: check labels for "verification_cmd:<command>" pattern
-    local labels
-    labels=$(echo "$bead_json" | jq -r '.labels[]? // empty' 2>/dev/null)
+    # Use br label list since br show --json does not include labels
+    local label_output
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
+    else
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
+    fi
 
+    local label
     while IFS= read -r label; do
         if [[ "$label" =~ ^verification_cmd:(.+)$ ]]; then
             echo "${BASH_REMATCH[1]}"
             return 0
         fi
-    done <<< "$labels"
+    done <<< "$label_output"
 
     # No verification_cmd found
     return 1
@@ -19832,7 +19927,7 @@ _needle_set_hook_env() {
                 export NEEDLE_BEAD_TITLE=$(echo "$bead_json" | jq -r '.title // ""' 2>/dev/null)
                 export NEEDLE_BEAD_PRIORITY=$(echo "$bead_json" | jq -r '.priority // 3' 2>/dev/null)
                 export NEEDLE_BEAD_TYPE=$(echo "$bead_json" | jq -r '.type // "task"' 2>/dev/null)
-                export NEEDLE_BEAD_LABELS=$(echo "$bead_json" | jq -r '.labels | join(",") // ""' 2>/dev/null)
+                export NEEDLE_BEAD_LABELS=$(br label list "$bead_id" --no-color 2>/dev/null | sed '1d' | sed 's/^  //' | paste -sd, - | sed 's/,$//')
             fi
         fi
     fi
@@ -23553,6 +23648,7 @@ _NEEDLE_LOOP_INIT=false
 _NEEDLE_LOOP_SHUTDOWN=false
 _NEEDLE_LOOP_DRAINING=false
 _NEEDLE_LOOP_INTERRUPT=false
+_NEEDLE_LOOP_HOT_RELOAD=false
 
 # ============================================================================
 # Configuration Defaults
@@ -23601,6 +23697,11 @@ NEEDLE_WS_CONFIG_LOADED_AT=0
 # This avoids checking file mtime on every iteration
 NEEDLE_CONFIG_CHECK_INTERVAL=15
 NEEDLE_CONFIG_CHECK_COUNTER=0
+
+# Track binary mtime for hot-reload detection
+# Recorded once at startup; compared during worker loop to detect binary replacement
+NEEDLE_BINARY_PATH=""
+NEEDLE_BINARY_MTIME_AT_START=0
 
 # ============================================================================
 # Backoff and Crash Recovery Functions
@@ -23895,6 +23996,60 @@ _needle_init_config_tracking() {
     fi
 
     _needle_debug "Config tracking initialized: global=$NEEDLE_GLOBAL_CONFIG_LOADED_AT, workspace=$NEEDLE_WS_CONFIG_LOADED_AT"
+}
+
+# Initialize binary mtime tracking for hot-reload detection
+# Records the mtime of the needle binary at startup.
+# Called once at worker startup; comparison happens in the polling loop (separate task).
+# Usage: _needle_init_binary_mtime_tracking
+_needle_init_binary_mtime_tracking() {
+    local binary_path=""
+
+    # Resolve binary path: NEEDLE_SRC is src/, so the binary lives one level up in bin/
+    local candidate
+    candidate="$(dirname "$NEEDLE_SRC")/bin/needle"
+    if [[ -x "$candidate" ]]; then
+        # Follow symlinks so we track the real file, not the symlink
+        binary_path="$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")"
+    else
+        # Fall back to locating needle in PATH
+        local in_path
+        in_path="$(command -v needle 2>/dev/null || true)"
+        if [[ -n "$in_path" ]]; then
+            binary_path="$(readlink -f "$in_path" 2>/dev/null || echo "$in_path")"
+        fi
+    fi
+
+    NEEDLE_BINARY_PATH="$binary_path"
+
+    if [[ -n "$binary_path" ]] && [[ -f "$binary_path" ]]; then
+        NEEDLE_BINARY_MTIME_AT_START=$(_needle_get_config_mtime "$binary_path")
+        _needle_debug "Binary mtime recorded at startup: path=$binary_path mtime=$NEEDLE_BINARY_MTIME_AT_START"
+    else
+        NEEDLE_BINARY_MTIME_AT_START=0
+        _needle_debug "Binary path not resolved; binary mtime tracking disabled"
+    fi
+}
+
+# Check whether the needle binary has been replaced since startup
+# Compares current mtime of NEEDLE_BINARY_PATH to the value recorded at startup.
+# Returns: 0 if binary changed (hot-reload needed), 1 if unchanged or tracking disabled
+# Usage: _needle_check_hot_reload
+_needle_check_hot_reload() {
+    # If binary path not resolved, tracking is disabled — no reload
+    if [[ -z "${NEEDLE_BINARY_PATH:-}" ]] || [[ "$NEEDLE_BINARY_MTIME_AT_START" -eq 0 ]]; then
+        return 1
+    fi
+
+    local current_mtime
+    current_mtime=$(_needle_get_config_mtime "$NEEDLE_BINARY_PATH")
+
+    if [[ "$current_mtime" -ne "$NEEDLE_BINARY_MTIME_AT_START" ]]; then
+        _needle_debug "Binary mtime changed: was=$NEEDLE_BINARY_MTIME_AT_START now=$current_mtime path=$NEEDLE_BINARY_PATH"
+        return 0
+    fi
+
+    return 1
 }
 
 # Check if configuration files have changed and reload if needed
@@ -24513,6 +24668,9 @@ _needle_worker_loop_init() {
     # Initialize config change tracking timestamps (required before hot-reload checks)
     _needle_init_config_tracking
 
+    # Record binary mtime at startup (used later for binary hot-reload polling)
+    _needle_init_binary_mtime_tracking
+
     _NEEDLE_LOOP_INIT=true
     _needle_debug "Worker loop initialized"
 }
@@ -24633,6 +24791,15 @@ _needle_worker_loop() {
             _needle_debug "Runtime config updated: polling_interval=${polling_interval}s, idle_timeout=${idle_timeout}s"
         fi
 
+        # Check if binary has been updated since startup (hot-reload detection)
+        # Re-exec logic is handled by the caller when this returns 0; here we only detect.
+        if _needle_check_hot_reload; then
+            _needle_info "Binary updated (mtime changed) — triggering hot-reload"
+            # Re-exec is handled by the block below; exit the loop so the caller can act
+            _NEEDLE_LOOP_HOT_RELOAD=true
+            break
+        fi
+
         # Run strand engine to find work
         local strand_result
         # DIAGNOSTIC: Log strand engine call
@@ -24688,6 +24855,24 @@ _needle_worker_loop() {
         fi
     done
 
+    # Hot-reload: binary was updated — log the event and re-exec
+    if [[ "$_NEEDLE_LOOP_HOT_RELOAD" == "true" ]]; then
+        _needle_info "Hot-reload triggered — re-execing with updated binary"
+        _needle_telemetry_emit "worker.hot_reload" "info" \
+            "session=$NEEDLE_SESSION" \
+            "binary=$NEEDLE_BINARY_PATH" \
+            "workspace=$NEEDLE_WORKSPACE" \
+            "agent=$NEEDLE_AGENT" \
+            "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exec "$NEEDLE_BINARY_PATH" run \
+            --workspace "$NEEDLE_WORKSPACE" \
+            --agent "$NEEDLE_AGENT" \
+            --id "$NEEDLE_IDENTIFIER" \
+            --name "$NEEDLE_SESSION"
+        # exec replaces the process; the lines below are only reached if exec fails
+        _needle_error "exec failed for hot-reload — falling through to normal shutdown"
+    fi
+
     # Emit final telemetry event
     _needle_telemetry_emit "worker.stopped" "info" \
         "reason=shutdown" \
@@ -24729,13 +24914,6 @@ _needle_process_bead() {
 
     # Emit bead claimed event
     _needle_event_bead_claimed "$bead_id" "workspace=$workspace"
-
-    # Also emit telemetry event
-    _needle_telemetry_emit "bead.claimed" "info" \
-        "bead_id=$bead_id" \
-        "workspace=$workspace" \
-        "session=$NEEDLE_SESSION" \
-        "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     # Build prompt for agent
     local prompt
@@ -25161,29 +25339,22 @@ _needle_get_bead_failure_count() {
     local bead_id="$1"
     local workspace="${2:-${NEEDLE_WORKSPACE:-$(pwd)}}"
 
-    local bead_json
+    # Read labels via br label list (br show --json does not include labels)
+    local label_output
     if [[ -n "$workspace" && -d "$workspace" ]]; then
-        bead_json=$(cd "$workspace" && br show "$bead_id" --json 2>/dev/null)
+        label_output=$(cd "$workspace" && br label list "$bead_id" --no-color 2>/dev/null)
     else
-        bead_json=$(br show "$bead_id" --json 2>/dev/null)
+        label_output=$(br label list "$bead_id" --no-color 2>/dev/null)
     fi
 
-    if [[ -z "$bead_json" ]]; then
+    if [[ -z "$label_output" ]]; then
         echo "0"
         return 0
     fi
 
-    # Handle array or object response
-    local labels_json
-    if echo "$bead_json" | jq -e 'type == "array"' &>/dev/null; then
-        labels_json=$(echo "$bead_json" | jq -r '.[0].labels // [] | .[]' 2>/dev/null)
-    else
-        labels_json=$(echo "$bead_json" | jq -r '.labels // [] | .[]' 2>/dev/null)
-    fi
-
     # Find 'failure-count:N' label and extract N
     local count
-    count=$(echo "$labels_json" | grep '^failure-count:' | sed 's/failure-count://' | head -1)
+    count=$(echo "$label_output" | grep 'failure-count:' | sed 's/^[[:space:]]*//' | sed 's/^failure-count://' | head -1)
     if [[ -n "$count" ]] && [[ "$count" =~ ^[0-9]+$ ]]; then
         echo "$count"
     else
@@ -26192,7 +26363,12 @@ _needle_explore_find_child_with_beads() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     return 1
 }
@@ -26219,7 +26395,12 @@ _needle_explore_search_children_stale() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     echo "$total_released"
 }
@@ -26286,7 +26467,12 @@ _needle_explore_find_sibling_with_beads() {
             -not -path "*/node_modules/*" \
             -not -path "*/.git/*" \
             -not -path "*/vendor/*" \
-            -not -path "*/.cache/*" 2>/dev/null)
+            -not -path "*/.cache/*" \
+            -not -path "*/.cargo/*" \
+            -not -path "*/.rustup/*" \
+            -not -path "*/.local/*" \
+            -not -path "*/.npm/*" \
+            -not -path "*/.nvm/*" 2>/dev/null)
 
         current="$parent"
     done
@@ -26322,7 +26508,12 @@ _needle_strand_explore() {
         -not -path "*/node_modules/*" \
         -not -path "*/.git/*" \
         -not -path "*/vendor/*" \
-        -not -path "*/.cache/*" 2>/dev/null)
+        -not -path "*/.cache/*" \
+        -not -path "*/.cargo/*" \
+        -not -path "*/.rustup/*" \
+        -not -path "*/.local/*" \
+        -not -path "*/.npm/*" \
+        -not -path "*/.nvm/*" 2>/dev/null)
 
     if [[ ${#child_workspaces[@]} -gt 0 ]]; then
         _needle_debug "explore: found ${#child_workspaces[@]} child workspace(s), running mend+pluck"
@@ -26421,6 +26612,7 @@ _needle_explore_search_parents() {
 #
 # This strand handles maintenance tasks such as:
 # - Cleaning up orphaned claims (beads assigned to dead workers)
+# - Removing stale dependency links (open beads blocked by closed beads)
 # - Pruning old heartbeat files from dead workers
 # - Log rotation and cleanup
 #
@@ -26454,6 +26646,7 @@ _needle_strand_mend() {
     local work_done=false
     local orphaned_count=0
     local stale_count=0
+    local stale_dep_count=0
     local heartbeat_count=0
     local log_count=0
 
@@ -26497,14 +26690,23 @@ _needle_strand_mend() {
         fi
     done
 
-    # 3. Prune old heartbeat files from dead workers
+    # 3. Remove stale dependency links on open beads blocked by closed beads
+    for ws in "${workspaces[@]}"; do
+        _needle_diag_strand "mend" "Checking for stale dep links" "workspace=$ws"
+        if _needle_mend_stale_deps "$ws"; then
+            work_done=true
+            ((stale_dep_count++))
+        fi
+    done
+
+    # 4. Prune old heartbeat files from dead workers
     _needle_diag_strand "mend" "Checking for old heartbeats"
     if _needle_mend_old_heartbeats; then
         work_done=true
         heartbeat_count=1
     fi
 
-    # 4. Log rotation/cleanup (if configured)
+    # 5. Log rotation/cleanup (if configured)
     _needle_diag_strand "mend" "Checking for log cleanup"
     if _needle_mend_logs; then
         work_done=true
@@ -26516,6 +26718,7 @@ _needle_strand_mend() {
             "workspace=$workspace" \
             "orphaned_cleaned=$orphaned_count" \
             "stale_cleaned=$stale_count" \
+            "stale_deps_cleaned=$stale_dep_count" \
             "heartbeats_cleaned=$heartbeat_count" \
             "logs_cleaned=$log_count"
 
@@ -26527,6 +26730,7 @@ _needle_strand_mend() {
         "workspace=$workspace" \
         "orphaned_checked=true" \
         "stale_checked=true" \
+        "stale_deps_checked=true" \
         "heartbeats_checked=true" \
         "logs_checked=true"
 
@@ -27088,6 +27292,112 @@ _needle_mend_logs() {
             "previous_count=$log_count" \
             "max_files=$max_files"
 
+        return 0
+    fi
+
+    return 1
+}
+
+# ============================================================================
+# Stale Dependency Cleanup
+# ============================================================================
+
+# Detect and remove stale dependency links on open beads
+# A stale dependency is a "blocks"-type link pointing to a closed (DONE) bead.
+# Workers cannot claim beads that appear blocked, even if the blocker is resolved.
+#
+# Usage: _needle_mend_stale_deps <workspace>
+# Returns: 0 if any stale deps were removed, 1 if none
+_needle_mend_stale_deps() {
+    local workspace="$1"
+    local removed=0
+
+    # Resolve the workspace database path
+    local db_path=""
+    if [[ -f "$workspace/.beads/beads.db" ]]; then
+        db_path="$workspace/.beads/beads.db"
+    else
+        local found_db
+        found_db=$(find "$workspace" -maxdepth 2 -path '*/.beads/beads.db' -type f 2>/dev/null | head -1)
+        if [[ -n "$found_db" ]]; then
+            db_path="$found_db"
+        fi
+    fi
+
+    if [[ -z "$db_path" ]]; then
+        _needle_debug "mend: no beads database found in $workspace"
+        return 1
+    fi
+
+    # Get all open beads
+    local open_beads
+    open_beads=$(br list --db="$db_path" --status open --json 2>/dev/null)
+
+    if [[ -z "$open_beads" ]] || [[ "$open_beads" == "[]" ]] || [[ "$open_beads" == "null" ]]; then
+        _needle_debug "mend: no open beads found in $workspace"
+        return 1
+    fi
+
+    if ! echo "$open_beads" | jq -e '.[]' &>/dev/null; then
+        _needle_debug "mend: no valid open beads data for stale dep check"
+        return 1
+    fi
+
+    # Check each open bead for stale blocking dependencies
+    while IFS= read -r bead; do
+        local bead_id dep_count
+        bead_id=$(echo "$bead" | jq -r '.id // empty')
+        dep_count=$(echo "$bead" | jq -r '.dependency_count // 0')
+
+        [[ -z "$bead_id" ]] && continue
+
+        # Skip beads with no dependencies (optimization)
+        if [[ "$dep_count" -eq 0 ]]; then
+            continue
+        fi
+
+        # Get blocks-type dependencies for this bead
+        local deps
+        deps=$(br dep list "$bead_id" --db="$db_path" -t blocks --json 2>/dev/null)
+
+        if [[ -z "$deps" ]] || [[ "$deps" == "[]" ]] || [[ "$deps" == "null" ]]; then
+            continue
+        fi
+
+        # Check each dependency for staleness
+        while IFS= read -r dep; do
+            local dep_id dep_status
+
+            # depends_on_id is the canonical field from the JSONL schema;
+            # fall back to id in case the CLI enriches with target bead fields
+            dep_id=$(echo "$dep" | jq -r '.depends_on_id // .id // empty')
+            dep_status=$(echo "$dep" | jq -r '.status // empty')
+
+            [[ -z "$dep_id" ]] && continue
+
+            # Only remove the link if the blocking bead is confirmed closed
+            if [[ "$dep_status" == "closed" ]]; then
+                _needle_warn "mend: stale dep detected — $bead_id blocked by closed bead $dep_id"
+
+                if br dep remove "$bead_id" "$dep_id" --db="$db_path" 2>/dev/null; then
+                    _needle_info "mend: removed stale dep link $bead_id -> $dep_id"
+
+                    _needle_emit_event "mend.stale_dep_removed" \
+                        "Removed stale dependency on closed bead" \
+                        "bead_id=$bead_id" \
+                        "blocking_bead_id=$dep_id" \
+                        "workspace=$workspace"
+
+                    ((removed++))
+                else
+                    _needle_warn "mend: failed to remove stale dep $bead_id -> $dep_id"
+                fi
+            fi
+        done < <(echo "$deps" | jq -c '.[]' 2>/dev/null)
+    done < <(echo "$open_beads" | jq -c '.[]' 2>/dev/null)
+
+    if ((removed > 0)); then
+        _needle_info "mend: removed $removed stale dep link(s) in $workspace"
         return 0
     fi
 
@@ -31798,7 +32108,7 @@ _pulse_process_issues() {
             description=$(echo "$issue" | jq -r '.description // empty' 2>/dev/null)
             fingerprint=$(echo "$issue" | jq -r '.fingerprint // empty' 2>/dev/null)
             severity=$(echo "$issue" | jq -r '.severity // "medium"' 2>/dev/null)
-            extra_labels=$(echo "$issue" | jq -r '.labels // empty' 2>/dev/null)
+            extra_labels=$(echo "$issue" | jq -r '.labels // empty' 2>/dev/null)  # internal issue schema, not br show --json
         else
             continue
         fi
@@ -42358,7 +42668,7 @@ _needle_pulse_run() {
         description=$(echo "$issue" | jq -r '.description // ""' 2>/dev/null)
         fingerprint=$(echo "$issue" | jq -r '.fingerprint // ""' 2>/dev/null)
         severity=$(echo "$issue" | jq -r '.severity // "medium"' 2>/dev/null)
-        labels=$(echo "$issue" | jq -r '.labels // ""' 2>/dev/null)
+        labels=$(echo "$issue" | jq -r '.labels // ""' 2>/dev/null)  # internal issue schema, not br show --json
 
         # Create bead
         if _pulse_create_bead "$workspace" "$category" "$title" "$description" "$fingerprint" "$severity" "$labels" 2>/dev/null; then

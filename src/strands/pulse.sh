@@ -3202,7 +3202,7 @@ _pulse_process_issues() {
             description=$(echo "$issue" | jq -r '.description // empty' 2>/dev/null)
             fingerprint=$(echo "$issue" | jq -r '.fingerprint // empty' 2>/dev/null)
             severity=$(echo "$issue" | jq -r '.severity // "medium"' 2>/dev/null)
-            extra_labels=$(echo "$issue" | jq -r '.labels // empty' 2>/dev/null)
+            extra_labels=$(echo "$issue" | jq -r '.labels // empty' 2>/dev/null)  # internal issue schema, not br show --json
         else
             continue
         fi

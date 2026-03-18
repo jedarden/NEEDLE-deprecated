@@ -321,7 +321,7 @@ _needle_pulse_run() {
         description=$(echo "$issue" | jq -r '.description // ""' 2>/dev/null)
         fingerprint=$(echo "$issue" | jq -r '.fingerprint // ""' 2>/dev/null)
         severity=$(echo "$issue" | jq -r '.severity // "medium"' 2>/dev/null)
-        labels=$(echo "$issue" | jq -r '.labels // ""' 2>/dev/null)
+        labels=$(echo "$issue" | jq -r '.labels // ""' 2>/dev/null)  # internal issue schema, not br show --json
 
         # Create bead
         if _pulse_create_bead "$workspace" "$category" "$title" "$description" "$fingerprint" "$severity" "$labels" 2>/dev/null; then

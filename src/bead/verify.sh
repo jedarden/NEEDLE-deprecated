@@ -130,7 +130,7 @@ _needle_get_verification_cmd() {
             echo "${BASH_REMATCH[1]}"
             return 0
         fi
-    done <<< "$labels"
+    done <<< "$label_output"
 
     # No verification_cmd found
     return 1
