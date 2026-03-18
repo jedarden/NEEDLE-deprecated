@@ -54,7 +54,8 @@ EXAMPLES:
     needle upgrade --local=/path/to/needle-1.3.0
 
 NOTES:
-    - Running workers continue with old version until restarted
+    - Running workers are automatically signaled to hot-reload after install
+    - Workers reload at their next safe checkpoint (between bead cycles)
     - Use 'needle rollback' to revert if issues occur
     - Previous version backed up to ~/.needle/cache/
 "
@@ -517,10 +518,33 @@ _needle_upgrade_from_local() {
     # Perform swap
     if _needle_perform_swap "$local_file" "$current_binary"; then
         _needle_success "Local installation complete"
+
+        # Signal running workers to hot-reload the new binary
+        _needle_signal_workers
+
         return 0
     else
         return 1
     fi
+}
+
+# -----------------------------------------------------------------------------
+# Worker Signal Functions
+# -----------------------------------------------------------------------------
+
+# Signal all running workers to hot-reload at their next safe checkpoint
+_needle_signal_workers() {
+    local worker_pids
+    worker_pids=$(pgrep -f "needle _run_worker" 2>/dev/null)
+    if [[ -z "$worker_pids" ]]; then
+        return 0
+    fi
+
+    local count
+    count=$(echo "$worker_pids" | wc -l | tr -d ' ')
+    _needle_info "Signaling $count running worker(s) to hot-reload..."
+    echo "$worker_pids" | xargs kill -USR1 2>/dev/null || true
+    _needle_info "Workers will reload at their next safe checkpoint"
 }
 
 # -----------------------------------------------------------------------------
@@ -758,6 +782,9 @@ _needle_upgrade() {
         _needle_success "Upgraded to version $target_version!"
         _needle_info "Run 'needle version' to verify"
         _needle_info "Run 'needle upgrade --rollback' to revert if needed"
+
+        # Signal running workers to hot-reload the new binary
+        _needle_signal_workers
 
         # Clean up download
         rm -f "$download_file"
