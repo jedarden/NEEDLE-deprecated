@@ -308,16 +308,13 @@ print(depth)
         return 1
     fi
 
-    # Hardcoded guard: genesis beads are orchestration trackers, not actionable tasks.
-    # Automatically apply the no-mitosis label so they are permanently excluded.
+    # Genesis beads are phase orchestrators tied to a plan document.
+    # When a genesis bead is unblocked (all current-phase children complete),
+    # mitosis should create the NEXT phase's child beads from the plan.
+    # The LLM analysis prompt includes the plan reference and progress checklist,
+    # so mitosis will naturally create children for the next incomplete phase.
     if [[ "$bead_type" == "genesis" ]]; then
-        _needle_debug "Skipping mitosis for genesis bead: $bead_id (applying no-mitosis label)"
-        if [[ -n "$workspace" && -d "$workspace" ]]; then
-            (cd "$workspace" && br update "$bead_id" --label "no-mitosis" 2>/dev/null) || true
-        else
-            br update "$bead_id" --label "no-mitosis" 2>/dev/null || true
-        fi
-        return 1
+        _needle_debug "Genesis bead $bead_id: allowing mitosis for next-phase expansion"
     fi
 
     # Check if bead type should be skipped (respect workspace override)
