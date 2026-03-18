@@ -108,6 +108,7 @@ _NEEDLE_LOOP_SHUTDOWN=false
 _NEEDLE_LOOP_DRAINING=false
 _NEEDLE_LOOP_INTERRUPT=false
 _NEEDLE_LOOP_HOT_RELOAD=false
+_NEEDLE_RELOAD_REQUESTED=0
 
 # ============================================================================
 # Configuration Defaults
@@ -967,7 +968,17 @@ _needle_loop_setup_signals() {
     trap '_needle_loop_handle_shutdown TERM' TERM
     trap '_needle_loop_handle_shutdown INT' INT
     trap '_needle_loop_handle_shutdown HUP' HUP
+    _needle_setup_reload_signal
     _needle_debug "Signal handlers installed for graceful shutdown"
+}
+
+# Install SIGUSR1 handler for manual hot-reload trigger
+# Sending SIGUSR1 to the worker process flags a reload at the next safe checkpoint.
+# Usage: _needle_setup_reload_signal
+# To trigger: kill -USR1 <worker-pid>
+_needle_setup_reload_signal() {
+    trap '_NEEDLE_RELOAD_REQUESTED=1' USR1
+    _needle_debug "SIGUSR1 handler installed for manual hot-reload"
 }
 
 # Handle shutdown signal
@@ -1260,10 +1271,13 @@ _needle_worker_loop() {
         fi
 
         # Check if binary has been updated since startup (hot-reload detection)
-        # Re-exec logic is handled by the caller when this returns 0; here we only detect.
-        if _needle_check_hot_reload; then
-            _needle_info "Binary updated (mtime changed) — triggering hot-reload"
-            # Re-exec is handled by the block below; exit the loop so the caller can act
+        # Also triggers if SIGUSR1 was received (_NEEDLE_RELOAD_REQUESTED=1).
+        if _needle_check_hot_reload || [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 1 ]]; then
+            if [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 1 ]]; then
+                _needle_info "SIGUSR1 received — triggering hot-reload at safe checkpoint"
+            else
+                _needle_info "Binary updated (mtime changed) — triggering hot-reload"
+            fi
             _NEEDLE_LOOP_HOT_RELOAD=true
             break
         fi
@@ -1323,14 +1337,17 @@ _needle_worker_loop() {
         fi
     done
 
-    # Hot-reload: binary was updated — log the event and re-exec
+    # Hot-reload: binary was updated or SIGUSR1 received — log the event and re-exec
     if [[ "$_NEEDLE_LOOP_HOT_RELOAD" == "true" ]]; then
-        _needle_info "Hot-reload triggered — re-execing with updated binary"
+        local reload_trigger="mtime"
+        [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 1 ]] && reload_trigger="sigusr1"
+        _needle_info "Hot-reload triggered (trigger=$reload_trigger) — re-execing with updated binary"
         _needle_telemetry_emit "worker.hot_reload" "info" \
             "session=$NEEDLE_SESSION" \
             "binary=$NEEDLE_BINARY_PATH" \
             "workspace=$NEEDLE_WORKSPACE" \
             "agent=$NEEDLE_AGENT" \
+            "trigger=$reload_trigger" \
             "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         exec "$NEEDLE_BINARY_PATH" run \
             --workspace "$NEEDLE_WORKSPACE" \

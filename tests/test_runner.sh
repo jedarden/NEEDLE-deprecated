@@ -737,6 +737,166 @@ test_config_fallback_to_default() {
 }
 
 # ============================================================================
+# Binary Hot-Reload Tests
+# ============================================================================
+
+test_binary_hot_reload_init_no_binary() {
+    test_start "Binary hot-reload init: no binary found"
+
+    setup_mock_environment
+
+    # Unset binary path so tracking is disabled
+    NEEDLE_BINARY_PATH=""
+    NEEDLE_BINARY_MTIME_AT_START=0
+
+    # Run init with a src path that has no bin/needle
+    # Also restrict PATH so needle is not found via command -v
+    local orig_src="${NEEDLE_SRC:-}"
+    local orig_path="$PATH"
+    export NEEDLE_SRC="$NEEDLE_HOME/src"
+    export PATH="$NEEDLE_HOME"
+    mkdir -p "$NEEDLE_SRC"
+
+    _needle_init_binary_mtime_tracking 2>/dev/null
+
+    if [[ "$NEEDLE_BINARY_MTIME_AT_START" -eq 0 ]]; then
+        test_pass
+    else
+        test_fail "Mtime should be 0 when no binary found, got: $NEEDLE_BINARY_MTIME_AT_START"
+    fi
+
+    export NEEDLE_SRC="$orig_src"
+    export PATH="$orig_path"
+    cleanup_mock_environment
+}
+
+test_binary_hot_reload_init_with_binary() {
+    test_start "Binary hot-reload init: binary found records mtime"
+
+    setup_mock_environment
+
+    # Create a fake binary
+    local fake_bin="$NEEDLE_HOME/bin/needle"
+    mkdir -p "$NEEDLE_HOME/bin"
+    echo "#!/bin/bash" > "$fake_bin"
+    chmod +x "$fake_bin"
+
+    local orig_src="${NEEDLE_SRC:-}"
+    export NEEDLE_SRC="$NEEDLE_HOME/src"
+    mkdir -p "$NEEDLE_SRC"
+
+    NEEDLE_BINARY_PATH=""
+    NEEDLE_BINARY_MTIME_AT_START=0
+
+    _needle_init_binary_mtime_tracking 2>/dev/null
+
+    if [[ "$NEEDLE_BINARY_MTIME_AT_START" -gt 0 ]] && [[ -n "$NEEDLE_BINARY_PATH" ]]; then
+        test_pass
+    else
+        test_fail "Mtime should be recorded when binary exists: path=$NEEDLE_BINARY_PATH mtime=$NEEDLE_BINARY_MTIME_AT_START"
+    fi
+
+    export NEEDLE_SRC="$orig_src"
+    cleanup_mock_environment
+}
+
+test_binary_hot_reload_no_change() {
+    test_start "Binary hot-reload: no change returns 1 (no reload)"
+
+    setup_mock_environment
+
+    # Create a fake binary and record its mtime
+    local fake_bin="$NEEDLE_HOME/bin/needle"
+    mkdir -p "$NEEDLE_HOME/bin"
+    echo "#!/bin/bash" > "$fake_bin"
+    chmod +x "$fake_bin"
+
+    NEEDLE_BINARY_PATH="$fake_bin"
+    NEEDLE_BINARY_MTIME_AT_START=$(_needle_get_config_mtime "$fake_bin")
+
+    # Should not trigger reload (mtime unchanged)
+    if ! _needle_check_hot_reload 2>/dev/null; then
+        test_pass
+    else
+        test_fail "Should not trigger reload when binary mtime unchanged"
+    fi
+
+    cleanup_mock_environment
+}
+
+test_binary_hot_reload_changed() {
+    test_start "Binary hot-reload: mtime change returns 0 (reload needed)"
+
+    setup_mock_environment
+
+    # Create a fake binary and record an old mtime
+    local fake_bin="$NEEDLE_HOME/bin/needle"
+    mkdir -p "$NEEDLE_HOME/bin"
+    echo "#!/bin/bash" > "$fake_bin"
+    chmod +x "$fake_bin"
+
+    NEEDLE_BINARY_PATH="$fake_bin"
+    # Set startup mtime to a value in the past (epoch 1)
+    NEEDLE_BINARY_MTIME_AT_START=1
+
+    # Should trigger reload (current mtime > startup mtime)
+    if _needle_check_hot_reload 2>/dev/null; then
+        test_pass
+    else
+        test_fail "Should trigger reload when binary mtime changed"
+    fi
+
+    cleanup_mock_environment
+}
+
+test_binary_hot_reload_disabled_when_no_path() {
+    test_start "Binary hot-reload: disabled when path empty"
+
+    setup_mock_environment
+
+    # Disable tracking
+    NEEDLE_BINARY_PATH=""
+    NEEDLE_BINARY_MTIME_AT_START=0
+
+    if ! _needle_check_hot_reload 2>/dev/null; then
+        test_pass
+    else
+        test_fail "Should not trigger reload when binary path is empty"
+    fi
+
+    cleanup_mock_environment
+}
+
+test_sigusr1_reload_flag() {
+    test_start "SIGUSR1 handler sets reload flag"
+
+    setup_mock_environment
+
+    # Install SIGUSR1 handler
+    _needle_setup_reload_signal 2>/dev/null
+
+    # Reset flag
+    _NEEDLE_RELOAD_REQUESTED=0
+
+    # Send USR1 to self
+    kill -USR1 "$$" 2>/dev/null
+    # Give bash a moment to process the signal
+    sleep 0.1
+
+    if [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 1 ]]; then
+        test_pass
+    else
+        test_fail "SIGUSR1 should set _NEEDLE_RELOAD_REQUESTED=1, got: ${_NEEDLE_RELOAD_REQUESTED:-unset}"
+    fi
+
+    # Reset
+    _NEEDLE_RELOAD_REQUESTED=0
+    trap - USR1
+
+    cleanup_mock_environment
+}
+
+# ============================================================================
 # Backoff & Crash Recovery Tests
 # ============================================================================
 
@@ -1583,6 +1743,16 @@ test_config_validation_valid
 test_config_validation_empty
 test_workspace_config_override
 test_config_fallback_to_default
+
+# Binary Hot-Reload Tests
+echo ""
+echo "--- Binary Hot-Reload Tests ---"
+test_binary_hot_reload_init_no_binary
+test_binary_hot_reload_init_with_binary
+test_binary_hot_reload_no_change
+test_binary_hot_reload_changed
+test_binary_hot_reload_disabled_when_no_path
+test_sigusr1_reload_flag
 
 # Backoff & Crash Recovery Tests
 echo ""

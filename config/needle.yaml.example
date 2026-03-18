@@ -69,6 +69,8 @@ runner:
   polling_interval: 2s          # How often workers check for new beads
   idle_timeout: 300s            # Shut down worker after being idle this long (0 = never)
   max_consecutive_empty: 5      # Empty-strand iterations before exponential backoff kicks in
+  hot_reload: true              # Detect binary replacement and re-exec at next safe checkpoint
+                                # Also supports manual trigger: kill -USR1 <worker-pid>
 
 # ============================================================================
 # Session Naming
