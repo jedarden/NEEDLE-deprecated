@@ -282,6 +282,36 @@ _needle_claim_bead() {
 
     _needle_debug "Found $candidate_count claimable bead(s)"
 
+    # Pre-claim label gate: exclude beads with mitosis-parent or mitosis-pending labels
+    # - mitosis-parent: bead was already split into children; re-claiming causes a 3s loop
+    # - mitosis-pending: another worker is currently analyzing this bead for mitosis
+    # br ready/list JSON does not include labels, so we fetch exclusion IDs separately.
+    # Fix for: nd-o18v2z
+    local _mitosis_ids_raw
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        _mitosis_ids_raw=$(cd "$workspace" && br list --label-any mitosis-parent --label-any mitosis-pending --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
+    else
+        _mitosis_ids_raw=$(br list --label-any mitosis-parent --label-any mitosis-pending --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
+    fi
+    if [[ -n "$_mitosis_ids_raw" ]]; then
+        local _mitosis_exclude_array
+        _mitosis_exclude_array=$(printf '%s\n' $_mitosis_ids_raw | jq -Rs '[split("\n")[] | select(. != "")]')
+        candidates=$(echo "$candidates" | jq -c --argjson ex "$_mitosis_exclude_array" \
+            '[.[] | select(.id as $id | ($ex | index($id)) == null)]')
+        local _filtered_count
+        _filtered_count=$(echo "$candidates" | jq 'length')
+        if [[ "$_filtered_count" -lt "$candidate_count" ]]; then
+            _needle_debug "Pre-claim mitosis filter excluded $((candidate_count - _filtered_count)) bead(s) with mitosis labels"
+        fi
+        candidate_count=$_filtered_count
+        if [[ $candidate_count -eq 0 ]]; then
+            _needle_debug "No claimable beads after mitosis label filter"
+            _needle_diag_claim "No beads after mitosis filter" \
+                "workspace=$workspace"
+            return 1
+        fi
+    fi
+
     # DIAGNOSTIC: Log candidate count
     _needle_diag_claim "Claim candidates found" \
         "candidate_count=$candidate_count" \

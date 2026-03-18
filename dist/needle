@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
 # NEEDLE - Navigates Every Enqueued Deliverable, Logs Effort
-# Version: 0.3.8
+# Version: 0.5.2
 #
 # Universal orchestration wrapper for headless coding CLI agents
 # https://github.com/jedarden/NEEDLE
 #
 # This is a bundled distribution. Source available at the URL above.
 #
-# Generated: 2026-03-17T03:39:01Z
+# Generated: 2026-03-18T01:09:19Z
 #
 
 set -euo pipefail
@@ -17,8 +17,8 @@ set -euo pipefail
 # Version & Metadata
 # -----------------------------------------------------------------------------
 
-NEEDLE_VERSION="0.3.8"
-NEEDLE_BUILD_DATE="2026-03-17T03:39:01Z"
+NEEDLE_VERSION="0.5.2"
+NEEDLE_BUILD_DATE="2026-03-18T01:09:20Z"
 
 # -----------------------------------------------------------------------------
 # Module Loading Guards
@@ -972,10 +972,10 @@ _needle_extract_embedded_agents() {
 # Global constants and version information
 
 # Version information
-NEEDLE_VERSION="0.3.8"
+NEEDLE_VERSION="0.5.2"
 NEEDLE_VERSION_MAJOR=0
-NEEDLE_VERSION_MINOR=3
-NEEDLE_VERSION_PATCH=8
+NEEDLE_VERSION_MINOR=5
+NEEDLE_VERSION_PATCH=2
 
 # GitHub repository for self-update
 NEEDLE_GITHUB_REPO="${NEEDLE_GITHUB_REPO:-jedarden/NEEDLE}"
@@ -1761,6 +1761,7 @@ _NEEDLE_CONFIG_DEFAULTS='{
   "fabric": {
     "enabled": false,
     "endpoint": "",
+    "auth_token": "",
     "timeout": 2,
     "batching": false
   },
@@ -2076,6 +2077,10 @@ fabric:
   # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
   # Example: http://localhost:3000/api/events
   endpoint: ""
+
+  # auth_token: Shared secret for FABRIC auth (can also use FABRIC_AUTH_TOKEN env var)
+  # Required if FABRIC server has auth enabled. Sent as Bearer token.
+  auth_token: ""
 
   # timeout: HTTP request timeout in seconds (default: 2)
   timeout: 2
@@ -2627,6 +2632,10 @@ fabric:
   # endpoint: FABRIC API endpoint URL (can also use FABRIC_ENDPOINT env var)
   # Example: http://localhost:3000/api/events
   endpoint: ""
+
+  # auth_token: Shared secret for FABRIC auth (can also use FABRIC_AUTH_TOKEN env var)
+  # Required if FABRIC server has auth enabled. Sent as Bearer token.
+  auth_token: ""
 
   # timeout: HTTP request timeout in seconds (default: 2)
   timeout: 2
@@ -7957,6 +7966,31 @@ _needle_fabric_is_enabled() {
     [[ -n "$endpoint" ]]
 }
 
+# Get FABRIC auth token from config or environment
+# Priority: FABRIC_AUTH_TOKEN env var > config file
+# Usage: _needle_fabric_get_auth_token
+# Returns: token string or empty string if not configured
+_needle_fabric_get_auth_token() {
+    # Check environment variable first
+    if [[ -n "${FABRIC_AUTH_TOKEN:-}" ]]; then
+        echo "$FABRIC_AUTH_TOKEN"
+        return 0
+    fi
+
+    # Check if config loader is available
+    if declare -f get_config &>/dev/null; then
+        local token
+        token=$(get_config "fabric.auth_token" "")
+        if [[ -n "$token" ]]; then
+            echo "$token"
+            return 0
+        fi
+    fi
+
+    echo ""
+    return 0
+}
+
 # Get FABRIC timeout for HTTP requests (in seconds)
 # Usage: _needle_fabric_get_timeout
 _needle_fabric_get_timeout() {
@@ -7999,11 +8033,19 @@ _needle_fabric_forward_event() {
     local timeout
     timeout=$(_needle_fabric_get_timeout)
 
+    # Build curl headers
+    local curl_headers=(-H "Content-Type: application/json")
+    local auth_token
+    auth_token=$(_needle_fabric_get_auth_token)
+    if [[ -n "$auth_token" ]]; then
+        curl_headers+=(-H "Authorization: Bearer ${auth_token}")
+    fi
+
     # Forward event in background with timeout
     # Stderr is suppressed to avoid noise in case of network issues
     (
         curl -X POST \
-            -H "Content-Type: application/json" \
+            "${curl_headers[@]}" \
             -d "$event_json" \
             --max-time "$timeout" \
             --silent \
@@ -8120,10 +8162,18 @@ _needle_fabric_forward_batch() {
     local timeout
     timeout=$(_needle_fabric_get_timeout)
 
+    # Build curl headers
+    local curl_headers=(-H "Content-Type: application/json")
+    local auth_token
+    auth_token=$(_needle_fabric_get_auth_token)
+    if [[ -n "$auth_token" ]]; then
+        curl_headers+=(-H "Authorization: Bearer ${auth_token}")
+    fi
+
     # Forward batch in background
     (
         curl -X POST \
-            -H "Content-Type: application/json" \
+            "${curl_headers[@]}" \
             -d "$events_json" \
             --max-time "$timeout" \
             --silent \
@@ -12151,6 +12201,36 @@ _needle_claim_bead() {
 
     _needle_debug "Found $candidate_count claimable bead(s)"
 
+    # Pre-claim label gate: exclude beads with mitosis-parent or mitosis-pending labels
+    # - mitosis-parent: bead was already split into children; re-claiming causes a 3s loop
+    # - mitosis-pending: another worker is currently analyzing this bead for mitosis
+    # br ready/list JSON does not include labels, so we fetch exclusion IDs separately.
+    # Fix for: nd-o18v2z
+    local _mitosis_ids_raw
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        _mitosis_ids_raw=$(cd "$workspace" && br list --label-any mitosis-parent --label-any mitosis-pending --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
+    else
+        _mitosis_ids_raw=$(br list --label-any mitosis-parent --label-any mitosis-pending --json 2>/dev/null | jq -r '.[].id' 2>/dev/null)
+    fi
+    if [[ -n "$_mitosis_ids_raw" ]]; then
+        local _mitosis_exclude_array
+        _mitosis_exclude_array=$(printf '%s\n' $_mitosis_ids_raw | jq -Rs '[split("\n")[] | select(. != "")]')
+        candidates=$(echo "$candidates" | jq -c --argjson ex "$_mitosis_exclude_array" \
+            '[.[] | select(.id as $id | ($ex | index($id)) == null)]')
+        local _filtered_count
+        _filtered_count=$(echo "$candidates" | jq 'length')
+        if [[ "$_filtered_count" -lt "$candidate_count" ]]; then
+            _needle_debug "Pre-claim mitosis filter excluded $((candidate_count - _filtered_count)) bead(s) with mitosis labels"
+        fi
+        candidate_count=$_filtered_count
+        if [[ $candidate_count -eq 0 ]]; then
+            _needle_debug "No claimable beads after mitosis label filter"
+            _needle_diag_claim "No beads after mitosis filter" \
+                "workspace=$workspace"
+            return 1
+        fi
+    fi
+
     # DIAGNOSTIC: Log candidate count
     _needle_diag_claim "Claim candidates found" \
         "candidate_count=$candidate_count" \
@@ -14453,7 +14533,7 @@ _needle_validate_prompt() {
 # Default mitosis settings (can be overridden via config.yaml)
 NEEDLE_MITOSIS_ENABLED="${NEEDLE_MITOSIS_ENABLED:-true}"
 NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
-NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-parent}"
+NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-parent,mitosis-pending}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
 NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
@@ -14697,7 +14777,19 @@ print(depth)
         return 1
     fi
 
-    # Check for skip labels (respect workspace override)
+    # Hardcoded guard: always skip if mitosis-pending or mitosis-parent are present.
+    # These are internal lock/state labels that must be honored regardless of the
+    # user-configured skip_labels list (a custom list could omit them).
+    if [[ ",$labels," == *",mitosis-pending,"* ]]; then
+        _needle_debug "Skipping mitosis: mitosis-pending lock label present (another worker is already analyzing)"
+        return 1
+    fi
+    if [[ ",$labels," == *",mitosis-parent,"* ]]; then
+        _needle_debug "Skipping mitosis: mitosis-parent label present (already split)"
+        return 1
+    fi
+
+    # Check for user-configured skip labels (respect workspace override)
     local skip_labels
     skip_labels=$(_needle_mitosis_get_skip_labels "$workspace")
     if [[ -n "$labels" ]] && [[ -n "$skip_labels" ]]; then
@@ -14729,6 +14821,17 @@ print(depth)
         _needle_debug "Forced mitosis: bypassing min_complexity check (failure_count=$failure_count)"
     fi
 
+    # Write mitosis-pending lock label immediately to prevent other workers from
+    # entering mitosis for this bead during the slow LLM analysis call.
+    # A second worker reading labels after this write will see mitosis-pending
+    # (which is in the skip-labels list) and bail out, narrowing the race window
+    # from seconds (LLM duration) to milliseconds.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        (cd "$workspace" && br update "$bead_id" --label "mitosis-pending" 2>/dev/null) || true
+    else
+        br update "$bead_id" --label "mitosis-pending" 2>/dev/null || true
+    fi
+
     # Emit mitosis check event
     _needle_emit_event "bead.mitosis.check" \
         "Checking if bead needs mitosis" \
@@ -14740,6 +14843,12 @@ print(depth)
 
     if [[ -z "$analysis" ]]; then
         _needle_debug "Mitosis analysis returned empty result"
+        # Clear pending lock — analysis failed, not proceeding with mitosis
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         return 1
     fi
 
@@ -14749,6 +14858,12 @@ print(depth)
 
     if [[ "$should_split" != "true" ]]; then
         _needle_debug "Mitosis not recommended for bead $bead_id"
+        # Clear pending lock — LLM determined no split needed
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         return 1
     fi
 
@@ -15321,6 +15436,11 @@ _needle_perform_mitosis() {
         "parent_id=$parent_id" \
         "children_count=$children_count"
 
+    # Transition mitosis-pending → mitosis-parent: replace the temporary lock with
+    # the permanent parent marker before creating children.
+    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
+    br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
+
     # Array to collect child IDs
     local -a child_ids=()
     local prev_id=""
@@ -15463,6 +15583,9 @@ _needle_perform_mitosis() {
     # Check if any children were created
     if [[ ${#child_ids[@]} -eq 0 ]]; then
         _needle_error "Mitosis failed: no children created"
+        # Roll back labels: remove both mitosis-parent and mitosis-pending
+        br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
+        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
         _needle_emit_event "bead.mitosis.failed" \
             "Mitosis failed: no children created" \
             "parent_id=$parent_id"
@@ -15477,9 +15600,6 @@ _needle_perform_mitosis() {
 
     # Release any claim on parent (children will be worked instead)
     br update "$parent_id" --release --reason "mitosis" 2>/dev/null || true
-
-    # Add mitosis-parent label to parent
-    br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
 
     # Emit mitosis complete event
     local children_list
@@ -16113,8 +16233,10 @@ export -f _needle_show_intent
 #   1 - Verification failed (needs re-dispatch or release)
 #   2 - No verification_cmd defined (skip verification)
 
-# Guard against re-sourcing
-[[ -n "${_NEEDLE_VERIFY_LOADED:-}" ]] && return 0
+# Guard against re-sourcing (use function-safe check for build concatenation)
+if [[ -n "${_NEEDLE_VERIFY_LOADED:-}" ]]; then
+    : # already loaded
+else
 # Source dependencies (if not already loaded)
 # Source telemetry for events
 # Source diagnostic module for logging
@@ -16507,6 +16629,9 @@ _needle_verify_bead() {
 # ============================================================================
 # Direct Execution Support (for testing)
 # ============================================================================
+
+
+fi # end re-source guard
 
 # =============================================================================
 # MODULE: src/lock/checkout.sh

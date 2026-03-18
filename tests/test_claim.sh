@@ -1308,6 +1308,188 @@ else
     test_fail "Expected bd-emptyws, got: $result"
 fi
 
+# ============================================================================
+# Regression: nd-o18v2z — pre-claim mitosis label gate
+# Verifies that mitosis-parent and mitosis-pending beads are excluded from
+# the candidate pool BEFORE a claim is attempted, preventing the 3s loop:
+#   claim → mitosis-check → release (reason=mitosis) → claim → ...
+# ============================================================================
+
+echo ""
+echo "--- Mitosis Label Pre-Claim Filter Tests (nd-o18v2z) ---"
+
+test_case "mitosis-parent bead is excluded from claim candidates"
+# Mock: ready returns both a normal bead and a mitosis-parent bead.
+# br list --label-any reports that nd-mitosis-parent has the label.
+# Claim should only claim nd-normal, never nd-mitosis-parent.
+mkdir -p "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/br" << 'MITOSIS_PARENT_MOCK'
+#!/bin/bash
+# Handle: br list --label-any mitosis-parent ...
+if [[ "$1" == "list" ]] && echo "$*" | grep -q "label-any"; then
+    echo '[{"id":"nd-mitosis-parent","title":"Already Split","priority":2}]'
+    exit 0
+fi
+case "$1 $2" in
+    "ready --unassigned"|"ready --workspace="*)
+        echo '[{"id":"nd-normal","title":"Normal Bead","priority":2},{"id":"nd-mitosis-parent","title":"Already Split","priority":0}]'
+        ;;
+    "update --claim")
+        bead_id=""
+        for arg in "$@"; do
+            if [[ -z "$bead_id" ]] && [[ "$arg" =~ ^nd- ]]; then
+                bead_id="$arg"
+            fi
+        done
+        if [[ "$bead_id" == "nd-mitosis-parent" ]]; then
+            echo "BUG: should not claim mitosis-parent bead" >&2
+            exit 1
+        fi
+        echo "Claimed $bead_id"
+        exit 0
+        ;;
+    "show "*)
+        echo "{\"id\":\"${3:-$2}\",\"assignee\":null}"
+        ;;
+    "update "*)
+        exit 0
+        ;;
+    "dep "*)
+        exit 0
+        ;;
+esac
+MITOSIS_PARENT_MOCK
+chmod +x "$TEST_DIR/bin/br"
+export PATH="$TEST_DIR/bin:$PATH"
+
+result=$(_needle_claim_bead --actor "worker-mitosis-test" 2>/dev/null)
+if [[ "$result" == "nd-normal" ]]; then
+    test_pass
+else
+    test_fail "Expected nd-normal (not mitosis-parent), got: $result"
+fi
+
+test_case "mitosis-pending bead is excluded from claim candidates"
+# Like above but with mitosis-pending label (write lock during analysis).
+mkdir -p "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/br" << 'MITOSIS_PENDING_MOCK'
+#!/bin/bash
+if [[ "$1" == "list" ]] && echo "$*" | grep -q "label-any"; then
+    echo '[{"id":"nd-mitosis-pending","title":"Being Analyzed","priority":2}]'
+    exit 0
+fi
+case "$1 $2" in
+    "ready --unassigned"|"ready --workspace="*)
+        echo '[{"id":"nd-other","title":"Other Bead","priority":2},{"id":"nd-mitosis-pending","title":"Being Analyzed","priority":0}]'
+        ;;
+    "update --claim")
+        bead_id=""
+        for arg in "$@"; do
+            if [[ -z "$bead_id" ]] && [[ "$arg" =~ ^nd- ]]; then
+                bead_id="$arg"
+            fi
+        done
+        if [[ "$bead_id" == "nd-mitosis-pending" ]]; then
+            echo "BUG: should not claim mitosis-pending bead" >&2
+            exit 1
+        fi
+        echo "Claimed $bead_id"
+        exit 0
+        ;;
+    "show "*)
+        echo "{\"id\":\"${3:-$2}\",\"assignee\":null}"
+        ;;
+    "update "*)
+        exit 0
+        ;;
+    "dep "*)
+        exit 0
+        ;;
+esac
+MITOSIS_PENDING_MOCK
+chmod +x "$TEST_DIR/bin/br"
+export PATH="$TEST_DIR/bin:$PATH"
+
+result=$(_needle_claim_bead --actor "worker-pending-test" 2>/dev/null)
+if [[ "$result" == "nd-other" ]]; then
+    test_pass
+else
+    test_fail "Expected nd-other (not mitosis-pending), got: $result"
+fi
+
+test_case "all candidates are mitosis-labeled — returns no work (exit 1)"
+# When ALL candidates have mitosis labels, claim should return 1 (no work).
+mkdir -p "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/br" << 'ALL_MITOSIS_MOCK'
+#!/bin/bash
+if [[ "$1" == "list" ]] && echo "$*" | grep -q "label-any"; then
+    echo '[{"id":"nd-mp1","title":"Parent 1","priority":0},{"id":"nd-mp2","title":"Parent 2","priority":1}]'
+    exit 0
+fi
+case "$1 $2" in
+    "ready --unassigned"|"ready --workspace="*)
+        echo '[{"id":"nd-mp1","title":"Parent 1","priority":0},{"id":"nd-mp2","title":"Parent 2","priority":1}]'
+        ;;
+    "update "*)
+        exit 0
+        ;;
+esac
+ALL_MITOSIS_MOCK
+chmod +x "$TEST_DIR/bin/br"
+export PATH="$TEST_DIR/bin:$PATH"
+
+result=$(_needle_claim_bead --actor "worker-all-mitosis" 2>/dev/null)
+exit_code=$?
+if [[ $exit_code -ne 0 ]] && [[ -z "$result" ]]; then
+    test_pass
+else
+    test_fail "Expected exit 1 and no result when all candidates have mitosis labels, got exit=$exit_code result=$result"
+fi
+
+test_case "no mitosis-labeled beads — normal claim proceeds unaffected"
+# When br list --label-any returns empty, normal claim should proceed.
+mkdir -p "$TEST_DIR/bin"
+cat > "$TEST_DIR/bin/br" << 'NO_MITOSIS_MOCK'
+#!/bin/bash
+if [[ "$1" == "list" ]] && echo "$*" | grep -q "label-any"; then
+    echo '[]'
+    exit 0
+fi
+case "$1 $2" in
+    "ready --unassigned"|"ready --workspace="*)
+        echo '[{"id":"nd-regular","title":"Regular Bead","priority":2}]'
+        ;;
+    "update --claim")
+        bead_id=""
+        for arg in "$@"; do
+            if [[ -z "$bead_id" ]] && [[ "$arg" =~ ^nd- ]]; then
+                bead_id="$arg"
+            fi
+        done
+        echo "Claimed $bead_id"
+        exit 0
+        ;;
+    "show "*)
+        echo "{\"id\":\"${3:-$2}\",\"assignee\":null}"
+        ;;
+    "update "*)
+        exit 0
+        ;;
+    "dep "*)
+        exit 0
+        ;;
+esac
+NO_MITOSIS_MOCK
+chmod +x "$TEST_DIR/bin/br"
+export PATH="$TEST_DIR/bin:$PATH"
+
+result=$(_needle_claim_bead --actor "worker-no-mitosis" 2>/dev/null)
+if [[ "$result" == "nd-regular" ]]; then
+    test_pass
+else
+    test_fail "Expected nd-regular when no mitosis labels present, got: $result"
+fi
+
 # Cleanup
 unmock_br
 
