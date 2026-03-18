@@ -1323,6 +1323,24 @@ _needle_worker_loop() {
         fi
     done
 
+    # Hot-reload: binary was updated — log the event and re-exec
+    if [[ "$_NEEDLE_LOOP_HOT_RELOAD" == "true" ]]; then
+        _needle_info "Hot-reload triggered — re-execing with updated binary"
+        _needle_telemetry_emit "worker.hot_reload" "info" \
+            "session=$NEEDLE_SESSION" \
+            "binary=$NEEDLE_BINARY_PATH" \
+            "workspace=$NEEDLE_WORKSPACE" \
+            "agent=$NEEDLE_AGENT" \
+            "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        exec "$NEEDLE_BINARY_PATH" run \
+            --workspace "$NEEDLE_WORKSPACE" \
+            --agent "$NEEDLE_AGENT" \
+            --id "$NEEDLE_IDENTIFIER" \
+            --name "$NEEDLE_SESSION"
+        # exec replaces the process; the lines below are only reached if exec fails
+        _needle_error "exec failed for hot-reload — falling through to normal shutdown"
+    fi
+
     # Emit final telemetry event
     _needle_telemetry_emit "worker.stopped" "info" \
         "reason=shutdown" \
