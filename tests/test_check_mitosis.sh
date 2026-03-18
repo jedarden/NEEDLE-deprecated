@@ -473,6 +473,65 @@ else
 fi
 
 # ============================================================================
+# Race condition fix: mitosis-pending lock label (nd-v2kgi)
+# ============================================================================
+
+test_case "mitosis-pending is in default NEEDLE_MITOSIS_SKIP_LABELS"
+if [[ ",$NEEDLE_MITOSIS_SKIP_LABELS," == *",mitosis-pending,"* ]]; then
+    test_pass
+else
+    test_fail "Expected mitosis-pending in NEEDLE_MITOSIS_SKIP_LABELS, got: $NEEDLE_MITOSIS_SKIP_LABELS"
+fi
+
+test_case "check_mitosis writes mitosis-pending label before LLM analysis call"
+# Verify that br update --label mitosis-pending appears in BR_LOG before the analyze call
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if grep -q "update nd-test --label mitosis-pending" "$BR_LOG" 2>/dev/null; then
+    test_pass
+else
+    test_fail "Expected 'br update nd-test --label mitosis-pending' in BR_LOG"
+fi
+
+test_case "check_mitosis removes mitosis-pending when analysis says no split"
+MOCK_ANALYSIS_JSON='{"mitosis":false,"reasoning":"atomic task","children":[]}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if grep -q "remove-label mitosis-pending" "$BR_LOG" 2>/dev/null; then
+    test_pass
+else
+    test_fail "Expected 'br update --remove-label mitosis-pending' when no split"
+fi
+
+test_case "check_mitosis removes mitosis-pending when analysis returns empty"
+_needle_analyze_for_mitosis() {
+    echo "$*" >> "$ANALYZE_LOG"
+    echo ""
+    return 0
+}
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+# Restore mock
+_needle_analyze_for_mitosis() {
+    echo "$*" >> "$ANALYZE_LOG"
+    echo "$MOCK_ANALYSIS_JSON"
+    return 0
+}
+if grep -q "remove-label mitosis-pending" "$BR_LOG" 2>/dev/null; then
+    test_pass
+else
+    test_fail "Expected 'br update --remove-label mitosis-pending' when analysis is empty"
+fi
+
+test_case "bead with mitosis-pending label is skipped (second worker simulation)"
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["mitosis-pending"],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+rc=$?
+# Analysis should NOT be called — pending lock should stop processing
+if [[ ! -s "$ANALYZE_LOG" ]]; then
+    test_pass
+else
+    test_fail "Expected analysis NOT to be called for bead with mitosis-pending label"
+fi
+
+# ============================================================================
 # Summary
 # ============================================================================
 

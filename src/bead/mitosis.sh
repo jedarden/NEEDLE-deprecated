@@ -50,7 +50,7 @@ _NEEDLE_MITOSIS_LOADED=true
 # Default mitosis settings (can be overridden via config.yaml)
 NEEDLE_MITOSIS_ENABLED="${NEEDLE_MITOSIS_ENABLED:-true}"
 NEEDLE_MITOSIS_SKIP_TYPES="${NEEDLE_MITOSIS_SKIP_TYPES:-bug,hotfix}"
-NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-parent}"
+NEEDLE_MITOSIS_SKIP_LABELS="${NEEDLE_MITOSIS_SKIP_LABELS:-no-mitosis,atomic,mitosis-parent,mitosis-pending}"
 NEEDLE_MITOSIS_MAX_CHILDREN="${NEEDLE_MITOSIS_MAX_CHILDREN:-5}"
 NEEDLE_MITOSIS_MIN_CHILDREN="${NEEDLE_MITOSIS_MIN_CHILDREN:-2}"
 NEEDLE_MITOSIS_MIN_COMPLEXITY="${NEEDLE_MITOSIS_MIN_COMPLEXITY:-15}"
@@ -294,7 +294,19 @@ print(depth)
         return 1
     fi
 
-    # Check for skip labels (respect workspace override)
+    # Hardcoded guard: always skip if mitosis-pending or mitosis-parent are present.
+    # These are internal lock/state labels that must be honored regardless of the
+    # user-configured skip_labels list (a custom list could omit them).
+    if [[ ",$labels," == *",mitosis-pending,"* ]]; then
+        _needle_debug "Skipping mitosis: mitosis-pending lock label present (another worker is already analyzing)"
+        return 1
+    fi
+    if [[ ",$labels," == *",mitosis-parent,"* ]]; then
+        _needle_debug "Skipping mitosis: mitosis-parent label present (already split)"
+        return 1
+    fi
+
+    # Check for user-configured skip labels (respect workspace override)
     local skip_labels
     skip_labels=$(_needle_mitosis_get_skip_labels "$workspace")
     if [[ -n "$labels" ]] && [[ -n "$skip_labels" ]]; then
@@ -326,6 +338,17 @@ print(depth)
         _needle_debug "Forced mitosis: bypassing min_complexity check (failure_count=$failure_count)"
     fi
 
+    # Write mitosis-pending lock label immediately to prevent other workers from
+    # entering mitosis for this bead during the slow LLM analysis call.
+    # A second worker reading labels after this write will see mitosis-pending
+    # (which is in the skip-labels list) and bail out, narrowing the race window
+    # from seconds (LLM duration) to milliseconds.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        (cd "$workspace" && br update "$bead_id" --label "mitosis-pending" 2>/dev/null) || true
+    else
+        br update "$bead_id" --label "mitosis-pending" 2>/dev/null || true
+    fi
+
     # Emit mitosis check event
     _needle_emit_event "bead.mitosis.check" \
         "Checking if bead needs mitosis" \
@@ -337,6 +360,12 @@ print(depth)
 
     if [[ -z "$analysis" ]]; then
         _needle_debug "Mitosis analysis returned empty result"
+        # Clear pending lock — analysis failed, not proceeding with mitosis
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         return 1
     fi
 
@@ -346,6 +375,12 @@ print(depth)
 
     if [[ "$should_split" != "true" ]]; then
         _needle_debug "Mitosis not recommended for bead $bead_id"
+        # Clear pending lock — LLM determined no split needed
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null) || true
+        else
+            br update "$bead_id" --remove-label "mitosis-pending" 2>/dev/null || true
+        fi
         return 1
     fi
 
@@ -919,9 +954,10 @@ _needle_perform_mitosis() {
         "parent_id=$parent_id" \
         "children_count=$children_count"
 
-    # Mark parent as mitosis-parent BEFORE creating children to prevent another
-    # worker from claiming and splitting the same parent (race condition)
+    # Transition mitosis-pending → mitosis-parent: replace the temporary lock with
+    # the permanent parent marker before creating children.
     br update "$parent_id" --label "mitosis-parent" 2>/dev/null || true
+    br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
 
     # Array to collect child IDs
     local -a child_ids=()
@@ -1065,8 +1101,9 @@ _needle_perform_mitosis() {
     # Check if any children were created
     if [[ ${#child_ids[@]} -eq 0 ]]; then
         _needle_error "Mitosis failed: no children created"
-        # Roll back the early mitosis-parent label since no children were made
+        # Roll back labels: remove both mitosis-parent and mitosis-pending
         br update "$parent_id" --remove-label "mitosis-parent" 2>/dev/null || true
+        br update "$parent_id" --remove-label "mitosis-pending" 2>/dev/null || true
         _needle_emit_event "bead.mitosis.failed" \
             "Mitosis failed: no children created" \
             "parent_id=$parent_id"
