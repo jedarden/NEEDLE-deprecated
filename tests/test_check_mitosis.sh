@@ -47,17 +47,28 @@ EOF
 # Mock infrastructure
 # ============================================================================
 
-# Bead JSON returned by mock br
+# Bead JSON returned by mock br show
 MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+
+# Labels returned by mock br label list (newline-separated, as br outputs them).
+# Tests that check label-based guards MUST set this variable; the old approach
+# of putting labels in MOCK_BEAD_JSON was wrong — the production code reads
+# labels via `br label list`, not from `br show --json`.
+MOCK_LABELS=""
 
 # Analysis JSON returned by mock _needle_analyze_for_mitosis
 MOCK_ANALYSIS_JSON='{"mitosis":true,"reasoning":"test","children":[{"title":"C1","description":"d1","affected_files":[],"verification_cmd":"","labels":[],"blocked_by":[]},{"title":"C2","description":"d2","affected_files":[],"verification_cmd":"","labels":[],"blocked_by":[]}]}'
 
-# br mock
+# br mock — handles show (returns MOCK_BEAD_JSON) and label list (returns MOCK_LABELS)
 br() {
     echo "$*" >> "$BR_LOG"
     case "$1" in
         show) echo "$MOCK_BEAD_JSON" ;;
+        label)
+            case "$2" in
+                list) echo "$MOCK_LABELS" ;;
+            esac
+            ;;
     esac
     return 0
 }
@@ -86,6 +97,11 @@ br() {
     echo "$*" >> "$BR_LOG"
     case "$1" in
         show) echo "$MOCK_BEAD_JSON" ;;
+        label)
+            case "$2" in
+                list) echo "$MOCK_LABELS" ;;
+            esac
+            ;;
     esac
     return 0
 }
@@ -118,7 +134,12 @@ test_case() {
     touch "$BR_LOG" "$ANALYZE_LOG" "$PERFORM_LOG"
     NEEDLE_CONFIG_CACHE=""
     _NEEDLE_WORKSPACE_CACHE=()
+    # Clear session loop guard — persists bead IDs after successful mitosis within
+    # the same process. Without reset, "nd-test" stays blocked across test cases,
+    # causing false positives/negatives in all subsequent tests.
+    rm -f "/dev/shm/needle-mitosis-guard-$$"
     MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+    MOCK_LABELS=""
     MOCK_ANALYSIS_JSON='{"mitosis":true,"reasoning":"test","children":[{"title":"C1","description":"d1","affected_files":[],"verification_cmd":"","labels":[],"blocked_by":[]},{"title":"C2","description":"d2","affected_files":[],"verification_cmd":"","labels":[],"blocked_by":[]}]}'
     MOCK_PERFORM_RC=0
 }
@@ -218,11 +239,16 @@ br() {
 }
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 rc=$?
-# Restore br mock
+# Restore br mock (must include label list handler)
 br() {
     echo "$*" >> "$BR_LOG"
     case "$1" in
         show) echo "$MOCK_BEAD_JSON" ;;
+        label)
+            case "$2" in
+                list) echo "$MOCK_LABELS" ;;
+            esac
+            ;;
     esac
     return 0
 }
@@ -272,7 +298,10 @@ fi
 # ============================================================================
 
 test_case "_needle_check_mitosis skips bead with 'no-mitosis' label"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["no-mitosis","backend"],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+# MOCK_LABELS is what br label list returns — production code reads labels here,
+# NOT from br show --json. Labels in MOCK_BEAD_JSON are ignored by the code.
+MOCK_LABELS="no-mitosis
+backend"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -282,7 +311,7 @@ else
 fi
 
 test_case "_needle_check_mitosis skips bead with 'atomic' label"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["atomic"],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+MOCK_LABELS="atomic"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -292,7 +321,8 @@ else
 fi
 
 test_case "_needle_check_mitosis does not skip bead with non-skip labels"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["backend","security"],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+MOCK_LABELS="backend
+security"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 if grep -q "nd-test" "$ANALYZE_LOG" 2>/dev/null; then
     test_pass
@@ -412,11 +442,16 @@ br() {
 }
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 result=$?
-# Restore br mock
+# Restore br mock (must include label list handler)
 br() {
     echo "$*" >> "$BR_LOG"
     case "$1" in
         show) echo "$MOCK_BEAD_JSON" ;;
+        label)
+            case "$2" in
+                list) echo "$MOCK_LABELS" ;;
+            esac
+            ;;
     esac
     return 0
 }
@@ -453,8 +488,10 @@ else
 fi
 
 test_case "_needle_check_mitosis with force=true still skips skip_labels"
-# Even with force=true, skip labels are respected
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["no-mitosis"],"description":"line1\nline2","priority":2}'
+# Even with force=true, skip labels are respected.
+# Label must come from MOCK_LABELS (br label list), not MOCK_BEAD_JSON (br show --json).
+MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":[],"description":"line1\nline2","priority":2}'
+MOCK_LABELS="no-mitosis"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" "true" "3" &>/dev/null
 rc=$?
 if [[ $rc -ne 0 ]]; then
@@ -484,12 +521,13 @@ else
 fi
 
 test_case "check_mitosis writes mitosis-pending label before LLM analysis call"
-# Verify that br update --label mitosis-pending appears in BR_LOG before the analyze call
+# Lock now uses 'br label add' (more reliable than br update --label).
+# Verify the dedicated label command is called before analysis.
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
-if grep -q "update nd-test --label mitosis-pending" "$BR_LOG" 2>/dev/null; then
+if grep -q "label add --label mitosis-pending nd-test" "$BR_LOG" 2>/dev/null; then
     test_pass
 else
-    test_fail "Expected 'br update nd-test --label mitosis-pending' in BR_LOG"
+    test_fail "Expected 'br label add --label mitosis-pending nd-test' in BR_LOG"
 fi
 
 test_case "check_mitosis removes mitosis-pending when analysis says no split"
@@ -521,7 +559,10 @@ else
 fi
 
 test_case "bead with mitosis-pending label is skipped (second worker simulation)"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"task","labels":["mitosis-pending"],"description":"line1\nline2\nline3\nline4\nline5","priority":2}'
+# Regression: before nd-hek0jo fix, labels were read from br show --json (always
+# empty), so mitosis-pending was never detected and two workers could race.
+# Now labels come from br label list — MOCK_LABELS must carry the label.
+MOCK_LABELS="mitosis-pending"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 rc=$?
 # Analysis should NOT be called — pending lock should stop processing
@@ -532,45 +573,103 @@ else
 fi
 
 # ============================================================================
-# Genesis bead guard (nd-7dl7cj)
+# Genesis bead (nd-7dl7cj / commit 316e49d)
 # ============================================================================
+# Genesis beads no longer receive special mitosis treatment.
+# The earlier auto-skip with no-mitosis label was removed in commit 316e49d —
+# genesis beads now go through the normal forced-failure path like any other bead.
 
-test_case "genesis bead is skipped (no-mitosis label applied)"
+test_case "genesis bead with no-mitosis label is skipped (label-driven, not type-driven)"
+# Genesis beads skip mitosis only when they already carry the no-mitosis label.
+# The skip comes from the label check, not special-casing on issue_type.
 MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+MOCK_LABELS="no-mitosis"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 rc=$?
 if [[ $rc -ne 0 ]]; then
     test_pass
 else
-    test_fail "Expected non-zero exit for genesis bead type"
+    test_fail "Expected non-zero exit for genesis bead carrying no-mitosis label"
 fi
 
-test_case "genesis bead receives no-mitosis label automatically"
+test_case "genesis bead without no-mitosis label proceeds to analysis"
+# Without the label, genesis beads are eligible for analysis just like task beads.
 MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+MOCK_LABELS=""
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
-if grep -q "update nd-test --label no-mitosis" "$BR_LOG" 2>/dev/null; then
+if grep -q "nd-test" "$ANALYZE_LOG" 2>/dev/null; then
     test_pass
 else
-    test_fail "Expected 'br update nd-test --label no-mitosis' to be called for genesis bead"
+    test_fail "Expected analysis to be called for genesis bead without no-mitosis label"
 fi
 
-test_case "genesis bead skipped even with force=true"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2","priority":1}'
-_needle_check_mitosis "nd-test" "$WS_DIR" "agent" "true" "5" &>/dev/null
+# ============================================================================
+# ============================================================================
+# Depth guard — regression tests for nd-hek0jo mitosis explosion
+# ============================================================================
+# Root cause of the 2026-03-16 explosion (5,741 duplicate beads):
+#   - br show --json never included labels in its output
+#   - mitosis.sh read labels from br show --json → always empty
+#   - mitosis-child was never detected → depth always 0 → depth guard never fired
+#   - Each child bead was recursively split into the same 5 subtasks → explosion
+#
+# Fix (commits 8e9e706, 86ccfcd): labels are now read via `br label list`.
+# MOCK_LABELS (not MOCK_BEAD_JSON) must carry labels for these tests to be valid.
+
+test_case "depth guard blocks mitosis-child at max_depth (regression: nd-hek0jo)"
+# Simulate a bead that has been split max_depth (3) times already.
+# Before the fix, labels were empty (from br show --json) so depth was always 0.
+# After the fix, labels come from br label list — the guard now fires correctly.
+MOCK_LABELS="mitosis-child
+mitosis-depth:3"
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" "true" "1" &>/dev/null
 rc=$?
 if [[ $rc -ne 0 ]]; then
     test_pass
 else
-    test_fail "Expected non-zero exit for genesis bead even with force=true"
+    test_fail "Expected depth guard to block mitosis at depth 3 (max_depth=3), got rc=0"
 fi
 
-test_case "genesis bead skipped and analysis not called"
-MOCK_BEAD_JSON='{"id":"nd-test","issue_type":"genesis","labels":[],"description":"line1\nline2\nline3\nline4\nline5","priority":1}'
+test_case "depth guard blocks analysis call when at max_depth"
+MOCK_LABELS="mitosis-child
+mitosis-depth:3"
 _needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
 if [[ ! -s "$ANALYZE_LOG" ]]; then
     test_pass
 else
-    test_fail "Expected analysis NOT to be called for genesis bead"
+    test_fail "Expected analysis NOT to be called when bead is at max mitosis depth"
+fi
+
+test_case "depth guard allows mitosis-child below max_depth"
+# A bead at depth 1 (below max_depth=3) should proceed to analysis.
+MOCK_LABELS="mitosis-child
+mitosis-depth:1"
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if grep -q "nd-test" "$ANALYZE_LOG" 2>/dev/null; then
+    test_pass
+else
+    test_fail "Expected analysis to proceed for mitosis-child at depth 1 (below max_depth=3)"
+fi
+
+test_case "bead with mitosis-parent label is skipped (already split)"
+# Regression: before the label-read fix, mitosis-parent was never detected,
+# so an already-split parent could be re-claimed and re-split indefinitely.
+MOCK_LABELS="mitosis-parent"
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+rc=$?
+if [[ $rc -ne 0 ]]; then
+    test_pass
+else
+    test_fail "Expected non-zero exit for bead with mitosis-parent label"
+fi
+
+test_case "bead with mitosis-parent label does not reach analysis (already split)"
+MOCK_LABELS="mitosis-parent"
+_needle_check_mitosis "nd-test" "$WS_DIR" "agent" &>/dev/null
+if [[ ! -s "$ANALYZE_LOG" ]]; then
+    test_pass
+else
+    test_fail "Expected analysis NOT to be called for bead with mitosis-parent label"
 fi
 
 # ============================================================================

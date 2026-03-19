@@ -369,10 +369,13 @@ print(depth)
     # A second worker reading labels after this write will see mitosis-pending
     # (which is in the skip-labels list) and bail out, narrowing the race window
     # from seconds (LLM duration) to milliseconds.
+    # Use `br label add` (dedicated label command) rather than `br update --label`
+    # for reliability — update --label may silently fail in some br versions.
+    # Consistent with how mitosis-parent is written in _needle_perform_mitosis.
     if [[ -n "$workspace" && -d "$workspace" ]]; then
-        (cd "$workspace" && br update "$bead_id" --label "mitosis-pending" 2>/dev/null) || true
+        (cd "$workspace" && br label add --label mitosis-pending "$bead_id" 2>/dev/null) || true
     else
-        br update "$bead_id" --label "mitosis-pending" 2>/dev/null || true
+        br label add --label mitosis-pending "$bead_id" 2>/dev/null || true
     fi
 
     # Emit mitosis check event
@@ -1211,14 +1214,24 @@ _needle_perform_mitosis() {
         return 1
     fi
 
-    # Mark parent as blocked by all children
+    # Mark parent as blocked by all children.
+    # CRITICAL: must run in workspace context — bare br update writes to cwd's DB.
     _needle_debug "Setting parent $parent_id blocked by ${child_ids[*]}"
     for child_id in "${child_ids[@]}"; do
-        br update "$parent_id" --blocked-by "$child_id" 2>/dev/null || true
+        if [[ -n "$workspace" && -d "$workspace" ]]; then
+            (cd "$workspace" && br update "$parent_id" --blocked-by "$child_id" 2>/dev/null) || true
+        else
+            br update "$parent_id" --blocked-by "$child_id" 2>/dev/null || true
+        fi
     done
 
-    # Release any claim on parent (children will be worked instead)
-    br update "$parent_id" --release --reason "mitosis" 2>/dev/null || true
+    # Release any claim on parent (children will be worked instead).
+    # CRITICAL: must run in workspace context — bare br update writes to cwd's DB.
+    if [[ -n "$workspace" && -d "$workspace" ]]; then
+        (cd "$workspace" && br update "$parent_id" --release --reason "mitosis" 2>/dev/null) || true
+    else
+        br update "$parent_id" --release --reason "mitosis" 2>/dev/null || true
+    fi
 
     # Emit mitosis complete event
     local children_list
