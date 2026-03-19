@@ -52,7 +52,7 @@ output:
 # Rate limits (GLM free tier - higher concurrency allowed)
 limits:
   requests_per_minute: 120
-  max_concurrent: 10
+  max_concurrent: 20
 
 # Cost configuration
 # GLM-4.7-free is a free tier model

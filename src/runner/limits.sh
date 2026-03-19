@@ -13,30 +13,30 @@
 # -----------------------------------------------------------------------------
 
 # Get the global max concurrent limit
-# Returns: Integer limit (default: 20)
+# Returns: Integer limit (default: 40)
 # Usage: _needle_get_global_limit
 _needle_get_global_limit() {
     local limit
-    limit=$(get_config_int "limits.global_max_concurrent" "20")
-    echo "${limit:-20}"
+    limit=$(get_config_int "limits.global_max_concurrent" "40")
+    echo "${limit:-40}"
 }
 
 # Get the provider-specific max concurrent limit
 # Arguments:
 #   $1 - Provider name (e.g., "anthropic", "openai")
-# Returns: Integer limit (default: 10)
+# Returns: Integer limit (default: 20)
 # Usage: _needle_get_provider_limit "anthropic"
 _needle_get_provider_limit() {
     local provider="$1"
     local limit
 
     if [[ -z "$provider" ]]; then
-        echo "10"
+        echo "20"
         return 0
     fi
 
-    limit=$(get_config_int "limits.providers.$provider.max_concurrent" "10")
-    echo "${limit:-10}"
+    limit=$(get_config_int "limits.providers.$provider.max_concurrent" "20")
+    echo "${limit:-20}"
 }
 
 # Get the model-specific max concurrent limit
