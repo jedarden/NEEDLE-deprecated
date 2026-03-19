@@ -200,6 +200,8 @@ _needle_get_type_instructions() {
     common_footer="
 Use \`~/.local/bin/br --help\` and \`br <command> --help\` to understand available commands and options.
 
+IMPORTANT: Always \`git push origin\` after committing. Unpushed commits are invisible to CI and collaborators.
+
 If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a comment explaining why.
 
 Exit with code 0 on success, non-zero on failure."
@@ -215,8 +217,9 @@ You are working on a **bug fix** task in the context of the workspace above.
 3. Fix the bug
 4. Add a regression test covering the fix
 5. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
-6. Validate that your changes fully satisfy the bead requirements
-7. If validated: \`br close ${bead_id}\`
+6. Push your commit to origin: \`git push origin\`
+7. Validate that your changes fully satisfy the bead requirements
+8. If validated: \`br close ${bead_id}\`
 ${common_footer}
 INSTRUCTIONS
             ;;
@@ -230,8 +233,9 @@ You are working on a **feature implementation** task in the context of the works
 2. Implement the feature as described
 3. Add tests for new functionality
 4. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
-5. Validate that your changes fully satisfy the bead requirements
-6. If validated: \`br close ${bead_id}\`
+5. Push your commit to origin: \`git push origin\`
+6. Validate that your changes fully satisfy the bead requirements
+7. If validated: \`br close ${bead_id}\`
 ${common_footer}
 INSTRUCTIONS
             ;;
@@ -245,8 +249,9 @@ You are working on a **refactor** task in the context of the workspace above.
 2. Refactor as described without changing external behavior
 3. Verify all existing tests still pass
 4. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
-5. Validate that your changes fully satisfy the bead requirements
-6. If validated: \`br close ${bead_id}\`
+5. Push your commit to origin: \`git push origin\`
+6. Validate that your changes fully satisfy the bead requirements
+7. If validated: \`br close ${bead_id}\`
 ${common_footer}
 INSTRUCTIONS
             ;;
@@ -288,8 +293,9 @@ Complete the task as described. Use the \`br\` CLI (\`~/.local/bin/br\`) to mana
 ### Workflow
 1. Do the work described above
 2. Commit your changes with a descriptive message referencing bead ID: ${bead_id}
-3. Validate that your changes fully satisfy the bead requirements
-4. If validated: \`br close ${bead_id}\`
+3. Push your commit to origin: \`git push origin\`
+4. Validate that your changes fully satisfy the bead requirements
+5. If validated: \`br close ${bead_id}\`
 5. If the bead requires creating sub-beads, create them and add as blockers
 ${common_footer}
 INSTRUCTIONS
