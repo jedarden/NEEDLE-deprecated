@@ -24,6 +24,23 @@ OUTPUT:
     STATUS       available | missing | auth-required
     VERSION      Detected version if available
 
+AGENT YAML FIELDS:
+    name              Agent display name
+    description       Human-readable description
+    runner            CLI executable (e.g., claude)
+    provider          Rate limit group (e.g., zai, anthropic)
+    model             Model identifier (e.g., glm-5, sonnet)
+    invoke            Shell command template for execution
+    prompt_template   Custom prompt template (optional, replaces built-in)
+                      Available variables: \${bead_id}, \${bead_title},
+                      \${bead_description}, \${bead_type}, \${workspace},
+                      \${workspace_name}, \${priority}, \${labels},
+                      \${model}, \${agent}, \${commit_prefix},
+                      \${project_context}, \${common_footer}, \${default_prompt}
+    prompt_suffix     Text appended to built-in prompt (optional)
+    input.method      Input method: heredoc | stdin | file | args
+    output.format     Output format: json | text | stream-json
+
 EXAMPLES:
     # List configured agents
     needle agents

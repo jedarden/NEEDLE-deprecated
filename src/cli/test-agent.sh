@@ -28,6 +28,26 @@ TESTS PERFORMED:
     3. Agent executes and exits with code 0
     4. Output is parseable
 
+PROMPT TEMPLATE:
+    Agents can define a custom prompt_template in their YAML config.
+    The template is rendered with these variables:
+      \${bead_id}         - Bead identifier (e.g., nd-abc123)
+      \${bead_title}      - Task title
+      \${bead_description} - Full task description
+      \${bead_type}       - Task type (bug, feature, docs, etc.)
+      \${workspace}       - Workspace path
+      \${workspace_name}  - Workspace directory name
+      \${priority}        - Priority label (e.g., P2 (normal))
+      \${labels}          - Comma-separated labels
+      \${model}           - Model identifier
+      \${agent}           - Agent name
+      \${commit_prefix}   - Conventional commit prefix (feat, fix, etc.)
+      \${project_context} - Genesis/plan context section
+      \${common_footer}   - Standard footer with br instructions
+      \${default_prompt}  - The full built-in prompt (for embedding)
+
+    Use --verbose to see the rendered prompt output for debugging.
+
 EXAMPLES:
     # Test an agent
     needle test-agent claude-anthropic-sonnet
@@ -35,7 +55,7 @@ EXAMPLES:
     # Test with custom prompt
     needle test-agent opencode-alibaba-qwen --prompt=\"print hello world\"
 
-    # Verbose output for debugging
+    # Verbose output for debugging (includes rendered prompt)
     needle test-agent claude-anthropic-sonnet --verbose
 
 EXIT CODES:
