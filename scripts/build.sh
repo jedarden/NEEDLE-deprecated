@@ -94,6 +94,14 @@ process_module() {
         # Remove _LOADED=true assignments (we set these all at the top now)
         s/^[ \t]*[A-Z_]+_LOADED=true\s*\n//gm;
 
+        # Remove re-source guard blocks that prevent module loading in bundled binary.
+        # Pattern 1: if ... then\n  return 0\nfi # end re-source guard
+        s/^if\s+\[\[\s+-n\s+"\$\{_NEEDLE_\w+_LOADED:-\}"\s+\]\];\s*then\s*\n\s*return\s+0\s*\nfi\s*#?\s*end\s+re-source\s+guard\s*\n//gm;
+        # Pattern 2: if ... then\n  : # already loaded\nelse\n...\nfi # end re-source guard
+        # Strip the if/else wrapper, keeping only the else-body (the actual definitions)
+        s/^(?:#[^\n]*\n)*if\s+\[\[\s+-n\s+"\$\{_NEEDLE_\w+_LOADED:-\}"\s+\]\];\s*then\s*\n\s*:.*\n\s*else\s*\n//gm;
+        s/^fi\s+#\s*end\s+re-source\s+guard\s*\n//gm;
+
         # Clean up empty/comment-only if-blocks left after removing source commands
         # Run multiple times to handle nested empty blocks
         for my $i (1..5) {

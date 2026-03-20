@@ -630,8 +630,8 @@ _needle_show_spend_summary() {
 # Usage: _needle_event_effort_recorded <bead_id> <cost> <agent> <input_tokens> <output_tokens>
 _needle_event_effort_recorded() {
     local bead_id="$1"
-    local cost="$2"
-    local agent="$3"
+    local cost="${2:-0}"
+    local agent="${3:-unknown}"
     local input_tokens="${4:-0}"
     local output_tokens="${5:-0}"
 
