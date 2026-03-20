@@ -205,13 +205,32 @@ _needle_telemetry_emit() {
         level=$(_needle_telemetry_infer_level "$event_type")
     fi
 
-    # Build event envelope
+    # Extract agent metadata for consistent event attribution
+    # NEEDLE_AGENT may be an associative array (access via [name]) or a simple string
+    local agent_value
+    if [[ -n "${NEEDLE_AGENT[name]:-}" ]]; then
+        agent_value="${NEEDLE_AGENT[name]}"
+    elif [[ -n "${NEEDLE_AGENT:-}" ]]; then
+        agent_value="$NEEDLE_AGENT"
+    else
+        agent_value="unknown"
+    fi
+
+    # Build event envelope with auto-injected agent/model/provider/workspace metadata
     local ts session worker data json
 
     ts=$(_needle_telemetry_timestamp)
     session="${NEEDLE_SESSION:-unknown}"
     worker=$(_needle_telemetry_worker_string)
-    data=$(_needle_telemetry_build_data "$@")
+
+    # Inject agent metadata into data object for FABRIC analytics
+    # These fields enable performance analysis by model/agent/provider
+    data=$(_needle_telemetry_build_data \
+        "agent=$agent_value" \
+        "model=${NEEDLE_MODEL:-unknown}" \
+        "provider=${NEEDLE_PROVIDER:-unknown}" \
+        "workspace=${NEEDLE_WORKSPACE:-unknown}" \
+        "$@")
 
     if _needle_command_exists jq; then
         # Build complete event JSON with jq (worker is now a flat string)
