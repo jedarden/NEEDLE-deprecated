@@ -36,6 +36,19 @@ EXAMPLES:
 
     # Show config file paths
     needle config path
+
+CONFIGURATION SECTIONS:
+    strands               Per-workspace strand enable/disable
+    strand_profiles       Named strand presets (worker, full, analyst, caretaker)
+    select                Bead selection and work stealing
+    mitosis               Automatic bead decomposition
+    runner                Worker loop settings (polling_interval, idle_timeout)
+    limits                Concurrency limits (global, provider, model)
+
+AGENT YAML SECTIONS:
+    prompt_template       Custom prompt template for this agent type
+    strands               Per-agent strand overrides
+    limits                Per-agent concurrency limits
 "
 }
 
