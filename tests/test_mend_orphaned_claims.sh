@@ -409,6 +409,113 @@ test_malformed_bead_skipped() {
 }
 
 # ============================================================================
+# Regression Tests: nd-bt09f0 — mend must not return success on failed releases
+# ============================================================================
+
+test_orphan_found_but_release_fails_returns_1() {
+    # Regression: orphan found but release fails must return 1, not 0
+    local test_workspace="$TEST_DIR/workspace-bt09f0-1"
+    create_test_workspace "$test_workspace"
+
+    # Mock br to return orphaned beads but FAIL the release
+    mock_br_for_orphan '[{"id":"nd-test-fail1","status":"in_progress","assignee":"worker-dead-1"},{"id":"nd-test-fail2","status":"in_progress","assignee":"worker-dead-2"}]' "false"
+
+    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+    # No heartbeat files → both beads are orphaned
+
+    _NEEDLE_MEND_ORPHANS_FOUND=0
+    local rc=0
+    _needle_mend_orphaned_claims "$test_workspace" 2>&1 || rc=$?
+
+    if [[ $rc -eq 1 ]]; then
+        pass "Returns 1 when orphans found but all releases fail"
+    else
+        fail "Should return 1 when orphans found but releases fail (got rc=$rc)"
+    fi
+}
+
+test_orphan_found_sets_found_counter() {
+    # Regression: _NEEDLE_MEND_ORPHANS_FOUND must reflect orphans found
+    local test_workspace="$TEST_DIR/workspace-bt09f0-2"
+    create_test_workspace "$test_workspace"
+
+    mock_br_for_orphan '[{"id":"nd-test-cnt1","status":"in_progress","assignee":"worker-gone-1"},{"id":"nd-test-cnt2","status":"in_progress","assignee":"worker-gone-2"},{"id":"nd-test-cnt3","status":"in_progress","assignee":"worker-gone-3"}]' "false"
+
+    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    _NEEDLE_MEND_ORPHANS_FOUND=0
+    _needle_mend_orphaned_claims "$test_workspace" 2>&1 || true
+
+    if [[ "$_NEEDLE_MEND_ORPHANS_FOUND" -eq 3 ]]; then
+        pass "_NEEDLE_MEND_ORPHANS_FOUND=3 for 3 orphans (release failed)"
+    else
+        fail "_NEEDLE_MEND_ORPHANS_FOUND should be 3, got $_NEEDLE_MEND_ORPHANS_FOUND"
+    fi
+}
+
+test_orphan_release_succeeds_returns_0() {
+    # Existing behavior: successful release returns 0
+    local test_workspace="$TEST_DIR/workspace-bt09f0-3"
+    create_test_workspace "$test_workspace"
+
+    mock_br_for_orphan '[{"id":"nd-test-ok","status":"in_progress","assignee":null}]' "true"
+
+    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    _NEEDLE_MEND_ORPHANS_FOUND=0
+    local rc=1
+    _needle_mend_orphaned_claims "$test_workspace" 2>&1 && rc=0
+
+    if [[ $rc -eq 0 ]]; then
+        pass "Returns 0 when orphan release succeeds (existing behavior preserved)"
+    else
+        fail "Should return 0 when release succeeds (got rc=$rc)"
+    fi
+}
+
+test_no_orphans_sets_found_zero() {
+    # When no orphans found, _NEEDLE_MEND_ORPHANS_FOUND must be 0
+    local test_workspace="$TEST_DIR/workspace-bt09f0-4"
+    create_test_workspace "$test_workspace"
+
+    mock_br_for_orphan '[]'
+
+    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    _NEEDLE_MEND_ORPHANS_FOUND=99
+    _needle_mend_orphaned_claims "$test_workspace" 2>&1 || true
+
+    if [[ "$_NEEDLE_MEND_ORPHANS_FOUND" -eq 0 ]]; then
+        pass "_NEEDLE_MEND_ORPHANS_FOUND=0 when no orphans found"
+    else
+        fail "_NEEDLE_MEND_ORPHANS_FOUND should be 0, got $_NEEDLE_MEND_ORPHANS_FOUND"
+    fi
+}
+
+test_mend_main_returns_1_on_orphan_release_failure() {
+    # Regression: main mend function must return 1 when orphans found but none released
+    # even if other sub-functions would normally set work_done=true
+    local test_workspace="$TEST_DIR/workspace-bt09f0-main"
+    create_test_workspace "$test_workspace"
+
+    # Mock br: orphaned beads exist but release fails
+    # Also mock list for stale claims (same beads, same failure)
+    mock_br_for_orphan '[{"id":"nd-test-loop1","status":"in_progress","assignee":"worker-loop-dead"}]' "false"
+
+    mkdir -p "$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
+
+    _NEEDLE_MEND_ORPHANS_FOUND=0
+    local rc=0
+    _needle_strand_mend "$test_workspace" "test-agent" 2>&1 || rc=$?
+
+    if [[ $rc -eq 1 ]]; then
+        pass "Main mend returns 1 when orphan releases fail (prevents infinite loop)"
+    else
+        fail "Main mend should return 1 when orphan releases fail (got rc=$rc)"
+    fi
+}
+
+# ============================================================================
 # Run Tests
 # ============================================================================
 
@@ -439,6 +546,13 @@ run_tests() {
     # Edge case tests
     test_empty_in_progress_list || true
     test_malformed_bead_skipped || true
+
+    # Regression tests: nd-bt09f0
+    test_orphan_found_but_release_fails_returns_1 || true
+    test_orphan_found_sets_found_counter || true
+    test_orphan_release_succeeds_returns_0 || true
+    test_no_orphans_sets_found_zero || true
+    test_mend_main_returns_1_on_orphan_release_failure || true
 
     echo ""
     echo "Tests run: $TESTS_RUN"

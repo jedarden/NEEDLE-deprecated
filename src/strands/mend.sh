@@ -40,6 +40,8 @@ _needle_strand_mend() {
 
     local work_done=false
     local orphaned_count=0
+    local total_orphans_found=0
+    local any_orphan_release_succeeded=false
     local stale_count=0
     local stale_dep_count=0
     local heartbeat_count=0
@@ -73,7 +75,9 @@ _needle_strand_mend() {
         if _needle_mend_orphaned_claims "$ws"; then
             work_done=true
             ((orphaned_count++))
+            any_orphan_release_succeeded=true
         fi
+        total_orphans_found=$((total_orphans_found + _NEEDLE_MEND_ORPHANS_FOUND))
     done
 
     # 2. Release stale claims across all workspaces
@@ -106,6 +110,19 @@ _needle_strand_mend() {
     if _needle_mend_logs; then
         work_done=true
         log_count=1
+    fi
+
+    # If orphans were found but none could be released, fall through regardless
+    # of other maintenance work. Returning 0 would cause the strand engine to
+    # restart from pluck, which finds nothing, creating an infinite loop.
+    if ((total_orphans_found > 0)) && ! $any_orphan_release_succeeded; then
+        _needle_diag_strand "mend" "Orphaned claims found but none released — falling through" \
+            "workspace=$workspace" \
+            "orphaned_found=$total_orphans_found" \
+            "orphaned_released=0"
+
+        _needle_warn "mend: $total_orphans_found orphaned claim(s) found but none released — falling through to next strand"
+        return 1
     fi
 
     if $work_done; then
@@ -190,6 +207,8 @@ _needle_mend_release_bead() {
 _needle_mend_orphaned_claims() {
     local workspace="$1"
     local fixed=0
+    local found=0
+    _NEEDLE_MEND_ORPHANS_FOUND=0
 
     # Get heartbeat directory path
     local heartbeat_dir="$NEEDLE_HOME/$NEEDLE_STATE_DIR/heartbeats"
@@ -250,6 +269,7 @@ _needle_mend_orphaned_claims() {
         # If no assignee, bead is in_progress with no owner — unconditionally orphaned
         if [[ -z "$assignee" ]]; then
             _needle_warn "Found ownerless in_progress bead: $bead_id (no assignee — unconditionally orphaned)"
+            ((found++))
 
             if _needle_mend_release_bead "$db_path" "$bead_id" "ownerless_claim"; then
                 _needle_info "Released ownerless bead: $bead_id"
@@ -273,6 +293,7 @@ _needle_mend_orphaned_claims() {
         if [[ ! -f "$heartbeat_file" ]]; then
             # No heartbeat file - worker is dead, this is an orphaned claim
             _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - no heartbeat)"
+            ((found++))
 
             # Release the claim via SQL (br update --release doesn't exist)
             if _needle_mend_release_bead "$db_path" "$bead_id" "orphaned_claim"; then
@@ -299,6 +320,7 @@ _needle_mend_orphaned_claims() {
                 if ! kill -0 "$pid" 2>/dev/null; then
                     # Process is dead but heartbeat file remains - orphaned claim
                     _needle_warn "Found orphaned claim: $bead_id (worker: $assignee - process $pid dead)"
+                    ((found++))
 
                     # Release the claim via SQL
                     if _needle_mend_release_bead "$db_path" "$bead_id" "orphaned_claim"; then
@@ -323,7 +345,15 @@ _needle_mend_orphaned_claims() {
 
     if ((fixed > 0)); then
         _needle_info "Released $fixed orphaned claim(s)"
+        _NEEDLE_MEND_ORPHANS_FOUND=$found
         return 0
+    fi
+
+    if ((found > 0)); then
+        _needle_warn "mend: found $found orphaned claim(s) but could not release any"
+        _NEEDLE_MEND_ORPHANS_FOUND=$found
+    else
+        _NEEDLE_MEND_ORPHANS_FOUND=0
     fi
 
     return 1
