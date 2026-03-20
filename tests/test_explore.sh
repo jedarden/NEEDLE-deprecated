@@ -737,6 +737,186 @@ else
 fi
 unset NEEDLE_EXPLORE_UPWARD_COUNT
 
+# Test 28: Regression test for nd-08covc — explore skips when home workspace has in_progress beads
+# Workers should NOT explore to other workspaces when their assigned workspace still has
+# active work in flight (in_progress beads). Without this guard, workers wander to
+# /home/coding, hit claim_exhausted across many workspaces, and exit prematurely.
+_test_start "explore skips when home workspace has in_progress beads (nd-08covc regression)"
+
+test_home_ws="/tmp/test-explore-busy-ws-$$"
+mkdir -p "$test_home_ws/.beads"
+export NEEDLE_WORKSPACE="$test_home_ws"
+
+# Override br: assigned workspace has in_progress beads
+br() {
+    case "$1" in
+        list)
+            if [[ "$*" == *"--status in_progress"* ]] && [[ "$*" == *"--json"* ]]; then
+                # Simulate active bead being processed by another worker
+                echo '[{"id":"nd-busy-1","status":"in_progress","assignee":"worker-alpha"}]'
+                return 0
+            fi
+            echo '[]'
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+_needle_strand_explore "$test_home_ws" "test-agent" >/dev/null 2>&1
+busy_result=$?
+rm -rf "$test_home_ws"
+unset NEEDLE_WORKSPACE
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# When home workspace has in_progress beads, explore MUST return 1 (no explore/wander)
+if [[ "$busy_result" -eq 1 ]]; then
+    _test_pass "explore correctly returned 1 (no wander) when home workspace has in_progress beads"
+else
+    _test_fail "explore should return 1 when home workspace busy, got $busy_result (workers will wander!)"
+fi
+
+# Test 29: Regression test for nd-08covc — explore proceeds when home workspace is exhausted
+# When the assigned workspace has NO in_progress beads (all work done/blocked),
+# explore SHOULD run to find work elsewhere.
+_test_start "explore proceeds when home workspace is exhausted (nd-08covc regression)"
+
+test_exhausted_ws="/tmp/test-explore-exhausted-ws-$$"
+mkdir -p "$test_exhausted_ws/.beads"
+export NEEDLE_WORKSPACE="$test_exhausted_ws"
+
+# Override br: workspace has no in_progress beads (exhausted)
+br() {
+    case "$1" in
+        list)
+            if [[ "$*" == *"--status in_progress"* ]] && [[ "$*" == *"--json"* ]]; then
+                # No active beads — workspace is exhausted
+                echo '[]'
+                return 0
+            fi
+            echo '[]'
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+_needle_strand_explore "$test_exhausted_ws" "test-agent" >/dev/null 2>&1
+exhausted_result=$?
+rm -rf "$test_exhausted_ws"
+unset NEEDLE_WORKSPACE
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# When workspace is exhausted (0 in_progress), explore should run (return 1 or 2, not skip early with 1)
+# Since there are no children or siblings either, it will return 2 (upward walk) or 1 (at root)
+if [[ "$exhausted_result" -eq 1 ]] || [[ "$exhausted_result" -eq 2 ]]; then
+    _test_pass "explore correctly proceeds (result=$exhausted_result) when home workspace is exhausted"
+else
+    _test_fail "explore should proceed when workspace exhausted, got $exhausted_result"
+fi
+
+# Test 30: nd-08covc — NEEDLE_WORKSPACE guard uses env var, not just argument
+# Even when the engine has walked up to a parent directory (passing parent as workspace arg),
+# explore must still check NEEDLE_WORKSPACE (the originally assigned workspace).
+_test_start "explore guard uses NEEDLE_WORKSPACE env var, not just workspace arg (nd-08covc)"
+
+test_orig_ws="/tmp/test-explore-orig-ws-$$"
+test_parent_ws="/tmp/test-explore-orig-ws-$$-parent"
+mkdir -p "$test_orig_ws/.beads"
+mkdir -p "$test_parent_ws"
+export NEEDLE_WORKSPACE="$test_orig_ws"  # Originally assigned workspace
+
+# Override br: NEEDLE_WORKSPACE has in_progress beads; parent has none
+br() {
+    case "$1" in
+        list)
+            if [[ "$*" == *"--status in_progress"* ]] && [[ "$*" == *"--json"* ]]; then
+                if [[ "$PWD" == "$test_orig_ws" ]]; then
+                    # Original workspace has active work
+                    echo '[{"id":"nd-active-1","status":"in_progress","assignee":"worker-beta"}]'
+                else
+                    echo '[]'
+                fi
+                return 0
+            fi
+            echo '[]'
+            return 0
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Call explore with the PARENT as workspace arg (simulating upward walk)
+_needle_strand_explore "$test_parent_ws" "test-agent" >/dev/null 2>&1
+guard_result=$?
+rm -rf "$test_orig_ws" "$test_parent_ws"
+unset NEEDLE_WORKSPACE
+
+# Restore the original mock br
+br() {
+    case "$1" in
+        ready)
+            if [[ "$*" == *"--count"* ]]; then
+                echo "5"
+                return 0
+            fi
+            ;;
+        list)
+            echo '[]'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+# Guard should use NEEDLE_WORKSPACE, not the workspace arg — must return 1
+if [[ "$guard_result" -eq 1 ]]; then
+    _test_pass "explore guard correctly used NEEDLE_WORKSPACE (not workspace arg) and returned 1"
+else
+    _test_fail "explore guard should use NEEDLE_WORKSPACE, got result=$guard_result (workers will still wander!)"
+fi
+
 # Summary
 echo ""
 echo "=========================================="

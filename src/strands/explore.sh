@@ -556,6 +556,29 @@ _needle_strand_explore() {
         return 1
     fi
 
+    # Guard: If the assigned workspace still has in_progress beads (live workers
+    # actively processing), don't explore — stay and wait for pluck to re-claim
+    # after those beads complete. This prevents workers from wandering to other
+    # workspaces when their home workspace has active work in flight.
+    #
+    # Uses NEEDLE_WORKSPACE (the originally assigned workspace) so this guard
+    # stays effective even when the engine has walked upward to a parent dir.
+    local _guard_workspace="${NEEDLE_WORKSPACE:-$workspace}"
+    if [[ -d "$_guard_workspace/.beads" ]]; then
+        local _guard_in_progress
+        _guard_in_progress=$(cd "$_guard_workspace" && br list --status in_progress --json 2>/dev/null | jq 'length' 2>/dev/null || echo "0")
+        if [[ ! "$_guard_in_progress" =~ ^[0-9]+$ ]]; then
+            _guard_in_progress=0
+        fi
+        if [[ "$_guard_in_progress" -gt 0 ]]; then
+            _needle_debug "explore: home workspace $_guard_workspace has $_guard_in_progress in_progress bead(s) — staying put"
+            _needle_telemetry_emit "explore.skipped_workspace_busy" "debug" \
+                "workspace=$_guard_workspace" \
+                "in_progress_count=$_guard_in_progress"
+            return 1
+        fi
+    fi
+
     # Phase 1: Search child directories up to max_depth for workspaces with beads.
     # Run mend+pluck inline in each discovered child workspace.
     local max_depth
