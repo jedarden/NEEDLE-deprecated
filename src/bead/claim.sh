@@ -41,6 +41,11 @@ if [[ -z "${_NEEDLE_INTENT_LOADED:-}" ]]; then
     source "$(dirname "${BASH_SOURCE[0]}")/intent.sh"
 fi
 
+# Source locks module for workspace claim lock (prevents thundering herd)
+if [[ -z "${_NEEDLE_LOCKS_LOADED:-}" ]]; then
+    source "$(dirname "${BASH_SOURCE[0]}")/../lib/locks.sh"
+fi
+
 # ============================================================================
 # Claim-specific Priority Weights
 # ============================================================================
@@ -252,6 +257,18 @@ _needle_claim_bead() {
         _needle_diag_claim "Claim failed - missing actor parameter"
         return 1
     fi
+
+    # Acquire workspace claim lock to prevent thundering herd
+    # Multiple workers targeting the same workspace will serialize here
+    if ! _needle_acquire_claim_lock "$workspace"; then
+        _needle_warn "Failed to acquire claim lock for workspace: $workspace"
+        _needle_diag_claim "Claim failed - lock acquisition failed" \
+            "workspace=$workspace"
+        return 1
+    fi
+
+    # Ensure lock is released on exit (success or failure)
+    trap '_needle_release_claim_lock "$workspace"' RETURN
 
     # Get ALL claimable beads upfront (with fallback for br ready bug)
     local candidates
