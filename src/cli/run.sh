@@ -42,8 +42,12 @@ OPTIONS:
 
     --budget <USD>           Budget override for this run (e.g., \"10.00\")
 
-    --strands <LIST>         Comma-separated strands to enable
-                             [default: from config]
+    --strands <LIST>         Comma-separated strands to enable (overrides all)
+                             [default: from config or strand profile]
+
+    --strand-profile <NAME>  Use a named strand profile from config
+                             Profiles define which strands are enabled.
+                             Resolution: --strands > --strand-profile > agent YAML > config
 
     --no-hooks               Skip hook execution for this run
 
@@ -77,6 +81,27 @@ STRANDS:
     6. pulse     - Codebase health monitoring (opt-in)
     7. knot      - Alert human when stuck
 
+STRAND PROFILES:
+    Named presets defined in .beads/config.yaml under strand_profiles:
+
+    Example config:
+      strand_profiles:
+        worker:    { pluck: true, mend: true, explore: true }
+        full:      { pluck: true, mend: true, explore: true, weave: true, pulse: true, unravel: true, knot: true }
+        analyst:   { weave: true, pulse: true, explore: true }
+        caretaker: { mend: true, unravel: true, knot: true }
+
+    Usage:
+      needle run --agent=claude-code-glm-5 --strand-profile=worker
+      needle run --agent=claude-code-glm-5 --strand-profile=analyst
+
+STRAND RESOLUTION ORDER:
+    1. --strands flag (highest priority, comma-separated list)
+    2. --strand-profile flag (named profile from config)
+    3. Agent YAML strands section (per-model defaults)
+    4. Workspace .beads/config.yaml strands section
+    5. Built-in defaults (pluck, mend, explore enabled; weave, pulse, unravel opt-in)
+
 EXAMPLES:
     # Start a worker - workspace auto-discovered
     needle run --agent=claude-anthropic-sonnet
@@ -95,6 +120,9 @@ EXAMPLES:
 
     # Enable only specific strands
     needle run --strands=pluck,mend
+
+    # Use a strand profile
+    needle run --agent=claude-code-glm-5 --strand-profile=worker
 
 SESSION NAMING:
     Workers are named using the configured pattern:

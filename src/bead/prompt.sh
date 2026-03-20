@@ -312,6 +312,233 @@ INSTRUCTIONS
     esac
 }
 
+# Build the common footer used in type instructions (exposed for template interpolation)
+# Usage: _needle_build_common_footer <bead_id>
+# Returns: Common footer string
+_needle_build_common_footer() {
+    local bead_id="$1"
+
+    local model_name="${NEEDLE_MODEL:-${NEEDLE_AGENT[model]:-unknown}}"
+    local co_author="Co-Authored-By: Claude Code (${model_name}) <noreply@anthropic.com>"
+
+    local footer="Use \`~/.local/bin/br --help\` and \`br <command> --help\` to understand available commands and options.
+
+IMPORTANT: Always \`git push origin\` after committing. Unpushed commits are invisible to CI and collaborators.
+
+IMPORTANT: Every commit message MUST end with this trailer on its own line:
+${co_author}
+
+If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a comment explaining why.
+
+Exit with code 0 on success, non-zero on failure."
+
+    # Append prompt_suffix if defined for this agent
+    if [[ -n "${NEEDLE_AGENT[prompt_suffix]:-}" ]]; then
+        footer+=$'\n\n'"${NEEDLE_AGENT[prompt_suffix]}"
+    fi
+
+    echo "$footer"
+}
+
+# Interpolate variables into a prompt template
+# Usage: _needle_interpolate_template <template> <bead_id> <title> <description> <workspace> <type> <priority>
+# Returns: Interpolated template string
+_needle_interpolate_template() {
+    local template="$1"
+    local bead_id="$2"
+    local title="$3"
+    local description="$4"
+    local workspace="$5"
+    local type="$6"
+    local priority="$7"
+    local labels="$8"
+
+    # Get workspace name for context
+    local workspace_name
+    workspace_name=$(basename "$workspace")
+
+    # Build priority label
+    local priority_label
+    case "$priority" in
+        0) priority_label="P0 (critical)" ;;
+        1) priority_label="P1 (high)" ;;
+        2) priority_label="P2 (normal)" ;;
+        3) priority_label="P3 (low)" ;;
+        *) priority_label="P${priority}" ;;
+    esac
+
+    # Determine commit prefix based on type
+    local commit_prefix="feat"
+    case "$type" in
+        bug) commit_prefix="fix" ;;
+        feature) commit_prefix="feat" ;;
+        refactor) commit_prefix="refactor" ;;
+        docs) commit_prefix="docs" ;;
+        test) commit_prefix="test" ;;
+        chore) commit_prefix="chore" ;;
+    esac
+
+    # Build project context section (for ${project_context} variable)
+    local project_context
+    project_context=$(_needle_build_project_context "$bead_id" "$workspace")
+
+    # Build common footer (for ${common_footer} variable)
+    local common_footer
+    common_footer=$(_needle_build_common_footer "$bead_id")
+
+    # Build default prompt (for ${default_prompt} variable)
+    local default_prompt
+    default_prompt=$(_needle_build_default_prompt "$bead_id" "$title" "$description" "$labels" "$workspace" "$priority" "$type")
+
+    # Model and agent info
+    local model="${NEEDLE_AGENT[model]:-${NEEDLE_MODEL:-unknown}}"
+    local agent="${NEEDLE_AGENT[name]:-unknown}"
+
+    # Perform variable substitution using envsubst-like approach
+    # We use a temporary file and sed for reliable multiline handling
+    local result="$template"
+
+    # Replace template variables
+    result="${result//\$\{bead_id\}/$bead_id}"
+    result="${result//\$\{bead_title\}/$title}"
+    result="${result//\$\{bead_description\}/$description}"
+    result="${result//\$\{bead_type\}/$type}"
+    result="${result//\$\{workspace\}/$workspace}"
+    result="${result//\$\{workspace_name\}/$workspace_name}"
+    result="${result//\$\{priority\}/$priority_label}"
+    result="${result//\$\{labels\}/$labels}"
+    result="${result//\$\{model\}/$model}"
+    result="${result//\$\{agent\}/$agent}"
+    result="${result//\$\{commit_prefix\}/$commit_prefix}"
+
+    # Handle multiline variables using sed
+    # For ${project_context}, ${common_footer}, ${default_prompt}
+    if [[ "$result" == *'$'{project_prefix}* ]] || [[ "$result" == *'$'{project_context}* ]]; then
+        result=$(echo "$result" | sed "s|\${project_context}|$(_needle_escape_for_sed "$project_context")|g")
+    fi
+    if [[ "$result" == *'$'{common_footer}* ]]; then
+        result=$(echo "$result" | sed "s|\${common_footer}|$(_needle_escape_for_sed "$common_footer")|g")
+    fi
+    if [[ "$result" == *'$'{default_prompt}* ]]; then
+        result=$(echo "$result" | sed "s|\${default_prompt}|$(_needle_escape_for_sed "$default_prompt")|g")
+    fi
+
+    echo "$result"
+}
+
+# Escape a string for use in sed replacement
+# Usage: _needle_escape_for_sed <string>
+_needle_escape_for_sed() {
+    local str="$1"
+    # Escape special characters: \ / & |
+    str="${str//\\/\\\\}"
+    str="${str//\//\\/}"
+    str="${str//&/\\&}"
+    str="${str//|/\\|}"
+    # Escape newlines for sed
+    str="${str//$'\n'/\\n}"
+    echo "$str"
+}
+
+# Build the project context section
+# Usage: _needle_build_project_context <bead_id> <workspace>
+# Returns: Project context string
+_needle_build_project_context() {
+    local bead_id="$1"
+    local workspace="$2"
+
+    local genesis_result
+    if genesis_result=$(_needle_find_genesis_plan "$bead_id" "$workspace" 2>/dev/null); then
+        local genesis_title="${genesis_result%%|*}"
+        local plan_path="${genesis_result#*|}"
+
+        if [[ -n "$plan_path" ]]; then
+            echo "This bead is part of: Genesis: ${genesis_title}
+Project plan: ${plan_path}
+Review the plan to understand scope, conventions, and how this task fits."
+        else
+            echo "This bead is part of: Genesis: ${genesis_title}
+The genesis bead does not reference a plan document directly.
+
+To understand the project's scope and conventions, discover the plan document by:
+- Examining closed beads for references to planning/design documents: \`br list --status closed --json\`
+- Searching git history for commits that introduced planning docs: \`git log --all --diff-filter=A --name-only --oneline\`
+- Use closed bead descriptions and git commit messages to identify the plan document and understand project intent"
+        fi
+    else
+        echo "This is a standalone task with no linked project plan.
+
+To understand conventions and intent for the files/components this task covers:
+- Find closed beads related to the files/components this task covers: \`br list --status closed --json\`
+- Cross-reference with git history for those artifacts: \`git log --oneline -- <relevant paths>\`
+- Use the pattern of prior changes to understand conventions and intent"
+    fi
+}
+
+# Build the default prompt (for use with ${default_prompt} variable)
+# Usage: _needle_build_default_prompt <bead_id> <title> <description> <labels> <workspace> <priority> <type>
+# Returns: Default prompt string
+_needle_build_default_prompt() {
+    local bead_id="$1"
+    local title="$2"
+    local description="$3"
+    local labels="$4"
+    local workspace="$5"
+    local priority="$6"
+    local type="$7"
+
+    local workspace_name
+    workspace_name=$(basename "$workspace")
+
+    local priority_label
+    case "$priority" in
+        0) priority_label="P0 (critical)" ;;
+        1) priority_label="P1 (high)" ;;
+        2) priority_label="P2 (normal)" ;;
+        3) priority_label="P3 (low)" ;;
+        *) priority_label="P${priority}" ;;
+    esac
+
+    local labels_section=""
+    if [[ -n "$labels" ]]; then
+        labels_section="
+
+## Labels
+$labels"
+    fi
+
+    local instructions
+    instructions=$(_needle_get_type_instructions "$type" "$bead_id")
+
+    local context_section
+    context_section=$(_needle_build_project_context "$bead_id" "$workspace")
+    context_section="
+
+## Project Context
+$context_section"
+
+    cat <<PROMPT
+# Task: ${title}
+
+## Bead ID
+${bead_id}
+
+## Description
+${description}
+${labels_section}
+
+## Workspace
+\`${workspace}\` (${workspace_name})
+
+## Priority
+${priority_label}
+
+## Instructions
+${instructions}
+${context_section}
+PROMPT
+}
+
 # Format the final prompt
 # Usage: _needle_format_prompt --bead-id <id> --title <title> ...
 # Returns: Formatted prompt string
@@ -333,6 +560,17 @@ _needle_format_prompt() {
             *)              shift ;;
         esac
     done
+
+    # Check if agent has a custom prompt_template
+    if [[ -n "${NEEDLE_AGENT[prompt_template]:-}" ]]; then
+        _needle_debug "Using custom prompt_template from agent config"
+        _needle_interpolate_template "${NEEDLE_AGENT[prompt_template]}" \
+            "$bead_id" "$title" "$description" "$workspace" "$type" "$priority" "$labels"
+        return $?
+    fi
+
+    # Fall back to built-in default template
+    _needle_debug "Using built-in default prompt template"
 
     # Get workspace name for context
     local workspace_name

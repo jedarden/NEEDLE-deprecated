@@ -189,6 +189,71 @@ for item in data:
     fi
 }
 
+# Parse a multiline string field from YAML
+# Preserves newlines and formatting
+# Usage: _needle_parse_yaml_multiline <file> <path>
+_needle_parse_yaml_multiline() {
+    local file="$1"
+    local path="$2"
+
+    # Ensure file exists
+    if [[ ! -f "$file" ]]; then
+        return 1
+    fi
+
+    # Use Python for reliable multiline string handling
+    python3 -c "
+import yaml
+import sys
+
+def get_value(data, path):
+    '''Get value from nested dict using dot-notation path'''
+    if not path or path == '.':
+        return data
+
+    keys = path.strip('.').split('.')
+    current = data
+
+    for key in keys:
+        if not key:
+            continue
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        elif isinstance(current, list):
+            try:
+                idx = int(key)
+                current = current[idx]
+            except (ValueError, IndexError):
+                return None
+        else:
+            return None
+
+    return current
+
+try:
+    with open('$file', 'r') as f:
+        data = yaml.safe_load(f)
+
+    value = get_value(data, '$path')
+
+    if value is None:
+        sys.exit(1)
+
+    # Output the string preserving newlines
+    if isinstance(value, str):
+        print(value)
+    else:
+        sys.exit(1)
+
+except FileNotFoundError:
+    sys.exit(1)
+except yaml.YAMLError:
+    sys.exit(1)
+except Exception:
+    sys.exit(1)
+" 2>/dev/null
+}
+
 # -----------------------------------------------------------------------------
 # Agent Discovery
 # -----------------------------------------------------------------------------
@@ -340,6 +405,14 @@ _needle_load_agent() {
 
     # Prompt customization
     NEEDLE_AGENT[prompt_suffix]=$(_needle_parse_yaml "$agent_file" '.prompt_suffix' 2>/dev/null)
+
+    # Full prompt template (optional - replaces built-in template)
+    # This is a multiline string, so we read it directly
+    local prompt_template
+    prompt_template=$(_needle_parse_yaml_multiline "$agent_file" '.prompt_template' 2>/dev/null)
+    if [[ -n "$prompt_template" ]]; then
+        NEEDLE_AGENT[prompt_template]="$prompt_template"
+    fi
 
     # Store file path and directory for reference
     NEEDLE_AGENT[_file]="$agent_file"

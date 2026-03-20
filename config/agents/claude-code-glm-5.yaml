@@ -72,3 +72,47 @@ prompt_suffix: |
   - Do NOT run br close. Exit with code 0 when done. The system handles bead closure.
   - If you cannot do the work, exit with code 1. Do NOT close the bead.
   - Commit your changes with git add and git commit before exiting.
+
+# Full prompt template - replaces built-in default
+# This template enforces strict rules to prevent shallow closures by GLM models.
+# Template variables: ${bead_id}, ${bead_title}, ${bead_description}, ${bead_type},
+#                     ${workspace}, ${workspace_name}, ${priority}, ${labels},
+#                     ${model}, ${agent}, ${commit_prefix}, ${project_context},
+#                     ${common_footer}, ${default_prompt}
+prompt_template: |
+  # Task: ${bead_title}
+
+  ## Bead ID
+  ${bead_id}
+
+  ## Description
+  ${bead_description}
+
+  ## Workspace
+  `${workspace}` (${workspace_name})
+
+  ## Priority
+  ${priority}
+
+  ## Project Context
+  ${project_context}
+
+  ## Rules (STRICT - READ CAREFULLY)
+  1. Read the codebase before making changes. Understand the existing patterns.
+  2. Implement the work described above. You MUST modify files.
+  3. Commit your changes:
+     git add <modified files>
+     git commit -m "${commit_prefix}: <brief description>
+
+  Co-Authored-By: Claude Code (${model}) <noreply@anthropic.com>"
+  4. Push: git push origin
+  5. Exit 0 on success, exit 1 if blocked
+
+  ## FORBIDDEN ACTIONS
+  - Do NOT run br close
+  - Do NOT close beads
+  - Do NOT exit without modifying files
+  - Do NOT skip the commit step
+  - Do NOT skip the push step
+
+  ${common_footer}
