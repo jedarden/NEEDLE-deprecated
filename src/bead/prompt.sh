@@ -196,11 +196,15 @@ _needle_get_type_instructions() {
     local bead_id="$2"
 
     # Common footer for all types
-    local common_footer
-    common_footer="
+    local model_name="${NEEDLE_MODEL:-unknown}"
+    local co_author="Co-Authored-By: Claude Code (${model_name}) <noreply@anthropic.com>"
+    local common_footer="
 Use \`~/.local/bin/br --help\` and \`br <command> --help\` to understand available commands and options.
 
 IMPORTANT: Always \`git push origin\` after committing. Unpushed commits are invisible to CI and collaborators.
+
+IMPORTANT: Every commit message MUST end with this trailer on its own line:
+${co_author}
 
 If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a comment explaining why.
 
