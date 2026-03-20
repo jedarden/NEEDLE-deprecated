@@ -210,6 +210,11 @@ If blocked or incomplete: \`br update ${bead_id} --status blocked\` and add a co
 
 Exit with code 0 on success, non-zero on failure."
 
+    # Append prompt_suffix if defined for this agent
+    if [[ -n "${NEEDLE_AGENT[prompt_suffix]:-}" ]]; then
+        common_footer+=$'\n\n'"${NEEDLE_AGENT[prompt_suffix]}"
+    fi
+
     case "$type" in
         bug)
             cat <<INSTRUCTIONS

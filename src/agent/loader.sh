@@ -338,6 +338,9 @@ _needle_load_agent() {
     NEEDLE_AGENT[requests_per_minute]=$(_needle_parse_yaml "$agent_file" '.limits.requests_per_minute' 2>/dev/null)
     NEEDLE_AGENT[max_concurrent]=$(_needle_parse_yaml "$agent_file" '.limits.max_concurrent' 2>/dev/null)
 
+    # Prompt customization
+    NEEDLE_AGENT[prompt_suffix]=$(_needle_parse_yaml "$agent_file" '.prompt_suffix' 2>/dev/null)
+
     # Store file path and directory for reference
     NEEDLE_AGENT[_file]="$agent_file"
     NEEDLE_AGENT[agent_dir]="$(dirname "$agent_file")"

@@ -64,3 +64,13 @@ cost:
 
 # Timeout in seconds (128K max output warrants generous timeout)
 timeout: 900
+
+# Model-specific prompt instructions
+# GLM models tend to shortcut completion by running br close without doing work.
+# This suffix enforces actual code changes before completion.
+prompt_suffix: |
+  CRITICAL RULES FOR THIS MODEL:
+  - You MUST write or modify files before completing. Empty completions are failures.
+  - Do NOT run br close. Exit with code 0 when done. The system handles bead closure.
+  - If you cannot do the work, exit with code 1. Do NOT close the bead.
+  - Commit your changes with git add and git commit before exiting.
