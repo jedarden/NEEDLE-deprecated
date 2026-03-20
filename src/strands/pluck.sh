@@ -203,12 +203,17 @@ _needle_quarantine_bead_pluck() {
 
     _needle_debug "Quarantining bead: $bead_id (reason: $reason)"
 
+    # Acquire beads lock for workspace mutation
+    _needle_acquire_claim_lock "$workspace" || true
+
     local update_result=1
     if [[ -n "$workspace" && -d "$workspace" ]]; then
         (cd "$workspace" && br update "$bead_id" --status closed --add-label "quarantined" 2>/dev/null) && update_result=0
     else
         br update "$bead_id" --status closed --add-label "quarantined" 2>/dev/null && update_result=0
     fi
+
+    _needle_release_claim_lock "$workspace"
 
     if [[ $update_result -eq 0 ]]; then
         _needle_telemetry_emit "bead.quarantined" "error" \
@@ -464,6 +469,9 @@ _needle_mark_bead_completed() {
 
     _needle_debug "Marking bead as completed: $bead_id"
 
+    # Acquire beads lock for workspace mutation
+    _needle_acquire_claim_lock "$workspace" || true
+
     # Update bead status to closed
     # NOTE: br update must run in workspace context
     local update_result=1
@@ -472,6 +480,8 @@ _needle_mark_bead_completed() {
     else
         br update "$bead_id" --status closed 2>/dev/null && update_result=0
     fi
+
+    _needle_release_claim_lock "$workspace"
     if [[ $update_result -eq 0 ]]; then
         _needle_success "Bead completed: $bead_id (duration: ${duration}ms)"
 
@@ -547,12 +557,17 @@ _needle_mark_bead_failed() {
 
     # Standard failure path: mark as blocked with failed label
     # NOTE: br update must run in workspace context
+    # Acquire beads lock for workspace mutation
+    _needle_acquire_claim_lock "$workspace" || true
+
     local update_result=1
     if [[ -n "$workspace" && -d "$workspace" ]]; then
         (cd "$workspace" && br update "$bead_id" --status blocked --label failed --label "error:$reason" 2>/dev/null) && update_result=0
     else
         br update "$bead_id" --status blocked --label failed --label "error:$reason" 2>/dev/null && update_result=0
     fi
+
+    _needle_release_claim_lock "$workspace"
     if [[ $update_result -eq 0 ]]; then
         _needle_warn "Bead failed: $bead_id (reason: $reason)"
 

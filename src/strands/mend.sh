@@ -167,8 +167,14 @@ _needle_mend_release_bead() {
         return 1
     fi
 
+    # Derive workspace from db_path for locking
+    local _mend_workspace
+    _mend_workspace=$(dirname "$(dirname "$db_path")")
+    _needle_acquire_claim_lock "$_mend_workspace" || true
+
     # Use br update with --db to release the bead
     if br update "$bead_id" --status open --assignee "" --db="$db_path" --lock-timeout 5000 2>/dev/null; then
+        _needle_release_claim_lock "$_mend_workspace"
         _needle_info "Released bead: $bead_id ($reason) via br update"
         return 0
     fi
@@ -186,11 +192,13 @@ _needle_mend_release_bead() {
              SELECT changes();" 2>&1)
 
         if [[ "$sql_result" == "1" ]] || [[ "$sql_result" =~ ^[1-9][0-9]*$ ]]; then
+            _needle_release_claim_lock "$_mend_workspace"
             _needle_info "Released bead: $bead_id ($reason) via sqlite3"
             return 0
         fi
     fi
 
+    _needle_release_claim_lock "$_mend_workspace"
     _needle_warn "Failed to release bead: $bead_id"
     return 1
 }

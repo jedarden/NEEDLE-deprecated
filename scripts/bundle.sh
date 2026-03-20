@@ -139,11 +139,65 @@ _bundle() {
         echo "# -----------------------------------------------------------------------------"
         echo "# Library Modules"
         echo "# -----------------------------------------------------------------------------"
-        for lib in constants output paths json config utils; do
+        for lib in constants output paths json config utils locks diagnostic errors workspace; do
             file="$PROJECT_ROOT/src/lib/${lib}.sh"
             if [[ -f "$file" ]]; then
                 _process_file "$file"
             fi
+        done
+
+        # Embed bead modules (claim, select, intent, verify, mitosis, prompt)
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Bead Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/bead"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
+        done
+
+        # Embed lock modules (file collision, lease, optimistic, metrics)
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Lock Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/lock"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
+        done
+
+        # Embed strand modules
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Strand Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/strands"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
+        done
+
+        # Embed runner modules
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Runner Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/runner"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
+        done
+
+        # Embed telemetry modules
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Telemetry Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/telemetry"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
+        done
+
+        # Embed quality modules
+        echo "# -----------------------------------------------------------------------------"
+        echo "# Quality Modules"
+        echo "# -----------------------------------------------------------------------------"
+        for file in "$PROJECT_ROOT/src/quality"/*.sh; do
+            [[ -f "$file" ]] || continue
+            _process_file "$file"
         done
 
         # Embed agent modules

@@ -579,6 +579,11 @@ _needle_release_bead() {
 
     # Determine workspace database path
     local db_path="${NEEDLE_WORKSPACE:-$(pwd)}/.beads/beads.db"
+    local _release_workspace="${NEEDLE_WORKSPACE:-$(pwd)}"
+
+    # Acquire beads lock for workspace mutation
+    _needle_acquire_claim_lock "$_release_workspace" || true
+    trap '_needle_release_claim_lock "$_release_workspace"' RETURN
 
     # Try SQL-based release first (works around br CLI CHECK constraint bug)
     # Method 1: sqlite3 CLI

@@ -148,15 +148,20 @@ _needle_explore_check_stale() {
         if [[ "$worker_alive" == "false" ]]; then
             _needle_warn "explore: stale bead $bead_id in $workspace (worker $assignee dead)"
 
-            # Release via br update --db
+            # Release via br update --db (under beads lock)
             local ws_db="$workspace/.beads/beads.db"
+            _needle_acquire_claim_lock "$workspace" || true
             if [[ -f "$ws_db" ]] && br update "$bead_id" --status open --assignee "" --db="$ws_db" --lock-timeout 5000 2>/dev/null; then
+                _needle_release_claim_lock "$workspace"
                 _needle_info "explore: released stale bead $bead_id"
                 ((released++))
             elif declare -f _needle_mend_release_bead &>/dev/null; then
+                _needle_release_claim_lock "$workspace"
                 if _needle_mend_release_bead "$ws_db" "$bead_id" "explore_stale_reclaim"; then
                     ((released++))
                 fi
+            else
+                _needle_release_claim_lock "$workspace"
             fi
         fi
     done < <(echo "$in_progress" | jq -c '.[]' 2>/dev/null)
