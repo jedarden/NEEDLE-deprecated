@@ -1281,6 +1281,7 @@ _needle_run_worker() {
     # Set up environment variables for the worker loop
     export NEEDLE_WORKSPACE="$workspace"
     export NEEDLE_AGENT="$agent"
+    export NEEDLE_AGENT_NAME="$agent"  # Preserved as plain string; NEEDLE_AGENT may become assoc array after load
     export NEEDLE_WORKER_ID="$identifier"
     export NEEDLE_SESSION="$session_name"
     export NEEDLE_RUNNER="$runner"

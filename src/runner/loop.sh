@@ -1342,16 +1342,19 @@ _needle_worker_loop() {
         local reload_trigger="mtime"
         [[ "${_NEEDLE_RELOAD_REQUESTED:-0}" -eq 1 ]] && reload_trigger="sigusr1"
         _needle_info "Hot-reload triggered (trigger=$reload_trigger) — re-execing with updated binary"
+        # NEEDLE_AGENT may be an associative array (set by agent loader) or a
+        # plain string (set by _run_worker).  Resolve to the agent name string.
+        local _reload_agent="${NEEDLE_AGENT_NAME:-${NEEDLE_AGENT[name]:-${NEEDLE_AGENT:-unknown}}}"
         _needle_telemetry_emit "worker.hot_reload" "info" \
             "session=$NEEDLE_SESSION" \
             "binary=$NEEDLE_BINARY_PATH" \
             "workspace=$NEEDLE_WORKSPACE" \
-            "agent=$NEEDLE_AGENT" \
+            "agent=$_reload_agent" \
             "trigger=$reload_trigger" \
             "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
         exec "$NEEDLE_BINARY_PATH" run \
             --workspace "$NEEDLE_WORKSPACE" \
-            --agent "$NEEDLE_AGENT" \
+            --agent "$_reload_agent" \
             --id "$NEEDLE_IDENTIFIER" \
             --name "$NEEDLE_SESSION"
         # exec replaces the process; the lines below are only reached if exec fails

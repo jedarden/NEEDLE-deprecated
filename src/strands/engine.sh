@@ -262,7 +262,13 @@ _needle_strand_engine() {
 
         local func_name="_needle_strand_${strand}"
 
-        # Verify strand function exists
+        # Load strand if not already defined (source builds need explicit loading)
+        if ! declare -f "$func_name" &>/dev/null; then
+            local strand_path="${NEEDLE_SRC:-}/strands/${strand}.sh"
+            _needle_load_strand "$strand_path" "$func_name" 2>/dev/null
+        fi
+
+        # Verify strand function exists after loading attempt
         if ! declare -f "$func_name" &>/dev/null; then
             strand_results+=("$strand:not_defined")
             ((strand_idx++))
