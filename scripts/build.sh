@@ -226,6 +226,7 @@ _NEEDLE_CONSTANTS_LOADED=true
 _NEEDLE_DIAGNOSTIC_LOADED=true
 _NEEDLE_DISPATCH_LOADED=true
 _NEEDLE_JSON_LOADED=true
+_NEEDLE_LOCKS_LOADED=true
 _NEEDLE_MITOSIS_LOADED=true
 _NEEDLE_OUTPUT_LOADED=true
 _NEEDLE_PROMPT_LOADED=true
@@ -256,6 +257,7 @@ MODULES=(
     "src/lib/json.sh"
     "src/lib/paths.sh"
     "src/lib/utils.sh"
+    "src/lib/locks.sh"
     "src/lib/config.sh"
     "src/lib/config_schema.sh"
     "src/lib/workspace.sh"
